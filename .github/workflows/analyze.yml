@@ -57,9 +57,8 @@ jobs:
             python main.py "$TICKER" --save
           fi
 
-      - name: Upload results to Cloudflare KV
+      - name: Upload results to Sovereign Eye
         env:
-          CF_ACCOUNT_ID:      ${{ secrets.CF_ACCOUNT_ID }}
-          CF_API_TOKEN:       ${{ secrets.CF_API_TOKEN }}
-          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
+          SOVEREIGN_EYE_URL:  https://master.sovereign-eye.pages.dev
         run: python upload_kv.py
