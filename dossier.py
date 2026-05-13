@@ -1,6 +1,8 @@
-"""Data dossier builder — fetches all source data before agents run."""
+"""Data dossier builder — async, parallel fetches per ticker, shared macro cache."""
 
+import asyncio
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -19,7 +21,15 @@ FH = "https://finnhub.io/api/v1"
 FMP = "https://financialmodelingprep.com/api/v3"
 
 _av_idx = 0
+_av_lock = threading.Lock()   # serialize AV key rotation across threads
 
+# Macro data (FRED + VIX) is identical for all tickers — fetch once per run
+_macro_cache: dict = {}
+_macro_fetched = False
+_macro_async_lock: asyncio.Lock | None = None
+
+
+# ── Sync HTTP helpers (run inside asyncio.to_thread) ─────────────────────────
 
 def _fh(path: str, params: dict = None) -> dict | list:
     p = {"token": FINNHUB_KEY, **(params or {})}
@@ -51,7 +61,6 @@ def _fred(series: str) -> float | None:
 
 
 def _fred_cpi_yoy() -> float | None:
-    """Compute CPI YoY% from last 13 monthly observations (current vs. 12 months ago)."""
     try:
         r = requests.get(
             "https://api.stlouisfed.org/fred/series/observations",
@@ -72,12 +81,19 @@ def _av(function: str, params: dict = None) -> dict:
     global _av_idx
     if not _av_keys:
         return {}
-    key = _av_keys[_av_idx % len(_av_keys)]
-    _av_idx += 1
+    with _av_lock:
+        key = _av_keys[_av_idx % len(_av_keys)]
+        _av_idx += 1
     p = {"function": function, "apikey": key, **(params or {})}
     r = requests.get("https://www.alphavantage.co/query", params=p, timeout=15)
     return r.json() if r.ok else {}
 
+
+def _get_vix() -> float | None:
+    try:
+        return float(yf.Ticker("^VIX").history(period="2d")["Close"].iloc[-1])
+    except Exception:
+        return None
 
 
 def _technicals(ticker: str) -> dict:
@@ -90,20 +106,17 @@ def _technicals(ticker: str) -> dict:
         sma200 = float(close.rolling(200).mean().iloc[-1])
         price = float(close.iloc[-1])
 
-        # RSI (14)
         delta = close.diff()
         gain = delta.clip(lower=0).rolling(14).mean()
         loss = (-delta.clip(upper=0)).rolling(14).mean()
         rs = gain / loss.replace(0, 1e-9)
         rsi = float(100 - 100 / (1 + rs.iloc[-1]))
 
-        # MACD
         ema12 = close.ewm(span=12).mean()
         ema26 = close.ewm(span=26).mean()
         macd_line = float((ema12 - ema26).iloc[-1])
         signal_line = float((ema12 - ema26).ewm(span=9).mean().iloc[-1])
 
-        # 52w high/low
         w52_high = float(hist["High"].max())
         w52_low = float(hist["Low"].min())
         pct_from_high = round((price - w52_high) / w52_high * 100, 1)
@@ -127,12 +140,10 @@ def _technicals(ticker: str) -> dict:
 
 
 def _yf_financials(ticker: str) -> dict:
-    """Pull income, balance, cashflow, ratios, and analyst targets from yfinance."""
     try:
         t = yf.Ticker(ticker)
         info = t.info or {}
 
-        # ── Ratios from .info ──────────────────────────────────────────────
         def _pct(v):
             return round(v * 100, 2) if v is not None else None
 
@@ -140,40 +151,38 @@ def _yf_financials(ticker: str) -> dict:
             return round(v, n) if v is not None else None
 
         ratios = {
-            "pe":           _r(info.get("trailingPE")),
-            "fwd_pe":       _r(info.get("forwardPE")),
-            "pb":           _r(info.get("priceToBook")),
-            "ps":           _r(info.get("priceToSalesTrailing12Months")),
-            "ev_ebitda":    _r(info.get("enterpriseToEbitda")),
-            "gross_margin": _pct(info.get("grossMargins")),
-            "net_margin":   _pct(info.get("profitMargins")),
-            "roe":          _pct(info.get("returnOnEquity")),
-            "roa":          _pct(info.get("returnOnAssets")),
-            "debt_equity":  _r(info.get("debtToEquity")),
+            "pe":            _r(info.get("trailingPE")),
+            "fwd_pe":        _r(info.get("forwardPE")),
+            "pb":            _r(info.get("priceToBook")),
+            "ps":            _r(info.get("priceToSalesTrailing12Months")),
+            "ev_ebitda":     _r(info.get("enterpriseToEbitda")),
+            "gross_margin":  _pct(info.get("grossMargins")),
+            "net_margin":    _pct(info.get("profitMargins")),
+            "roe":           _pct(info.get("returnOnEquity")),
+            "roa":           _pct(info.get("returnOnAssets")),
+            "debt_equity":   _r(info.get("debtToEquity")),
             "current_ratio": _r(info.get("currentRatio")),
-            "fcf":          info.get("freeCashflow"),
+            "fcf":           info.get("freeCashflow"),
             "fcf_per_share": _r(info.get("freeCashflow") / info.get("sharesOutstanding", 1)
                                 if info.get("freeCashflow") and info.get("sharesOutstanding") else None),
-            "revenue_ttm":  info.get("totalRevenue"),
-            "ebitda":       info.get("ebitda"),
-            "beta":         _r(info.get("beta")),
-            "shares_out":   info.get("sharesOutstanding"),
-            "short_pct":    _pct(info.get("shortPercentOfFloat")),
+            "revenue_ttm":   info.get("totalRevenue"),
+            "ebitda":        info.get("ebitda"),
+            "beta":          _r(info.get("beta")),
+            "shares_out":    info.get("sharesOutstanding"),
+            "short_pct":     _pct(info.get("shortPercentOfFloat")),
         }
 
-        # ── Analyst targets from .info ─────────────────────────────────────
         analyst = {
-            "target_mean":   _r(info.get("targetMeanPrice")),
-            "target_high":   _r(info.get("targetHighPrice")),
-            "target_low":    _r(info.get("targetLowPrice")),
-            "num_analysts":  info.get("numberOfAnalystOpinions"),
+            "target_mean":    _r(info.get("targetMeanPrice")),
+            "target_high":    _r(info.get("targetHighPrice")),
+            "target_low":     _r(info.get("targetLowPrice")),
+            "num_analysts":   info.get("numberOfAnalystOpinions"),
             "recommendation": info.get("recommendationKey", ""),
         }
 
-        # ── Income statement (annual, last 4 years) ────────────────────────
         income = []
         try:
-            fin = t.financials  # columns = dates, rows = line items
+            fin = t.financials
             if fin is not None and not fin.empty:
                 for col in fin.columns[:4]:
                     rev = fin.loc["Total Revenue", col] if "Total Revenue" in fin.index else None
@@ -190,7 +199,6 @@ def _yf_financials(ticker: str) -> dict:
         except Exception:
             pass
 
-        # ── Balance sheet (annual, last 2 years) ───────────────────────────
         balance = []
         try:
             bs = t.balance_sheet
@@ -210,7 +218,6 @@ def _yf_financials(ticker: str) -> dict:
         except Exception:
             pass
 
-        # ── Cash flow (annual, last 2 years) ───────────────────────────────
         cashflow = []
         try:
             cf = t.cashflow
@@ -240,7 +247,6 @@ def _yf_financials(ticker: str) -> dict:
 def _simple_dcf(fcf: float | None, growth_rate: float = 0.08,
                 discount_rate: float = 0.10, terminal_multiple: float = 15,
                 years: int = 5, shares_out: int | None = None) -> float | None:
-    """5-year DCF with terminal value. Returns per-share IV if shares_out provided."""
     if not fcf or fcf <= 0:
         return None
     try:
@@ -258,41 +264,22 @@ def _simple_dcf(fcf: float | None, growth_rate: float = 0.08,
         return None
 
 
-def _peer_comps(ticker: str, sector: str) -> list[dict]:
-    """Get 4 sector peers via yfinance."""
-    SECTOR_PEERS = {
-        "Technology": ["NVDA", "AMD", "INTC", "QCOM", "AVGO"],
-        "Energy": ["NEE", "EXC", "D", "SO", "AEP"],
-        "Utilities": ["NEE", "EXC", "D", "SO", "AEP"],
-        "Financials": ["JPM", "BAC", "GS", "MS", "C"],
-        "Healthcare": ["UNH", "CVS", "CI", "HUM", "ELV"],
-        "Consumer Cyclical": ["AMZN", "HD", "MCD", "NKE", "SBUX"],
-        "Consumer Defensive": ["WMT", "PG", "KO", "PEP", "COST"],
-        "Industrials": ["GE", "HON", "MMM", "CAT", "DE"],
-        "Communication Services": ["GOOGL", "META", "NFLX", "DIS", "CMCSA"],
-        "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "PSA"],
-        "Basic Materials": ["LIN", "APD", "ECL", "SHW", "NEM"],
-    }
-    peers = [p for p in SECTOR_PEERS.get(sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
-    comps = []
-    for p in peers:
-        try:
-            info = yf.Ticker(p).info
-            comps.append({
-                "ticker": p,
-                "pe": round(info.get("trailingPE") or 0, 1),
-                "fwd_pe": round(info.get("forwardPE") or 0, 1),
-                "ev_ebitda": round(info.get("enterpriseToEbitda") or 0, 1),
-                "rev_growth": round((info.get("revenueGrowth") or 0) * 100, 1),
-                "gross_margin": round((info.get("grossMargins") or 0) * 100, 1),
-            })
-        except Exception:
-            pass
-    return comps
+def _fetch_peer(peer_ticker: str) -> dict | None:
+    try:
+        info = yf.Ticker(peer_ticker).info
+        return {
+            "ticker":       peer_ticker,
+            "pe":           round(info.get("trailingPE") or 0, 1),
+            "fwd_pe":       round(info.get("forwardPE") or 0, 1),
+            "ev_ebitda":    round(info.get("enterpriseToEbitda") or 0, 1),
+            "rev_growth":   round((info.get("revenueGrowth") or 0) * 100, 1),
+            "gross_margin": round((info.get("grossMargins") or 0) * 100, 1),
+        }
+    except Exception:
+        return None
 
 
 def _latest_filing(ticker: str) -> dict:
-    """Fetch latest 10-K or 10-Q metadata via Finnhub."""
     try:
         filings = _fh("/stock/filings", {"symbol": ticker})
         if isinstance(filings, list) and filings:
@@ -308,189 +295,227 @@ def _latest_filing(ticker: str) -> dict:
     return {}
 
 
-def build(ticker: str, verbose: bool = True) -> dict:
-    """Build the full data dossier for a ticker. Returns a dict."""
+# ── Async macro cache (fetched once per run, shared across all tickers) ───────
+
+async def _get_macro() -> dict:
+    global _macro_cache, _macro_fetched, _macro_async_lock
+    if _macro_async_lock is None:
+        _macro_async_lock = asyncio.Lock()
+    async with _macro_async_lock:
+        if _macro_fetched:
+            return _macro_cache
+        # All 5 FRED series + VIX in parallel
+        fed, cpi, unemp, t10, t2, vix = await asyncio.gather(
+            asyncio.to_thread(_fred, "FEDFUNDS"),
+            asyncio.to_thread(_fred_cpi_yoy),
+            asyncio.to_thread(_fred, "UNRATE"),
+            asyncio.to_thread(_fred, "DGS10"),
+            asyncio.to_thread(_fred, "DGS2"),
+            asyncio.to_thread(_get_vix),
+        )
+        spread = round(t10 - t2, 2) if t10 and t2 else None
+        _macro_cache = {
+            "fed_funds_rate":     fed,
+            "cpi_yoy":            cpi,
+            "unemployment":       unemp,
+            "treasury_10y":       t10,
+            "treasury_2y":        t2,
+            "vix":                round(vix, 1) if vix else None,
+            "yield_curve_spread": spread,
+        }
+        _macro_fetched = True
+        return _macro_cache
+
+
+# ── Main async builder ────────────────────────────────────────────────────────
+
+async def build(ticker: str, verbose: bool = True) -> dict:
+    """Build the full data dossier for a ticker. Async — all sources fetched in parallel."""
     ticker = ticker.upper()
     if verbose:
-        print(f"\n[dossier] Building dossier for {ticker}...")
+        print(f"\n[dossier] Building dossier for {ticker} (parallel fetch)...")
 
     dossier: dict = {"ticker": ticker, "built_at": datetime.now(timezone.utc).isoformat()}
 
-    # 1. Profile
-    if verbose: print("  -> profile...")
-    profile = _fh("/stock/profile2", {"symbol": ticker})
+    since      = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
+    from_date  = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    to_date    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # ── Batch 1: everything that doesn't depend on another result ─────────────
+    (
+        profile_raw,
+        quote_raw,
+        technicals,
+        yf_fin,
+        earnings_raw,
+        insiders_raw,
+        fh_news_raw,
+        sec_raw,
+        macro,
+    ) = await asyncio.gather(
+        asyncio.to_thread(_fh, "/stock/profile2", {"symbol": ticker}),
+        asyncio.to_thread(_fh, "/quote", {"symbol": ticker}),
+        asyncio.to_thread(_technicals, ticker),
+        asyncio.to_thread(_yf_financials, ticker),
+        asyncio.to_thread(_av, "EARNINGS", {"symbol": ticker}),
+        asyncio.to_thread(_fh, "/stock/insider-transactions", {"symbol": ticker, "from": since}),
+        asyncio.to_thread(_fh, "/company-news", {"symbol": ticker, "from": from_date, "to": to_date}),
+        asyncio.to_thread(_latest_filing, ticker),
+        _get_macro(),
+    )
+
+    # ── Profile ───────────────────────────────────────────────────────────────
+    sector = profile_raw.get("finnhubIndustry", "Unknown")
     dossier["profile"] = {
-        "name": profile.get("name", ticker),
-        "sector": profile.get("finnhubIndustry", "Unknown"),
-        "exchange": profile.get("exchange", ""),
-        "market_cap_bn": round((profile.get("marketCapitalization") or 0) / 1000, 2),
-        "ipo_date": profile.get("ipo", ""),
-        "employees": profile.get("employeeTotal", ""),
-        "country": profile.get("country", ""),
-        "website": profile.get("weburl", ""),
+        "name":          profile_raw.get("name", ticker),
+        "sector":        sector,
+        "exchange":      profile_raw.get("exchange", ""),
+        "market_cap_bn": round((profile_raw.get("marketCapitalization") or 0) / 1000, 2),
+        "ipo_date":      profile_raw.get("ipo", ""),
+        "employees":     profile_raw.get("employeeTotal", ""),
+        "country":       profile_raw.get("country", ""),
+        "website":       profile_raw.get("weburl", ""),
     }
 
-    # 2. Quote
-    if verbose: print("  -> quote...")
-    quote = _fh("/quote", {"symbol": ticker})
+    # ── Quote ─────────────────────────────────────────────────────────────────
     dossier["quote"] = {
-        "price": quote.get("c"),
-        "change": quote.get("d"),
-        "change_pct": quote.get("dp"),
-        "high": quote.get("h"),
-        "low": quote.get("l"),
-        "open": quote.get("o"),
-        "prev_close": quote.get("pc"),
+        "price":      quote_raw.get("c"),
+        "change":     quote_raw.get("d"),
+        "change_pct": quote_raw.get("dp"),
+        "high":       quote_raw.get("h"),
+        "low":        quote_raw.get("l"),
+        "open":       quote_raw.get("o"),
+        "prev_close": quote_raw.get("pc"),
     }
 
-    # 3. Technicals (yfinance)
-    if verbose: print("  -> technicals...")
-    dossier["technicals"] = _technicals(ticker)
+    # ── Technicals ────────────────────────────────────────────────────────────
+    dossier["technicals"] = technicals
 
-    # 4. Financials — yfinance primary, FMP fallback
-    if verbose: print("  -> financials (yfinance primary)...")
-    yf_fin = _yf_financials(ticker)
-
-    # FMP fallback (only fetched if yfinance returned nothing useful)
+    # ── Financials ────────────────────────────────────────────────────────────
     fmp_ratios_data = {}
     fmp_income, fmp_balance, fmp_cashflow = [], [], []
     if not yf_fin.get("income"):
-        if verbose: print("  -> financials fallback (FMP)...")
-        fmp_income_raw = _fmp(f"/income-statement/{ticker}", {"limit": 4})
-        fmp_balance_raw = _fmp(f"/balance-sheet-statement/{ticker}", {"limit": 2})
+        if verbose:
+            print(f"  [dossier] {ticker}: yfinance income empty — fetching FMP fallback...")
+        fmp_income_raw   = _fmp(f"/income-statement/{ticker}", {"limit": 4})
+        fmp_balance_raw  = _fmp(f"/balance-sheet-statement/{ticker}", {"limit": 2})
         fmp_cashflow_raw = _fmp(f"/cash-flow-statement/{ticker}", {"limit": 2})
-        fmp_ratios_raw = _fmp(f"/ratios-ttm/{ticker}")
-        fmp_ratios_data = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else {}
-        fmp_income = fmp_income_raw[:4] if isinstance(fmp_income_raw, list) else []
-        fmp_balance = fmp_balance_raw[:2] if isinstance(fmp_balance_raw, list) else []
+        fmp_ratios_raw   = _fmp(f"/ratios-ttm/{ticker}")
+        fmp_ratios_data  = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else {}
+        fmp_income   = fmp_income_raw[:4]   if isinstance(fmp_income_raw,   list) else []
+        fmp_balance  = fmp_balance_raw[:2]  if isinstance(fmp_balance_raw,  list) else []
         fmp_cashflow = fmp_cashflow_raw[:2] if isinstance(fmp_cashflow_raw, list) else []
 
     yf_r = yf_fin.get("ratios", {})
     dossier["financials"] = {
-        "income":   yf_fin.get("income") or fmp_income,
-        "balance":  yf_fin.get("balance") or fmp_balance,
+        "income":   yf_fin.get("income")   or fmp_income,
+        "balance":  yf_fin.get("balance")  or fmp_balance,
         "cashflow": yf_fin.get("cashflow") or fmp_cashflow,
         "ratios_ttm": {
-            "pe":           yf_r.get("pe")           or fmp_ratios_data.get("peRatioTTM"),
-            "fwd_pe":       yf_r.get("fwd_pe")       or fmp_ratios_data.get("priceEarningsRatioTTM"),
-            "pb":           yf_r.get("pb")            or fmp_ratios_data.get("priceToBookRatioTTM"),
-            "ps":           yf_r.get("ps")            or fmp_ratios_data.get("priceToSalesRatioTTM"),
-            "ev_ebitda":    yf_r.get("ev_ebitda")    or fmp_ratios_data.get("enterpriseValueMultipleTTM"),
-            "gross_margin": yf_r.get("gross_margin") or fmp_ratios_data.get("grossProfitMarginTTM"),
-            "net_margin":   yf_r.get("net_margin")   or fmp_ratios_data.get("netProfitMarginTTM"),
-            "roe":          yf_r.get("roe")           or fmp_ratios_data.get("returnOnEquityTTM"),
-            "roic":         fmp_ratios_data.get("returnOnCapitalEmployedTTM"),  # FMP only
-            "roa":          yf_r.get("roa"),
-            "debt_equity":  yf_r.get("debt_equity")  or fmp_ratios_data.get("debtEquityRatioTTM"),
+            "pe":            yf_r.get("pe")           or fmp_ratios_data.get("peRatioTTM"),
+            "fwd_pe":        yf_r.get("fwd_pe")       or fmp_ratios_data.get("priceEarningsRatioTTM"),
+            "pb":            yf_r.get("pb")            or fmp_ratios_data.get("priceToBookRatioTTM"),
+            "ps":            yf_r.get("ps")            or fmp_ratios_data.get("priceToSalesRatioTTM"),
+            "ev_ebitda":     yf_r.get("ev_ebitda")    or fmp_ratios_data.get("enterpriseValueMultipleTTM"),
+            "gross_margin":  yf_r.get("gross_margin") or fmp_ratios_data.get("grossProfitMarginTTM"),
+            "net_margin":    yf_r.get("net_margin")   or fmp_ratios_data.get("netProfitMarginTTM"),
+            "roe":           yf_r.get("roe")           or fmp_ratios_data.get("returnOnEquityTTM"),
+            "roic":          fmp_ratios_data.get("returnOnCapitalEmployedTTM"),
+            "roa":           yf_r.get("roa"),
+            "debt_equity":   yf_r.get("debt_equity")  or fmp_ratios_data.get("debtEquityRatioTTM"),
             "current_ratio": yf_r.get("current_ratio") or fmp_ratios_data.get("currentRatioTTM"),
             "fcf_per_share": yf_r.get("fcf_per_share") or fmp_ratios_data.get("freeCashFlowPerShareTTM"),
-            "fcf":          yf_r.get("fcf"),
-            "revenue_ttm":  yf_r.get("revenue_ttm"),
-            "ebitda":       yf_r.get("ebitda"),
-            "beta":         yf_r.get("beta"),
-            "short_pct":    yf_r.get("short_pct"),
+            "fcf":           yf_r.get("fcf"),
+            "revenue_ttm":   yf_r.get("revenue_ttm"),
+            "ebitda":        yf_r.get("ebitda"),
+            "beta":          yf_r.get("beta"),
+            "short_pct":     yf_r.get("short_pct"),
         },
     }
 
-    # 5. Valuation — yfinance analyst targets + simple DCF; FMP as fallback
-    if verbose: print("  -> valuation & analyst targets...")
+    # ── Valuation ─────────────────────────────────────────────────────────────
     yf_analyst = yf_fin.get("analyst", {})
-
-    # FMP DCF fallback
     fmp_dcf_price = None
+    fmp_targets: list = []
     if not yf_analyst.get("target_mean"):
         dcf_raw = _fmp(f"/discounted-cash-flow/{ticker}")
         fmp_dcf_price = (dcf_raw[0].get("dcf") if isinstance(dcf_raw, list) and dcf_raw else
-                         dcf_raw.get("dcf") if isinstance(dcf_raw, dict) else None)
+                         dcf_raw.get("dcf")     if isinstance(dcf_raw, dict) else None)
         fmp_targets_raw = _fmp(f"/price-target/{ticker}")
         fmp_targets = fmp_targets_raw[:5] if isinstance(fmp_targets_raw, list) else []
-    else:
-        fmp_targets = []
 
-    # Simple DCF from yfinance FCF — prefer .info FCF, fall back to cashflow table
     fcf_val = yf_r.get("fcf")
     if not fcf_val:
         cf_list = yf_fin.get("cashflow", [])
         if cf_list and cf_list[0].get("free_cash_flow"):
             fcf_val = cf_list[0]["free_cash_flow"]
-    shares_out = yf_r.get("shares_out")
+    shares_out   = yf_r.get("shares_out")
     computed_dcf = _simple_dcf(fcf_val, shares_out=shares_out)
 
     dossier["valuation"] = {
-        "dcf_price": fmp_dcf_price,
-        "dcf_iv_per_share": computed_dcf,   # computed from FCF (conservative 8% growth, 10% discount)
+        "dcf_price":        fmp_dcf_price,
+        "dcf_iv_per_share": computed_dcf,
         "analyst_consensus": yf_analyst or {},
-        "analyst_targets": fmp_targets,      # FMP format fallback
+        "analyst_targets":   fmp_targets,
     }
 
-    # 6. Earnings surprises (Alpha Vantage)
-    if verbose: print("  -> earnings surprises (Alpha Vantage)...")
-    earnings = _av("EARNINGS", {"symbol": ticker})
-    quarterly = earnings.get("quarterlyEarnings", [])[:8]
+    # ── Earnings surprises ────────────────────────────────────────────────────
+    quarterly = earnings_raw.get("quarterlyEarnings", [])[:8]
     dossier["earnings_surprises"] = [
         {
-            "date": e.get("fiscalDateEnding"),
-            "reported_eps": e.get("reportedEPS"),
+            "date":          e.get("fiscalDateEnding"),
+            "reported_eps":  e.get("reportedEPS"),
             "estimated_eps": e.get("estimatedEPS"),
-            "surprise_pct": e.get("surprisePercentage"),
+            "surprise_pct":  e.get("surprisePercentage"),
         }
         for e in quarterly
     ]
 
-    # 7. Insider transactions (Finnhub)
-    if verbose: print("  -> insider transactions...")
-    since = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
-    insiders = _fh("/stock/insider-transactions", {"symbol": ticker, "from": since})
-    txns = insiders.get("data", []) if isinstance(insiders, dict) else []
-    buys = [t for t in txns if t.get("transactionType") in ("P - Purchase",)]
-    sells = [t for t in txns if t.get("transactionType") in ("S - Sale",)]
+    # ── Insider transactions ──────────────────────────────────────────────────
+    txns  = insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else []
+    buys  = [t for t in txns if t.get("transactionType") == "P - Purchase"]
+    sells = [t for t in txns if t.get("transactionType") == "S - Sale"]
     dossier["insiders"] = {
-        "buy_count": len(buys),
+        "buy_count":  len(buys),
         "sell_count": len(sells),
         "net_shares": sum(t.get("share", 0) for t in buys) - sum(t.get("share", 0) for t in sells),
-        "recent": txns[:10],
+        "recent":     txns[:10],
     }
 
-    # 8. News (Finnhub + Tavily)
-    if verbose: print("  -> news...")
-    from_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
-    to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    fh_news = _fh("/company-news", {"symbol": ticker, "from": from_date, "to": to_date})
-    fh_news = fh_news[:10] if isinstance(fh_news, list) else []
-
+    # ── News ──────────────────────────────────────────────────────────────────
+    fh_news = fh_news_raw[:10] if isinstance(fh_news_raw, list) else []
     dossier["news"] = {
-        "finnhub": [{"date": n.get("datetime"), "headline": n.get("headline"),
-                     "source": n.get("source"), "summary": n.get("summary", "")}
-                    for n in fh_news],
+        "finnhub": [
+            {"date": n.get("datetime"), "headline": n.get("headline"),
+             "source": n.get("source"), "summary": n.get("summary", "")}
+            for n in fh_news
+        ],
     }
 
-    # 9. SEC Filings
-    if verbose: print("  -> SEC filings...")
-    dossier["sec_filing"] = _latest_filing(ticker)
+    # ── SEC filing ────────────────────────────────────────────────────────────
+    dossier["sec_filing"] = sec_raw
 
-    # 10. Macro context (FRED + yfinance VIX)
-    if verbose: print("  -> macro (FRED)...")
-    try:
-        vix = float(yf.Ticker("^VIX").history(period="2d")["Close"].iloc[-1])
-    except Exception:
-        vix = None
-    dossier["macro"] = {
-        "fed_funds_rate": _fred("FEDFUNDS"),
-        "cpi_yoy": _fred_cpi_yoy(),
-        "unemployment": _fred("UNRATE"),
-        "treasury_10y": _fred("DGS10"),
-        "treasury_2y": _fred("DGS2"),
-        "vix": round(vix, 1) if vix else None,
+    # ── Macro (shared cache) ──────────────────────────────────────────────────
+    dossier["macro"] = macro
+
+    # ── Batch 2: peer comps (needs sector from profile) — 4 peers in parallel ─
+    SECTOR_PEERS = {
+        "Technology":              ["NVDA", "AMD", "INTC", "QCOM", "AVGO"],
+        "Energy":                  ["NEE", "EXC", "D", "SO", "AEP"],
+        "Utilities":               ["NEE", "EXC", "D", "SO", "AEP"],
+        "Financials":              ["JPM", "BAC", "GS", "MS", "C"],
+        "Healthcare":              ["UNH", "CVS", "CI", "HUM", "ELV"],
+        "Consumer Cyclical":       ["AMZN", "HD", "MCD", "NKE", "SBUX"],
+        "Consumer Defensive":      ["WMT", "PG", "KO", "PEP", "COST"],
+        "Industrials":             ["GE", "HON", "MMM", "CAT", "DE"],
+        "Communication Services":  ["GOOGL", "META", "NFLX", "DIS", "CMCSA"],
+        "Real Estate":             ["AMT", "PLD", "CCI", "EQIX", "PSA"],
+        "Basic Materials":         ["LIN", "APD", "ECL", "SHW", "NEM"],
     }
-    t10 = dossier["macro"]["treasury_10y"]
-    t2 = dossier["macro"]["treasury_2y"]
-    dossier["macro"]["yield_curve_spread"] = round(t10 - t2, 2) if t10 and t2 else None
-
-    # 11. Peer comps
-    if verbose: print("  -> peer comps...")
-    sector = dossier["profile"]["sector"]
-    dossier["peer_comps"] = _peer_comps(ticker, sector)
+    peers = [p for p in SECTOR_PEERS.get(sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
+    peer_results = await asyncio.gather(*[asyncio.to_thread(_fetch_peer, p) for p in peers])
+    dossier["peer_comps"] = [r for r in peer_results if r]
 
     if verbose:
-        print(f"  [dossier] Done. {len(str(dossier)):,} chars of data.")
+        print(f"  [dossier] {ticker} done. {len(str(dossier)):,} chars.")
     return dossier

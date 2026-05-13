@@ -48,10 +48,8 @@ jobs:
         run: |
           TICKER="${{ github.event.inputs.ticker }}"
           if [ -z "$TICKER" ]; then
-            echo "=== Portfolio scan ==="
-            python main.py --portfolio --save --notify
-            echo "=== Scout mode ==="
-            python main.py --scout --save --notify
+            echo "=== Portfolio scan + Scout (concurrent) ==="
+            python main.py --portfolio --scout --save --notify
           else
             echo "=== Single ticker: $TICKER ==="
             python main.py "$TICKER" --save

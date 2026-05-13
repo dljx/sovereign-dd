@@ -48,7 +48,7 @@ def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> 
 
 async def _run_single(ticker: str, save: bool = False):
     console.rule(f"[bold blue]Sovereign DD — {ticker}[/bold blue]")
-    dossier = build_dossier(ticker, verbose=True)
+    dossier = await build_dossier(ticker, verbose=True)
     result  = await run_debate(ticker, dossier, verbose=True)
     console.rule("[bold]FINAL REPORT[/bold]")
     render(result, dossier)
@@ -58,31 +58,38 @@ async def _run_single(ticker: str, save: bool = False):
     return result, dossier
 
 
-# ── Portfolio mode ────────────────────────────────────────────────────────────
+# ── Portfolio mode — all tickers in parallel (max 3 concurrent) ───────────────
 
 async def _run_portfolio(save: bool = False, notify: bool = False):
     tickers = _portfolio_tickers()
-    console.rule(f"[bold blue]Sovereign DD — Portfolio scan ({len(tickers)} tickers)[/bold blue]")
+    console.rule(
+        f"[bold blue]Sovereign DD — Portfolio scan "
+        f"({len(tickers)} tickers, 3 concurrent)[/bold blue]"
+    )
 
-    summaries: list[dict] = []
-    for ticker in tickers:
-        try:
-            console.rule(f"[blue]{ticker}[/blue]")
-            dossier = build_dossier(ticker, verbose=True)
-            result  = await run_debate(ticker, dossier, verbose=True)
-            console.rule("[bold]FINAL REPORT[/bold]")
-            render(result, dossier)
-            if save:
-                out_path = _save_result(ticker, result, dossier)
-                console.print(f"[dim]Saved to {out_path}[/dim]")
-            summaries.append({
-                "ticker": ticker,
-                "score":  result.get("consensus_score", 0),
-                "grade":  result.get("consensus_grade", "?"),
-            })
-        except Exception as e:
-            console.print(f"[red]  {ticker} failed: {e}[/red]")
-            summaries.append({"ticker": ticker, "score": 0, "grade": "ERROR"})
+    sem = asyncio.Semaphore(3)
+
+    async def _analyze_one(ticker: str) -> dict:
+        async with sem:
+            try:
+                console.rule(f"[blue]{ticker}[/blue]")
+                dossier = await build_dossier(ticker, verbose=True)
+                result  = await run_debate(ticker, dossier, verbose=True)
+                console.rule(f"[bold]{ticker} FINAL REPORT[/bold]")
+                render(result, dossier)
+                if save:
+                    out_path = _save_result(ticker, result, dossier)
+                    console.print(f"[dim]Saved to {out_path}[/dim]")
+                return {
+                    "ticker": ticker,
+                    "score":  result.get("consensus_score", 0),
+                    "grade":  result.get("consensus_grade", "?"),
+                }
+            except Exception as e:
+                console.print(f"[red]  {ticker} failed: {e}[/red]")
+                return {"ticker": ticker, "score": 0, "grade": "ERROR"}
+
+    summaries = list(await asyncio.gather(*[_analyze_one(t) for t in tickers]))
 
     if notify and summaries:
         from notify import alert_portfolio_summary
@@ -97,14 +104,12 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
 async def _run_scout(save: bool = False, notify: bool = False):
     from scout import run_scout
     portfolio = _portfolio_tickers() if os.getenv("PORTFOLIO_TICKERS") else []
-    discoveries = await run_scout(max_tickers=5, portfolio=portfolio, verbose=True)
+    discoveries = await run_scout(max_tickers=6, portfolio=portfolio, verbose=True)
 
     if notify:
         from notify import alert_scout_summary, alert_buy_signal, alert_dd_result
-        # Send BUY alerts + full DD to Deep Dives topic for each discovery
         for d in discoveries:
             alert_buy_signal(d)
-            # Load full result JSON to send the detailed report
             if d.get("output_file"):
                 try:
                     with open(d["output_file"]) as f:
@@ -112,7 +117,6 @@ async def _run_scout(save: bool = False, notify: bool = False):
                     alert_dd_result(data["result"])
                 except Exception:
                     pass
-        # Overall scout summary to Scan Results
         alert_scout_summary(discoveries)
         console.print(f"[dim]Scout alerts sent to Telegram ({len(discoveries)} signal(s))[/dim]")
 
@@ -124,30 +128,31 @@ async def _run_scout(save: bool = False, notify: bool = False):
 async def _main():
     args = sys.argv[1:]
 
-    save    = "--save"      in args
-    notify  = "--notify"    in args
+    save           = "--save"      in args
+    notify         = "--notify"    in args
     portfolio_mode = "--portfolio" in args
     scout_mode     = "--scout"     in args
+    positional     = [a for a in args if not a.startswith("--")]
 
-    # Remove flag args to get positional args
-    positional = [a for a in args if not a.startswith("--")]
-
-    if portfolio_mode:
+    if portfolio_mode and scout_mode:
+        # Run both concurrently
+        await asyncio.gather(
+            _run_portfolio(save=save, notify=notify),
+            _run_scout(save=save, notify=notify),
+        )
+    elif portfolio_mode:
         await _run_portfolio(save=save, notify=notify)
-
     elif scout_mode:
         await _run_scout(save=save, notify=notify)
-
     elif positional:
-        ticker = positional[0].upper()
-        await _run_single(ticker, save=save)
-
+        await _run_single(positional[0].upper(), save=save)
     else:
         console.print(
             "[red]Usage:[/red]\n"
             "  python main.py TICKER [--save]\n"
             "  python main.py --portfolio [--save] [--notify]\n"
-            "  python main.py --scout [--save] [--notify]"
+            "  python main.py --scout [--save] [--notify]\n"
+            "  python main.py --portfolio --scout [--save] [--notify]"
         )
         sys.exit(1)
 

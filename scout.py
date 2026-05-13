@@ -1,9 +1,9 @@
 """Scout mode — quantitative screener → Gemma triage → full debate.
 
 Every run:
-  1. All 6 screeners fire simultaneously (cheap REST calls, different financial profiles)
+  1. All 7 screener calls fire simultaneously (cheap REST calls, different financial profiles)
   2. One grounded Gemma call picks the 6 most interesting from the combined pool
-  3. Full 5-agent debate on those 6 (same pipeline as portfolio tickers)
+  3. Full 5-agent debate on those 6 picks — all run in parallel (max 3 concurrent)
 """
 
 import asyncio
@@ -24,8 +24,6 @@ FMP = "https://financialmodelingprep.com/api/v3"
 BUY_THRESHOLD = 7.0
 
 # ── Screener lens definitions ──────────────────────────────────────────────────
-# Each lens uses different FMP screener parameters to pull a different population
-# of stocks. Market cap in USD. All are US-listed (NYSE + NASDAQ), actively trading.
 
 SCREENER_LENSES: list[dict] = [
     {
@@ -93,82 +91,75 @@ SCREENER_LENSES: list[dict] = [
     },
     {
         "name": "macro_tailwind",
-        "desc": "Industrials, energy, materials, and real estate — cyclical and rate-sensitive sectors",
+        "desc": "Industrials — cyclical and rate-sensitive",
         "params": {
             "marketCapMoreThan": 300_000_000,
-            "sector": "Industrials",        # FMP only takes one sector per call
+            "sector": "Industrials",
             "volumeMoreThan": 150_000,
             "isActivelyTrading": "true",
             "exchange": "NYSE,NASDAQ",
             "limit": 25,
         },
     },
+    {
+        "name": "macro_tailwind",
+        "desc": "Energy sector — cyclical and rate-sensitive",
+        "params": {
+            "marketCapMoreThan": 300_000_000,
+            "sector": "Energy",
+            "volumeMoreThan": 150_000,
+            "isActivelyTrading": "true",
+            "exchange": "NYSE,NASDAQ",
+            "limit": 20,
+        },
+    },
 ]
 
-# Run a second macro call for Energy/Materials since FMP takes one sector per call
-_EXTRA_MACRO_PARAMS = {
-    "marketCapMoreThan": 300_000_000,
-    "sector": "Energy",
-    "volumeMoreThan": 150_000,
-    "isActivelyTrading": "true",
-    "exchange": "NYSE,NASDAQ",
-    "limit": 20,
-}
 
 # ── FMP helpers ────────────────────────────────────────────────────────────────
 
-def _fmp_screen(params: dict) -> list[dict]:
-    """Call FMP stock screener, return list of candidate dicts."""
+def _fmp_screen(lens: dict) -> tuple[dict, list[dict]]:
+    """Call FMP stock screener for one lens. Returns (lens, results)."""
     if not FMP_KEY:
-        return []
+        return lens, []
     try:
         r = requests.get(
             f"{FMP}/stock-screener",
-            params={"apikey": FMP_KEY, **params},
+            params={"apikey": FMP_KEY, **lens["params"]},
             timeout=20,
         )
         if not r.ok:
-            return []
+            return lens, []
         data = r.json()
-        if not isinstance(data, list):
-            return []
-        return data
+        return lens, data if isinstance(data, list) else []
     except Exception as e:
-        print(f"  [scout] FMP screener error: {e}")
-        return []
+        print(f"  [scout] FMP screener error ({lens['name']}): {e}")
+        return lens, []
 
 
-def _run_all_screeners(portfolio: set[str]) -> list[dict]:
-    """
-    Run all lenses synchronously (fast REST calls, no LLM).
-    Returns deduplicated candidate list with basic metadata.
-    """
+async def _run_all_screeners(portfolio: set[str]) -> list[dict]:
+    """Run all lenses in parallel. Returns deduplicated candidate list."""
+    results = await asyncio.gather(*[
+        asyncio.to_thread(_fmp_screen, lens) for lens in SCREENER_LENSES
+    ])
+
     seen: set[str] = set()
     candidates: list[dict] = []
 
-    all_lens_params = [lens["params"] for lens in SCREENER_LENSES]
-    all_lens_params.append(_EXTRA_MACRO_PARAMS)
-
-    for lens, params in zip(
-        [*SCREENER_LENSES, {"name": "macro_tailwind", "desc": "Energy sector"}],
-        all_lens_params,
-    ):
-        results = _fmp_screen(params)
-        for item in results:
+    for lens, items in results:
+        for item in items:
             sym = item.get("symbol", "").upper().strip()
             if not sym or sym in seen or sym in portfolio:
                 continue
-            # Basic sanity: must look like a US equity ticker
             if not re.match(r'^[A-Z]{1,5}$', sym):
                 continue
             seen.add(sym)
-            mcap_b = round((item.get("marketCap") or 0) / 1e9, 2)
             candidates.append({
                 "ticker":   sym,
                 "name":     item.get("companyName", sym),
                 "sector":   item.get("sector", "—"),
                 "industry": item.get("industry", "—"),
-                "mcap_b":   mcap_b,
+                "mcap_b":   round((item.get("marketCap") or 0) / 1e9, 2),
                 "price":    item.get("price", 0),
                 "beta":     item.get("beta", 0),
                 "volume":   item.get("volume", 0),
@@ -197,7 +188,6 @@ unless they have a specific, timely catalyst."""
 
 
 def _build_triage_prompt(candidates: list[dict], portfolio: set[str]) -> str:
-    # Format candidates as a compact table for the LLM
     lines = [
         f"Below is a pre-screened universe of {len(candidates)} US-listed stocks across "
         f"multiple investment lenses (value, growth, momentum, small_cap, contrarian, macro_tailwind).\n",
@@ -232,10 +222,6 @@ async def _triage_with_gemma(
     portfolio: set[str],
     verbose: bool = True,
 ) -> list[dict]:
-    """
-    One grounded Gemma call to pick the 6 best candidates from the screened pool.
-    Returns list of {ticker, lens, rationale} dicts.
-    """
     from llm import call_gemini_async, extract_json
 
     if not candidates:
@@ -251,7 +237,6 @@ async def _triage_with_gemma(
     try:
         parsed = extract_json(text)
         picks = parsed.get("picks", []) if isinstance(parsed, dict) else []
-        # Validate tickers are actually in our candidate list
         valid_syms = {c["ticker"] for c in candidates}
         valid = [
             p for p in picks
@@ -264,7 +249,6 @@ async def _triage_with_gemma(
         return valid[:6]
     except Exception as e:
         print(f"  [scout] Triage parse error: {e}\n  Raw: {text[:300]}")
-        # Fallback: pick randomly from candidates
         import random
         sample = random.sample(candidates, min(6, len(candidates)))
         return [{"ticker": c["ticker"], "lens": c["lens"], "rationale": "fallback pick"} for c in sample]
@@ -279,9 +263,9 @@ async def run_scout(
 ) -> list[dict]:
     """
     Full scout pipeline:
-      1. All 6 screeners fire (parallel REST calls)
+      1. All screener lenses fire simultaneously
       2. Gemma triage picks the 6 most interesting (grounded)
-      3. Full 5-agent debate on each pick
+      3. Full 5-agent debate on all picks in parallel (max 3 concurrent)
 
     Returns list of BUY discovery dicts (score >= BUY_THRESHOLD only).
     """
@@ -290,14 +274,14 @@ async def run_scout(
 
     portfolio_set = {t.upper() for t in (portfolio or [])}
 
-    # Phase 1 — quantitative screeners (fast, parallel via threads)
+    # Phase 1 — screeners (all lenses in parallel)
     if verbose:
         print(f"\n+----------------------------------------------+")
         print(f"|  SOVEREIGN SCOUT — quantitative screen       |")
-        print(f"|  Running all 6 lenses simultaneously...      |")
+        print(f"|  Running all {len(SCREENER_LENSES)} lenses simultaneously...     |")
         print(f"+----------------------------------------------+")
 
-    candidates = await asyncio.to_thread(_run_all_screeners, portfolio_set)
+    candidates = await _run_all_screeners(portfolio_set)
 
     if verbose:
         by_lens: dict[str, int] = {}
@@ -308,7 +292,7 @@ async def run_scout(
         print(f"  Total unique candidates: {len(candidates)}")
 
     if not candidates:
-        print("  [scout] No candidates from screeners — check FMP_API_KEY")
+        print("  [scout] No candidates — check FMP_API_KEY")
         return []
 
     # Phase 2 — Gemma triage (one grounded call)
@@ -318,60 +302,67 @@ async def run_scout(
         print("  [scout] Triage returned no picks")
         return []
 
+    picks = picks[:max_tickers]
+
     if verbose:
         print(f"\n+----------------------------------------------+")
-        print(f"|  SOVEREIGN SCOUT — running full debates      |")
+        print(f"|  SOVEREIGN SCOUT — running debates           |")
         tickers_str = ", ".join(p["ticker"] for p in picks)
         print(f"|  Picks: {tickers_str:<39}|")
+        print(f"|  All {len(picks)} debates run in parallel (max 3)       |")
         print(f"+----------------------------------------------+")
 
-    # Phase 3 — full 5-agent debate for each pick
-    discoveries: list[dict] = []
+    # Phase 3 — parallel debates (max 3 concurrent)
     out_dir = Path("output/scouts")
     out_dir.mkdir(parents=True, exist_ok=True)
+    sem = asyncio.Semaphore(3)
 
-    for pick in picks[:max_tickers]:
-        ticker = pick["ticker"]
-        lens   = pick.get("lens", "")
+    async def _debate_one(pick: dict) -> dict | None:
+        ticker    = pick["ticker"].upper()
+        lens      = pick.get("lens", "")
         rationale = pick.get("rationale", "")
+        async with sem:
+            try:
+                if verbose:
+                    print(f"\n  [scout] Analyzing {ticker} ({lens})...")
+                    if rationale:
+                        print(f"          Gemma rationale: {rationale[:100]}")
 
-        if verbose:
-            print(f"\n  [scout] Analyzing {ticker} ({lens})...")
-            if rationale:
-                print(f"          Gemma rationale: {rationale[:100]}")
+                dossier = await build_dossier(ticker, verbose=False)
+                result  = await run_debate(ticker, dossier, verbose=False)
 
-        try:
-            dossier = build_dossier(ticker, verbose=False)
-            result  = await run_debate(ticker, dossier, verbose=False)
+                score = result.get("consensus_score", 0)
+                grade = result.get("consensus_grade", "HOLD")
 
-            score = result.get("consensus_score", 0)
-            grade = result.get("consensus_grade", "HOLD")
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                out_path = out_dir / f"{ticker}_{ts}.json"
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump({"result": result, "dossier": dossier}, f, indent=2, default=str)
 
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            out_path = out_dir / f"{ticker}_{ts}.json"
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump({"result": result, "dossier": dossier}, f, indent=2, default=str)
+                if verbose:
+                    print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]"
+                          + (" ← BUY SIGNAL" if score >= BUY_THRESHOLD else ""))
 
-            if verbose:
-                print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]"
-                      + (" ← BUY SIGNAL" if score >= BUY_THRESHOLD else ""))
+                if score >= BUY_THRESHOLD:
+                    return {
+                        "ticker":           ticker,
+                        "score":            round(score, 2),
+                        "grade":            grade,
+                        "confidence":       result.get("confidence", ""),
+                        "thesis":           result.get("majority_thesis", ""),
+                        "key_swing_factor": result.get("key_swing_factor", ""),
+                        "scout_lens":       lens,
+                        "gemma_rationale":  rationale,
+                        "analyzed_at":      ts,
+                        "output_file":      str(out_path),
+                    }
+                return None
+            except Exception as e:
+                print(f"  [scout] {ticker} failed: {e}")
+                return None
 
-            if score >= BUY_THRESHOLD:
-                discoveries.append({
-                    "ticker":           ticker,
-                    "score":            round(score, 2),
-                    "grade":            grade,
-                    "confidence":       result.get("confidence", ""),
-                    "thesis":           result.get("majority_thesis", ""),
-                    "key_swing_factor": result.get("key_swing_factor", ""),
-                    "scout_lens":       lens,
-                    "gemma_rationale":  rationale,
-                    "analyzed_at":      ts,
-                    "output_file":      str(out_path),
-                })
-
-        except Exception as e:
-            print(f"  [scout] {ticker} failed: {e}")
+    results = await asyncio.gather(*[_debate_one(p) for p in picks])
+    discoveries = [r for r in results if r is not None]
 
     if verbose:
         print(f"\n  Scout complete: {len(discoveries)} BUY signal(s) "
