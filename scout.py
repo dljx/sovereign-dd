@@ -1,9 +1,9 @@
 """Scout mode — quantitative screener → Gemma triage → full debate.
 
 Every run:
-  1. All 7 screener calls fire simultaneously (cheap REST calls, different financial profiles)
-  2. One grounded Gemma call picks the 6 most interesting from the combined pool
-  3. Full 5-agent debate on those 6 picks — all run in parallel (max 3 concurrent)
+  1. All 7 screener calls fire simultaneously (Yahoo Finance free API, no key needed)
+  2. One grounded Gemma call picks the 12 most interesting from the combined pool
+  3. Full 5-agent debate on those 12 picks — all run in parallel (max 3 concurrent)
 """
 
 import asyncio
@@ -18,129 +18,99 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-FMP_KEY = os.getenv("FMP_API_KEY", "")
-FMP = "https://financialmodelingprep.com/api/v3"
-
 BUY_THRESHOLD = 7.0
+
+# Yahoo Finance predefined screener API — no key required
+YF_SCREENER_URL = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+YF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
 
 # ── Screener lens definitions ──────────────────────────────────────────────────
 
 SCREENER_LENSES: list[dict] = [
     {
         "name": "value",
-        "desc": "Mid-cap stocks that may be trading at discounts — low beta, moderate market cap, all sectors",
-        "params": {
-            "marketCapMoreThan": 300_000_000,
-            "marketCapLowerThan": 15_000_000_000,
-            "betaLowerThan": 1.1,
-            "volumeMoreThan": 100_000,
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 40,
-        },
+        "desc": "Large-cap undervalued stocks — low P/E, strong fundamentals",
+        "scrId": "undervalued_large_caps",
+        "count": 50,
     },
     {
         "name": "growth",
-        "desc": "Technology, healthcare, and communication services companies with meaningful scale",
-        "params": {
-            "marketCapMoreThan": 500_000_000,
-            "marketCapLowerThan": 50_000_000_000,
-            "volumeMoreThan": 300_000,
-            "sector": "Technology",
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 30,
-        },
+        "desc": "Technology growth stocks with strong revenue momentum",
+        "scrId": "growth_technology_stocks",
+        "count": 50,
     },
     {
         "name": "momentum",
-        "desc": "Higher-beta, high-volume names where price action may be accelerating",
-        "params": {
-            "marketCapMoreThan": 1_000_000_000,
-            "betaMoreThan": 0.9,
-            "volumeMoreThan": 800_000,
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 35,
-        },
+        "desc": "Most actively traded — high volume, momentum plays",
+        "scrId": "most_actives",
+        "count": 50,
     },
     {
         "name": "small_cap",
-        "desc": "Small-cap ($100M–$2B) stocks with enough liquidity — the hidden gem pool",
-        "params": {
-            "marketCapMoreThan": 100_000_000,
-            "marketCapLowerThan": 2_000_000_000,
-            "volumeMoreThan": 50_000,
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 50,
-        },
+        "desc": "Small-cap gainers — hidden gems with asymmetric upside",
+        "scrId": "small_cap_gainers",
+        "count": 50,
     },
     {
         "name": "contrarian",
-        "desc": "Mid-cap names that may have been oversold — moderately volatile, broad sector coverage",
-        "params": {
-            "marketCapMoreThan": 400_000_000,
-            "marketCapLowerThan": 25_000_000_000,
-            "betaMoreThan": 0.7,
-            "volumeMoreThan": 200_000,
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 35,
-        },
+        "desc": "Day losers — oversold names with potential reversal setups",
+        "scrId": "day_losers",
+        "count": 50,
     },
     {
         "name": "macro_tailwind",
-        "desc": "Industrials — cyclical and rate-sensitive",
-        "params": {
-            "marketCapMoreThan": 300_000_000,
-            "sector": "Industrials",
-            "volumeMoreThan": 150_000,
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 25,
-        },
+        "desc": "Undervalued growth — cyclical and macro-sensitive opportunities",
+        "scrId": "undervalued_growth_stocks",
+        "count": 50,
     },
     {
-        "name": "macro_tailwind",
-        "desc": "Energy sector — cyclical and rate-sensitive",
-        "params": {
-            "marketCapMoreThan": 300_000_000,
-            "sector": "Energy",
-            "volumeMoreThan": 150_000,
-            "isActivelyTrading": "true",
-            "exchange": "NYSE,NASDAQ",
-            "limit": 20,
-        },
+        "name": "momentum",
+        "desc": "Day gainers — strong price action with near-term catalysts",
+        "scrId": "day_gainers",
+        "count": 50,
     },
 ]
 
 
-# ── FMP helpers ────────────────────────────────────────────────────────────────
+# ── Yahoo Finance screener helpers ─────────────────────────────────────────────
 
-def _fmp_screen(lens: dict) -> tuple[dict, list[dict]]:
-    """Call FMP stock screener for one lens. Returns (lens, results)."""
-    if not FMP_KEY:
-        return lens, []
+def _yf_screen(lens: dict) -> tuple[dict, list[dict]]:
+    """Call Yahoo Finance predefined screener for one lens. Returns (lens, results)."""
     try:
         r = requests.get(
-            f"{FMP}/stock-screener",
-            params={"apikey": FMP_KEY, **lens["params"]},
+            YF_SCREENER_URL,
+            params={
+                "formatted": "false",
+                "scrIds": lens["scrId"],
+                "count": lens.get("count", 50),
+                "region": "US",
+                "lang": "en-US",
+            },
+            headers=YF_HEADERS,
             timeout=20,
         )
         if not r.ok:
+            print(f"  [scout] YF screener HTTP {r.status_code} ({lens['name']})")
             return lens, []
         data = r.json()
-        return lens, data if isinstance(data, list) else []
+        quotes = (
+            data.get("finance", {})
+                .get("result", [{}])[0]
+                .get("quotes", [])
+        )
+        return lens, quotes if isinstance(quotes, list) else []
     except Exception as e:
-        print(f"  [scout] FMP screener error ({lens['name']}): {e}")
+        print(f"  [scout] YF screener error ({lens['name']}): {e}")
         return lens, []
 
 
 async def _run_all_screeners(portfolio: set[str]) -> list[dict]:
     """Run all lenses in parallel. Returns deduplicated candidate list."""
     results = await asyncio.gather(*[
-        asyncio.to_thread(_fmp_screen, lens) for lens in SCREENER_LENSES
+        asyncio.to_thread(_yf_screen, lens) for lens in SCREENER_LENSES
     ])
 
     seen: set[str] = set()
@@ -148,21 +118,26 @@ async def _run_all_screeners(portfolio: set[str]) -> list[dict]:
 
     for lens, items in results:
         for item in items:
-            sym = item.get("symbol", "").upper().strip()
+            sym = (item.get("symbol") or "").upper().strip()
             if not sym or sym in seen or sym in portfolio:
                 continue
+            # Only plain US equity tickers (no ETFs like SPY, BRK.B, etc.)
             if not re.match(r'^[A-Z]{1,5}$', sym):
+                continue
+            # Skip very low market cap (< $100M) — too speculative for debates
+            mcap = item.get("marketCap") or 0
+            if mcap < 100_000_000:
                 continue
             seen.add(sym)
             candidates.append({
                 "ticker":   sym,
-                "name":     item.get("companyName", sym),
-                "sector":   item.get("sector", "—"),
-                "industry": item.get("industry", "—"),
-                "mcap_b":   round((item.get("marketCap") or 0) / 1e9, 2),
-                "price":    item.get("price", 0),
-                "beta":     item.get("beta", 0),
-                "volume":   item.get("volume", 0),
+                "name":     item.get("longName") or item.get("shortName") or sym,
+                "sector":   item.get("sector") or "—",
+                "industry": item.get("industry") or "—",
+                "mcap_b":   round(mcap / 1e9, 2),
+                "price":    item.get("regularMarketPrice") or item.get("ask") or 0,
+                "beta":     item.get("beta") or 0,
+                "volume":   item.get("regularMarketVolume") or 0,
                 "lens":     lens.get("name", ""),
             })
 
