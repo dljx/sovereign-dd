@@ -104,7 +104,7 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
 async def _run_scout(save: bool = False, notify: bool = False):
     from scout import run_scout
     portfolio = _portfolio_tickers() if os.getenv("PORTFOLIO_TICKERS") else []
-    discoveries = await run_scout(max_tickers=6, portfolio=portfolio, verbose=True)
+    discoveries = await run_scout(max_tickers=12, portfolio=portfolio, verbose=True)
 
     if notify:
         from notify import alert_scout_summary, alert_buy_signal, alert_dd_result

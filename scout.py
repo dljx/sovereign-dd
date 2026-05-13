@@ -205,8 +205,9 @@ def _build_triage_prompt(candidates: list[dict], portfolio: set[str]) -> str:
             f"{c['mcap_b']:<10.2f} {(c['beta'] or 0):<6.2f} {c['lens']:<12}"
         )
     lines += [
-        "\nSelect EXACTLY 6 tickers from this list that represent the best risk-adjusted "
-        "opportunities based on your web research. Prefer less-covered names with asymmetric upside.",
+        "\nSelect EXACTLY 12 tickers from this list that represent the best risk-adjusted "
+        "opportunities based on your web research. Prefer less-covered names with asymmetric upside. "
+        "Spread your picks across at least 3 different lenses so the output is diversified.",
         "\nReturn your answer as a JSON object with this exact structure:",
         '{"picks": [',
         '  {"ticker": "SYM", "lens": "value", "rationale": "one concise sentence why"},',
@@ -257,7 +258,7 @@ async def _triage_with_gemma(
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 async def run_scout(
-    max_tickers: int = 6,
+    max_tickers: int = 12,
     portfolio: list[str] | None = None,
     verbose: bool = True,
 ) -> list[dict]:
