@@ -25,6 +25,9 @@ _key_lock  = threading.Lock()       # thread-safe rotation for concurrent async 
 _clients: dict[str, genai.Client] = {}
 _model_ids: dict[str, str] = {}     # key -> verified model ID string
 
+_key_cooldowns: dict[str, float] = {}   # key -> unix timestamp when available again
+_cooldown_lock = threading.Lock()
+
 
 def _client() -> tuple[genai.Client, str]:
     """Return (client, api_key) for the next key in rotation. Thread-safe."""
@@ -33,6 +36,29 @@ def _client() -> tuple[genai.Client, str]:
     if key not in _clients:
         _clients[key] = genai.Client(api_key=key)
     return _clients[key], key
+
+
+def _client_for(key: str) -> genai.Client:
+    """Return (or create) a client for a specific key."""
+    if key not in _clients:
+        _clients[key] = genai.Client(api_key=key)
+    return _clients[key]
+
+
+def _pick_key() -> tuple[str, float]:
+    """Return (key, wait_secs) for the soonest-available key."""
+    now = time.time()
+    with _cooldown_lock:
+        best = min(_keys, key=lambda k: _key_cooldowns.get(k, 0.0))
+        wait = max(0.0, _key_cooldowns.get(best, 0.0) - now)
+        return best, wait
+
+
+def _cool_key(key: str, duration: float) -> None:
+    """Mark a key as rate-limited for duration seconds."""
+    with _cooldown_lock:
+        _key_cooldowns[key] = time.time() + duration
+    print(f"  [llm] key ...{key[-6:]} cooling for {duration:.0f}s")
 
 
 def _resolve_model(client: genai.Client, key: str, model: str) -> str:
@@ -66,6 +92,7 @@ def call_gemini(
     temperature: float = 0.3,
     max_retries: int = 12,
     grounding: bool = False,
+    api_key: str | None = None,
 ) -> str:
     """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation.
 
@@ -75,7 +102,11 @@ def call_gemini(
     last_err = None
     for attempt in range(max_retries):
         try:
-            client, key = _client()
+            if api_key is not None:
+                client = _client_for(api_key)
+                key = api_key
+            else:
+                client, key = _client()
             resolved = _resolve_model(client, key, model)
 
             config_kwargs: dict = dict(
@@ -130,14 +161,30 @@ async def call_gemini_async(
     max_retries: int = 12,
     grounding: bool = False,
 ) -> str:
-    """Async wrapper — acquires semaphore only while actively calling, releases during
-    retry sleeps so a rate-limited key never blocks other concurrent callers."""
+    """Async wrapper with per-key cooldown tracking to prevent thundering herd.
+
+    On each attempt:
+      1. _pick_key() selects the soonest-available key. If all keys are cooling,
+         sleeps until the best one is ready, plus a small per-caller jitter to
+         spread concurrent waiters.
+      2. Acquires the global semaphore only for the duration of the actual call,
+         so sleeping retries never hold a slot.
+      3. On 429: marks that specific key as cooling so other callers route around it.
+         On 5xx: brief sleep without cooling the key (not a quota issue).
+    """
     last_err = None
     for attempt in range(max_retries):
+        key, wait = _pick_key()
+        if wait > 0:
+            wait += random.uniform(0, 2)  # spread concurrent waiters
+            print(f"  [llm] all keys cooling, waiting {wait:.0f}s (attempt {attempt + 1})...")
+            await asyncio.sleep(wait)
+
+        server_err_wait = 0.0
         async with _semaphore():
             try:
                 return await asyncio.to_thread(
-                    call_gemini, system, user, model, temperature, 1, grounding
+                    call_gemini, system, user, model, temperature, 1, grounding, key
                 )
             except Exception as e:
                 last_err = e
@@ -148,10 +195,15 @@ async def call_gemini_async(
                 )
                 if not is_retryable or attempt == max_retries - 1:
                     raise
-        # Semaphore released — sleep without blocking other callers
-        wait = _jittered(min(2 ** (attempt + 1), 30))
-        print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait:.0f}s...")
-        await asyncio.sleep(wait)
+                if "429" in err_str or "quota" in err_str:
+                    _cool_key(key, _jittered(min(2 ** (attempt + 1), 30)))
+                else:
+                    server_err_wait = _jittered(min(2 ** (attempt + 1), 10))
+
+        if server_err_wait > 0:
+            print(f"  [llm] server error on attempt {attempt + 1}, retrying in {server_err_wait:.0f}s...")
+            await asyncio.sleep(server_err_wait)
+
     raise RuntimeError(f"LLM failed after {max_retries} attempts: {last_err}")
 
 def extract_json(text: str) -> dict | list:
