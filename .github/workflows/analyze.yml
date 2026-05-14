@@ -2,8 +2,8 @@ name: Sovereign DD
 
 on:
   schedule:
-    # 6:00 AM ET (UTC-4 DST / UTC-5 EST). Uses 10:00 UTC — correct during DST (Apr-Nov).
-    # During EST (Nov-Mar) this fires at 5:00 AM ET — still well before market open.
+    # 6:00 AM ET (UTC-4 DST / UTC-5 EST). Uses 10:00 UTC â€” correct during DST (Apr-Nov).
+    # During EST (Nov-Mar) this fires at 5:00 AM ET â€” still well before market open.
     - cron: "0 10 * * 1-5"
   workflow_dispatch:
     inputs:
@@ -44,6 +44,8 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
+          DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
+          SOVEREIGN_EYE_URL:  https://master.sovereign-eye.pages.dev
         run: |
           TICKER="${{ github.event.inputs.ticker }}"
           if [ -z "$TICKER" ]; then
