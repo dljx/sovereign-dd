@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -244,24 +245,70 @@ def _yf_financials(ticker: str) -> dict:
                 "income": [], "balance": [], "cashflow": []}
 
 
-def _simple_dcf(fcf: float | None, growth_rate: float = 0.08,
-                discount_rate: float = 0.10, terminal_multiple: float = 15,
-                years: int = 5, shares_out: int | None = None) -> float | None:
+SECTOR_TERMINAL = {
+    "Technology": 25, "Healthcare": 20, "Consumer Cyclical": 18,
+    "Communication Services": 20, "Financials": 12, "Industrials": 15,
+    "Energy": 10, "Utilities": 12, "Consumer Defensive": 16,
+    "Real Estate": 14, "Basic Materials": 12,
+}
+
+
+def _dynamic_dcf(
+    fcf: float | None,
+    income: list,
+    beta: float | None,
+    treasury_10y: float | None,
+    sector: str,
+    shares_out: int | None,
+) -> tuple[float | None, dict]:
+    """Dynamic DCF using revenue CAGR, CAPM discount rate, and sector-mapped terminal multiple.
+    Returns (iv_per_share, assumptions_dict).
+    """
     if not fcf or fcf <= 0:
-        return None
+        return None, {}
     try:
+        # Growth rate: revenue CAGR from income history, clamped to 2-25%
+        revenues = [yr.get("revenue") for yr in income if yr.get("revenue")]
+        if len(revenues) >= 2:
+            cagr = (revenues[0] / revenues[-1]) ** (1 / (len(revenues) - 1)) - 1
+            growth = max(0.02, min(float(cagr), 0.25))
+            rev_years = len(revenues)
+        else:
+            growth = 0.08
+            rev_years = 0
+
+        # Discount rate: CAPM (risk-free + beta × ERP), clamped to 7-20%
+        risk_free = (treasury_10y or 4.3) / 100
+        beta_val = max(beta, 0.5) if beta and beta > 0 else 1.0
+        discount = max(0.07, min(risk_free + beta_val * 0.055, 0.20))
+
+        # Terminal multiple: sector-mapped
+        terminal_mult = SECTOR_TERMINAL.get(sector, 15)
+
+        years = 5
         pv = 0.0
         cf = fcf
         for i in range(1, years + 1):
-            cf *= (1 + growth_rate)
-            pv += cf / (1 + discount_rate) ** i
-        terminal = cf * terminal_multiple / (1 + discount_rate) ** years
-        total_pv = pv + terminal
-        if shares_out and shares_out > 0:
-            return round(total_pv / shares_out, 2)
-        return round(total_pv, 0)
+            cf *= (1 + growth)
+            pv += cf / (1 + discount) ** i
+        terminal_val = cf * terminal_mult / (1 + discount) ** years
+        total_pv = pv + terminal_val
+
+        iv = (round(total_pv / shares_out, 2)
+              if shares_out and shares_out > 0
+              else round(total_pv, 0))
+
+        assumptions = {
+            "growth_rate_pct":    round(growth * 100, 1),
+            "discount_rate_pct":  round(discount * 100, 1),
+            "terminal_multiple":  terminal_mult,
+            "years":              years,
+            "method":             "revenue CAGR + CAPM",
+            "revenue_years_used": rev_years,
+        }
+        return iv, assumptions
     except Exception:
-        return None
+        return None, {}
 
 
 def _fetch_peer(peer_ticker: str) -> dict | None:
@@ -449,12 +496,20 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         cf_list = yf_fin.get("cashflow", [])
         if cf_list and cf_list[0].get("free_cash_flow"):
             fcf_val = cf_list[0]["free_cash_flow"]
-    shares_out   = yf_r.get("shares_out")
-    computed_dcf = _simple_dcf(fcf_val, shares_out=shares_out)
+    shares_out = yf_r.get("shares_out")
+    computed_dcf, dcf_assumptions = _dynamic_dcf(
+        fcf_val,
+        income=dossier["financials"].get("income", []),
+        beta=yf_r.get("beta"),
+        treasury_10y=macro.get("treasury_10y"),
+        sector=sector,
+        shares_out=shares_out,
+    )
 
     dossier["valuation"] = {
         "dcf_price":        fmp_dcf_price,
         "dcf_iv_per_share": computed_dcf,
+        "dcf_assumptions":  dcf_assumptions,
         "analyst_consensus": yf_analyst or {},
         "analyst_targets":   fmp_targets,
     }
@@ -499,9 +554,10 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     dossier["macro"] = macro
 
     # ── Batch 2: peer comps (needs sector from profile) — 4 peers in parallel ─
+    # Try Finnhub /stock/peers first (actual industry peers), fall back to sector defaults
     SECTOR_PEERS = {
         "Technology":              ["NVDA", "AMD", "INTC", "QCOM", "AVGO"],
-        "Energy":                  ["NEE", "EXC", "D", "SO", "AEP"],
+        "Energy":                  ["XOM", "CVX", "COP", "SLB", "EOG"],
         "Utilities":               ["NEE", "EXC", "D", "SO", "AEP"],
         "Financials":              ["JPM", "BAC", "GS", "MS", "C"],
         "Healthcare":              ["UNH", "CVS", "CI", "HUM", "ELV"],
@@ -512,7 +568,11 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         "Real Estate":             ["AMT", "PLD", "CCI", "EQIX", "PSA"],
         "Basic Materials":         ["LIN", "APD", "ECL", "SHW", "NEM"],
     }
-    peers = [p for p in SECTOR_PEERS.get(sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
+    fh_peers_raw = await asyncio.to_thread(_fh, "/stock/peers", {"symbol": ticker})
+    if isinstance(fh_peers_raw, list) and len(fh_peers_raw) > 1:
+        peers = [p for p in fh_peers_raw if p != ticker and re.match(r'^[A-Z]{1,5}$', p)][:4]
+    else:
+        peers = [p for p in SECTOR_PEERS.get(sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
     peer_results = await asyncio.gather(*[asyncio.to_thread(_fetch_peer, p) for p in peers])
     dossier["peer_comps"] = [r for r in peer_results if r]
 

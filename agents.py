@@ -16,7 +16,9 @@ Your mandate: find businesses trading below intrinsic value with durable competi
 You care deeply about: ROIC vs WACC spread, owner earnings, balance sheet fortress,
 management capital allocation, margin of safety, and earnings quality (cash conversion).
 You are skeptical of high-multiple stocks and growth stories without current profitability.
-You seek a margin of safety — you will NOT recommend a stock unless it trades at a discount to your conservative IV estimate.
+You seek a margin of safety — when a stock trades at a genuine discount to your conservative IV estimate,
+you assign high-conviction BUY or STRONG BUY ratings with enthusiasm. Great businesses at real discounts
+are rare and deserve your strongest endorsement. When stocks trade above IV, you score low.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
     "GrowthAlpha": """You are GrowthAlpha, a growth-oriented investor in the tradition of Peter Lynch and high-conviction growth managers.
@@ -53,8 +55,10 @@ Your mandate: assess whether this is the RIGHT TIME to own this stock given macr
 You care deeply about: interest rate sensitivity (duration, re-financing risk), sector cycle positioning,
 FX exposure, inflation pass-through ability, regulatory environment, energy/commodity input costs,
 geopolitical risk, and whether the macro backdrop is a tailwind or headwind.
-A great company can be a bad investment if macro is working against it.
-You calibrate your score to both company quality AND macro timing.
+Macro conditions create powerful tailwinds AND headwinds — your job is to assess BOTH directions equally.
+A mediocre business riding a multi-year sector tailwind can outperform a great business facing macro headwinds.
+When the macro setup is clearly favorable for this stock, score high with conviction. When macro is clearly
+adverse, score low. Symmetric assessment is your defining discipline.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 }
 
@@ -62,8 +66,8 @@ You ALWAYS output strict JSON only. No prose outside the JSON.""",
 SEARCH_QUERIES = {
     "ValueHunter": (
         "Search for {ticker} {name} intrinsic value DCF analysis, margin of safety, "
-        "balance sheet quality, earnings quality concerns, analyst price target downgrades, "
-        "and any valuation red flags or overvaluation warnings."
+        "balance sheet quality, earnings quality, insider buying activity, analyst upgrades, "
+        "undervaluation signals, as well as any overvaluation warnings or price target downgrades."
     ),
     "GrowthAlpha": (
         "Search for {ticker} {name} revenue growth catalysts, TAM expansion, new products "
@@ -78,12 +82,14 @@ SEARCH_QUERIES = {
     "RiskSentinel": (
         "Search for {ticker} {name} risks, lawsuits, regulatory investigations, SEC filings "
         "concerns, accounting irregularities, insider selling, debt problems, covenant risks, "
-        "and bear case arguments from short sellers."
+        "bear case arguments from short sellers, as well as management responses to key risks, "
+        "risk mitigants, and any resolution of previously flagged concerns."
     ),
     "MacroLens": (
         "Search for {ticker} {name} sector macro outlook, interest rate sensitivity, "
         "regulatory environment changes, commodity or energy input cost exposure, "
-        "geopolitical risks, and macro tailwinds or headwinds for this industry."
+        "geopolitical risks, macro headwinds, AND sector tailwinds, favorable policy changes, "
+        "and macro catalysts that could benefit this company or industry."
     ),
 }
 
@@ -136,8 +142,8 @@ Output ONLY this JSON (no other text):
 }}"""
 
 ROUND2_TEMPLATE = """You have completed your Round 1 assessment of {ticker} (your score: {my_score}).
-Now review ALL agents' Round 1 positions. Identify the agent whose view you most disagree with.
-Challenge them with your strongest factual counter-argument and pose one direct question they must answer.
+You are assigned to challenge **{target_agent}**. Review their position and construct your strongest
+factual counter-argument, citing specific numbers from the dossier or your web research.
 
 === ALL ROUND 1 ASSESSMENTS ===
 {all_r1_json}
@@ -147,10 +153,10 @@ Output ONLY this JSON:
 {{
   "agent": "{agent}",
   "round": "2-{loop}",
-  "target_agent": "<name of the agent you most disagree with>",
-  "disagreement_reason": "<why you fundamentally disagree with their assessment>",
+  "target_agent": "{target_agent}",
+  "disagreement_reason": "<why you fundamentally disagree with {target_agent}'s assessment>",
   "challenge": "<your strongest factual counter-argument, citing specific numbers>",
-  "direct_question": "<one specific question they must answer to defend their score>"
+  "direct_question": "<one specific question {target_agent} must answer to defend their score>"
 }}"""
 
 ROUND3_TEMPLATE = """You are in Rebuttal & Revised Score for {ticker} (debate loop {loop}).
@@ -272,6 +278,7 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
 
     val = dossier.get("valuation", {})
     summary["dcf_iv_per_share"]  = val.get("dcf_iv_per_share")
+    summary["dcf_assumptions"]   = val.get("dcf_assumptions") or {}
     summary["analyst_consensus"] = val.get("analyst_consensus") or {}
 
     slim["financials_summary"] = summary
@@ -288,11 +295,12 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
 
 
 def round2_prompt(agent: str, ticker: str, my_score: float,
-                  all_r1: list[dict], loop: int) -> tuple[str, str]:
+                  all_r1: list[dict], loop: int, target_agent: str = "") -> tuple[str, str]:
     return (
         SYSTEM_PROMPTS[agent],
         ROUND2_TEMPLATE.format(
             ticker=ticker, agent=agent, my_score=my_score, loop=loop,
+            target_agent=target_agent or "the agent with the most opposing view",
             all_r1_json=json.dumps(all_r1, indent=2),
         ),
     )

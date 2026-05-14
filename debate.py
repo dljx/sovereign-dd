@@ -44,18 +44,18 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -
         return agent, {"agent": agent, "score": 5.0, "grade": "HOLD", "thesis": "", "web_research": "", "_failed": True}
 
 
-async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: int) -> tuple[str, dict]:
+async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: int, target: str = "") -> tuple[str, dict]:
     """Cross-examination for one agent. Returns (agent, result)."""
     try:
-        sys_p, usr_p = round2_prompt(agent, ticker, scores[agent], all_r1, loop)
-        print(f"  [debate] R2-{loop} / {agent}...")
+        sys_p, usr_p = round2_prompt(agent, ticker, scores[agent], all_r1, loop, target)
+        print(f"  [debate] R2-{loop} / {agent} → challenges {target}...")
         text = await call_gemini_async(sys_p, usr_p)
         result = extract_json(text)
         result["agent"] = agent
         return agent, result
     except Exception as e:
         print(f"  [debate] {agent} failed in R2-{loop}: {e}")
-        return agent, {"agent": agent, "target_agent": "", "challenge": "", "_failed": True}
+        return agent, {"agent": agent, "target_agent": target, "challenge": "", "_failed": True}
 
 
 async def _r3_agent(
@@ -127,8 +127,19 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
             print(f"|  (5 agents running in parallel)              |")
             print(f"+----------------------------------------------+")
 
+        # Assign challenge targets by pairing opposites (sorted by score).
+        # This prevents pile-on: max 2 challenges per agent, bulls challenge bears.
+        _sorted = sorted(AGENTS, key=lambda a: scores[a])
+        r2_targets = {
+            _sorted[0]: _sorted[4],   # lowest score → challenges highest
+            _sorted[4]: _sorted[0],   # highest score → challenges lowest
+            _sorted[1]: _sorted[3],   # 2nd lowest → 2nd highest
+            _sorted[3]: _sorted[1],   # 2nd highest → 2nd lowest
+            _sorted[2]: _sorted[4],   # middle → highest (biggest disagreement)
+        }
+
         r2_pairs = await asyncio.gather(
-            *[_r2_agent(a, ticker, scores, all_r1, loop) for a in AGENTS]
+            *[_r2_agent(a, ticker, scores, all_r1, loop, r2_targets[a]) for a in AGENTS]
         )
         r2_results: dict[str, dict] = {a: r for a, r in r2_pairs}
         for _, r in r2_pairs:
