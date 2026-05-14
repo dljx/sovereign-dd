@@ -12,7 +12,7 @@ from agents import (
 from llm import call_gemini_async, extract_json
 from live_events import emit_live
 
-CONVERGENCE_THRESHOLD = 1.5
+CONVERGENCE_THRESHOLD = 2.5
 MAX_LOOPS = 3
 
 
@@ -163,6 +163,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
     # â”€â”€ DEBATE LOOPS â€” R2 + R3 in parallel per round â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     loops_run = 0
     r3_results: dict[str, dict] = {}
+    prev_spread: float | None = None
 
     for loop in range(1, MAX_LOOPS + 1):
         loops_run = loop
@@ -233,6 +234,10 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
             if verbose:
                 print(f"  OK Converged in {loop} loop(s).")
             break
+        elif prev_spread is not None and (prev_spread - spread) < 0.3:
+            if verbose:
+                print(f"  ! Stalled ({prev_spread:.2f} -> {spread:.2f}), escalating to moderator early.")
+            break
         elif loop < MAX_LOOPS:
             if verbose:
                 print(f"  X Not converged -- running loop {loop + 1}...")
@@ -246,6 +251,8 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
                 }
                 for a in AGENTS
             ]
+
+        prev_spread = spread
 
     # â”€â”€ CONSENSUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if verbose:
