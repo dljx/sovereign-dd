@@ -1,4 +1,4 @@
-"""LLM wrapper — Gemma 4 31B, key rotation, auto model-ID detection, grounding, JSON extraction."""
+"""LLM wrapper â€” Gemma 4 31B, key rotation, auto model-ID detection, grounding, JSON extraction."""
 
 import asyncio
 import json
@@ -55,7 +55,7 @@ def _resolve_model(client: genai.Client, key: str, model: str) -> str:
 
 
 def _jittered(base: float) -> float:
-    """Add ±25% jitter to a backoff delay to desynchronise concurrent retries."""
+    """Add Â±25% jitter to a backoff delay to desynchronise concurrent retries."""
     return base * (0.75 + random.random() * 0.5)
 
 
@@ -69,8 +69,8 @@ def call_gemini(
 ) -> str:
     """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation.
 
-    Backoff caps at 120 s (with ±25% jitter) so the retry window covers ~15 min
-    of API-wide instability — enough to outlast most Gemma outages.
+    Backoff caps at 120 s (with Â±25% jitter) so the retry window covers ~15 min
+    of API-wide instability â€” enough to outlast most Gemma outages.
     """
     last_err = None
     for attempt in range(max_retries):
@@ -130,13 +130,29 @@ async def call_gemini_async(
     max_retries: int = 12,
     grounding: bool = False,
 ) -> str:
-    """Async wrapper — throttles to len(keys) concurrent calls so no key is overloaded.
-    Key rotation is thread-safe so each concurrent call gets a different key."""
-    async with _semaphore():
-        return await asyncio.to_thread(
-            call_gemini, system, user, model, temperature, max_retries, grounding
-        )
-
+    """Async wrapper — acquires semaphore only while actively calling, releases during
+    retry sleeps so a rate-limited key never blocks other concurrent callers."""
+    last_err = None
+    for attempt in range(max_retries):
+        async with _semaphore():
+            try:
+                return await asyncio.to_thread(
+                    call_gemini, system, user, model, temperature, 1, grounding
+                )
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                is_retryable = (
+                    "429" in err_str or "quota" in err_str
+                    or "503" in err_str or "500" in err_str or "502" in err_str
+                )
+                if not is_retryable or attempt == max_retries - 1:
+                    raise
+        # Semaphore released — sleep without blocking other callers
+        wait = _jittered(min(2 ** (attempt + 2), 120))
+        print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait:.0f}s...")
+        await asyncio.sleep(wait)
+    raise RuntimeError(f"LLM failed after {max_retries} attempts: {last_err}")
 
 def extract_json(text: str) -> dict | list:
     """Extract the first JSON object or array from a text response."""
