@@ -1,8 +1,6 @@
-"""Debate orchestrator — async parallel rounds, grounded R1, dynamic convergence, synthesis or moderator."""
+"""Debate orchestrator â€” async parallel rounds, grounded R1, dynamic convergence, synthesis or moderator."""
 
 import asyncio
-import os
-import time
 from statistics import mean
 
 import requests
@@ -12,32 +10,10 @@ from agents import (
     round2_prompt, round3_prompt, synthesis_prompt,
 )
 from llm import call_gemini_async, extract_json
+from live_events import emit_live
 
 CONVERGENCE_THRESHOLD = 1.5
 MAX_LOOPS = 3
-
-_LIVE_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
-_LIVE_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
-
-
-async def emit_live(ticker: str, event: dict) -> None:
-    """Fire-and-forget: POST a single live debate event to sovereign-eye KV.
-    Non-blocking — failures are silently swallowed so they never stall the debate."""
-    if not _LIVE_SECRET:
-        return
-    event["ts"] = time.time()
-    payload = {"ticker": ticker, "event": event}
-    headers = {"Authorization": f"Bearer {_LIVE_SECRET}", "Content-Type": "application/json"}
-    try:
-        await asyncio.to_thread(
-            requests.post,
-            f"{_LIVE_URL}/api/dd/live",
-            json=payload,
-            headers=headers,
-            timeout=8,
-        )
-    except Exception:
-        pass
 
 
 def _grade(score: float) -> str:
@@ -48,7 +24,7 @@ def _grade(score: float) -> str:
     return "STRONG SELL"
 
 
-# ── Per-agent async helpers ────────────────────────────────────────────────────
+# â”€â”€ Per-agent async helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
     """Run grounded research then scored analysis for one agent. Returns (agent, result)."""
@@ -70,7 +46,7 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -
 
 
 async def _r1_emit(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
-    """Wraps _r1_agent — emits R1_SCORE live event as soon as this agent completes."""
+    """Wraps _r1_agent â€” emits R1_SCORE live event as soon as this agent completes."""
     pair = await _r1_agent(agent, ticker, dossier, company_name)
     await emit_live(ticker, {
         "type": "R1_SCORE",
@@ -95,7 +71,7 @@ async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: i
 
 
 async def _r2_emit(agent: str, ticker: str, scores: dict, all_r1: list, loop: int, target: str = "") -> tuple[str, dict]:
-    """Wraps _r2_agent — emits R2_CHALLENGE live event as soon as this agent completes."""
+    """Wraps _r2_agent â€” emits R2_CHALLENGE live event as soon as this agent completes."""
     pair = await _r2_agent(agent, ticker, scores, all_r1, loop, target)
     await emit_live(ticker, {
         "type": "R2_CHALLENGE",
@@ -129,7 +105,7 @@ async def _r3_emit(
     agent: str, ticker: str, scores: dict,
     r2_results: dict, all_r2: list, loop: int,
 ) -> tuple[str, dict]:
-    """Wraps _r3_agent — emits R3_DELTA live event as soon as this agent completes."""
+    """Wraps _r3_agent â€” emits R3_DELTA live event as soon as this agent completes."""
     pair = await _r3_agent(agent, ticker, scores, r2_results, all_r2, loop)
     prev    = scores.get(pair[0], 5.0)
     revised = float(pair[1].get("revised_score", prev))
@@ -144,7 +120,7 @@ async def _r3_emit(
     return pair
 
 
-# ── Main async orchestrator ────────────────────────────────────────────────────
+# â”€â”€ Main async orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
     """Run the full debate asynchronously. Returns the final consensus dict."""
@@ -154,7 +130,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
     # Signal to frontend that the debate has started
     await emit_live(ticker, {"type": "START"})
 
-    # ── ROUND 1 — All 5 agents in parallel (each: research -> analysis) ─────────
+    # â”€â”€ ROUND 1 â€” All 5 agents in parallel (each: research -> analysis) â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if verbose:
         print("\n+----------------------------------------------+")
         print("|  ROUND 1 -- Grounded Research & Assessment   |")
@@ -184,7 +160,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
     scores_r1 = dict(scores)
     all_r1    = list(r1_results.values())
 
-    # ── DEBATE LOOPS — R2 + R3 in parallel per round ──────────────────────────
+    # â”€â”€ DEBATE LOOPS â€” R2 + R3 in parallel per round â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     loops_run = 0
     r3_results: dict[str, dict] = {}
 
@@ -271,7 +247,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
                 for a in AGENTS
             ]
 
-    # ── CONSENSUS ──────────────────────────────────────────────────────────────
+    # â”€â”€ CONSENSUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if verbose:
         print(f"\n+----------------------------------------------+")
         print(f"|  CONSENSUS                                    |")
