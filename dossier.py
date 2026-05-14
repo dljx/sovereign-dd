@@ -42,18 +42,26 @@ _macro_async_lock: asyncio.Lock | None = None
 # â”€â”€ Sync HTTP helpers (run inside asyncio.to_thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _fh(path: str, params: dict = None) -> dict | list:
-    p = {"token": FINNHUB_KEY, **(params or {})}
-    r = requests.get(f"{FH}{path}", params=p, timeout=15)
-    if r.status_code == 429:
-        time.sleep(5)
+    try:
+        p = {"token": FINNHUB_KEY, **(params or {})}
         r = requests.get(f"{FH}{path}", params=p, timeout=15)
-    return r.json() if r.ok else {}
+        if r.status_code == 429:
+            time.sleep(5)
+            r = requests.get(f"{FH}{path}", params=p, timeout=15)
+        return r.json() if r.ok else {}
+    except requests.exceptions.RequestException as e:
+        print(f"  [dossier] Finnhub {path} failed: {e}")
+        return {}
 
 
 def _fmp(path: str, params: dict = None) -> dict | list:
-    p = {"apikey": FMP_KEY, **(params or {})}
-    r = requests.get(f"{FMP}{path}", params=p, timeout=15)
-    return r.json() if r.ok else {}
+    try:
+        p = {"apikey": FMP_KEY, **(params or {})}
+        r = requests.get(f"{FMP}{path}", params=p, timeout=15)
+        return r.json() if r.ok else {}
+    except requests.exceptions.RequestException as e:
+        print(f"  [dossier] FMP {path} failed: {e}")
+        return {}
 
 
 def _fred(series: str) -> float | None:
@@ -91,12 +99,16 @@ def _av(function: str, params: dict = None) -> dict:
     global _av_idx
     if not _av_keys:
         return {}
-    with _av_lock:
-        key = _av_keys[_av_idx % len(_av_keys)]
-        _av_idx += 1
-    p = {"function": function, "apikey": key, **(params or {})}
-    r = requests.get("https://www.alphavantage.co/query", params=p, timeout=15)
-    return r.json() if r.ok else {}
+    try:
+        with _av_lock:
+            key = _av_keys[_av_idx % len(_av_keys)]
+            _av_idx += 1
+        p = {"function": function, "apikey": key, **(params or {})}
+        r = requests.get("https://www.alphavantage.co/query", params=p, timeout=15)
+        return r.json() if r.ok else {}
+    except requests.exceptions.RequestException as e:
+        print(f"  [dossier] AlphaVantage {function} failed: {e}")
+        return {}
 
 
 def _get_vix() -> float | None:
