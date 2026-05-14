@@ -96,12 +96,12 @@ def call_gemini(
             last_err = e
             err_str = str(e).lower()
             if "429" in err_str or "quota" in err_str or "503" in err_str:
-                wait = _jittered(min(2 ** (attempt + 2), 120))
+                wait = _jittered(min(2 ** (attempt + 1), 30))
                 print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait:.0f}s...")
                 time.sleep(wait)
             elif "500" in err_str or "502" in err_str:
                 if attempt < max_retries - 1:
-                    wait = _jittered(min(2 ** (attempt + 1), 120))
+                    wait = _jittered(min(2 ** (attempt + 1), 30))
                     print(f"  [llm] server error on attempt {attempt + 1}, retrying in {wait:.0f}s...")
                     time.sleep(wait)
                 else:
@@ -149,7 +149,7 @@ async def call_gemini_async(
                 if not is_retryable or attempt == max_retries - 1:
                     raise
         # Semaphore released — sleep without blocking other callers
-        wait = _jittered(min(2 ** (attempt + 2), 120))
+        wait = _jittered(min(2 ** (attempt + 1), 30))
         print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait:.0f}s...")
         await asyncio.sleep(wait)
     raise RuntimeError(f"LLM failed after {max_retries} attempts: {last_err}")
