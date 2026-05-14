@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -53,15 +54,24 @@ def _resolve_model(client: genai.Client, key: str, model: str) -> str:
     return model
 
 
+def _jittered(base: float) -> float:
+    """Add ±25% jitter to a backoff delay to desynchronise concurrent retries."""
+    return base * (0.75 + random.random() * 0.5)
+
+
 def call_gemini(
     system: str,
     user: str,
     model: str = "gemma-4-31b-it",
     temperature: float = 0.3,
-    max_retries: int = 8,
+    max_retries: int = 12,
     grounding: bool = False,
 ) -> str:
-    """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation."""
+    """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation.
+
+    Backoff caps at 120 s (with ±25% jitter) so the retry window covers ~15 min
+    of API-wide instability — enough to outlast most Gemma outages.
+    """
     last_err = None
     for attempt in range(max_retries):
         try:
@@ -86,13 +96,16 @@ def call_gemini(
             last_err = e
             err_str = str(e).lower()
             if "429" in err_str or "quota" in err_str or "503" in err_str:
-                wait = min(2 ** (attempt + 2), 60)
-                print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait}s...")
+                wait = _jittered(min(2 ** (attempt + 2), 120))
+                print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait:.0f}s...")
                 time.sleep(wait)
-            elif "500" in err_str and attempt < max_retries - 1:
-                wait = min(2 ** (attempt + 1), 30)
-                print(f"  [llm] server error on attempt {attempt + 1}, retrying in {wait}s...")
-                time.sleep(wait)
+            elif "500" in err_str or "502" in err_str:
+                if attempt < max_retries - 1:
+                    wait = _jittered(min(2 ** (attempt + 1), 120))
+                    print(f"  [llm] server error on attempt {attempt + 1}, retrying in {wait:.0f}s...")
+                    time.sleep(wait)
+                else:
+                    raise
             else:
                 raise
     raise RuntimeError(f"LLM failed after {max_retries} attempts: {last_err}")
@@ -114,7 +127,7 @@ async def call_gemini_async(
     user: str,
     model: str = "gemma-4-31b-it",
     temperature: float = 0.3,
-    max_retries: int = 8,
+    max_retries: int = 12,
     grounding: bool = False,
 ) -> str:
     """Async wrapper — throttles to len(keys) concurrent calls so no key is overloaded.

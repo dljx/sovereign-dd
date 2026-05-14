@@ -25,29 +25,37 @@ def _grade(score: float) -> str:
 
 async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
     """Run grounded research then scored analysis for one agent. Returns (agent, result)."""
-    # Phase A — grounded web research
-    sys_r, usr_r = research_prompt(agent, ticker, company_name)
-    print(f"  [debate] R1-research / {agent}...")
-    web_summary = await call_gemini_async(sys_r, usr_r, grounding=True)
+    try:
+        # Phase A — grounded web research
+        sys_r, usr_r = research_prompt(agent, ticker, company_name)
+        print(f"  [debate] R1-research / {agent}...")
+        web_summary = await call_gemini_async(sys_r, usr_r, grounding=True)
 
-    # Phase B — structured analysis with dossier + research
-    sys_p, usr_p = round1_prompt(agent, ticker, dossier, web_summary)
-    print(f"  [debate] R1-analysis / {agent}...")
-    text = await call_gemini_async(sys_p, usr_p)
-    result = extract_json(text)
-    result["agent"] = agent
-    result["web_research"] = web_summary
-    return agent, result
+        # Phase B — structured analysis with dossier + research
+        sys_p, usr_p = round1_prompt(agent, ticker, dossier, web_summary)
+        print(f"  [debate] R1-analysis / {agent}...")
+        text = await call_gemini_async(sys_p, usr_p)
+        result = extract_json(text)
+        result["agent"] = agent
+        result["web_research"] = web_summary
+        return agent, result
+    except Exception as e:
+        print(f"  [debate] {agent} failed in R1: {e}")
+        return agent, {"agent": agent, "score": 5.0, "grade": "HOLD", "thesis": "", "web_research": "", "_failed": True}
 
 
 async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: int) -> tuple[str, dict]:
     """Cross-examination for one agent. Returns (agent, result)."""
-    sys_p, usr_p = round2_prompt(agent, ticker, scores[agent], all_r1, loop)
-    print(f"  [debate] R2-{loop} / {agent}...")
-    text = await call_gemini_async(sys_p, usr_p)
-    result = extract_json(text)
-    result["agent"] = agent
-    return agent, result
+    try:
+        sys_p, usr_p = round2_prompt(agent, ticker, scores[agent], all_r1, loop)
+        print(f"  [debate] R2-{loop} / {agent}...")
+        text = await call_gemini_async(sys_p, usr_p)
+        result = extract_json(text)
+        result["agent"] = agent
+        return agent, result
+    except Exception as e:
+        print(f"  [debate] {agent} failed in R2-{loop}: {e}")
+        return agent, {"agent": agent, "target_agent": "", "challenge": "", "_failed": True}
 
 
 async def _r3_agent(
@@ -55,13 +63,17 @@ async def _r3_agent(
     r2_results: dict, all_r2: list, loop: int,
 ) -> tuple[str, dict]:
     """Rebuttal & revised score for one agent. Returns (agent, result)."""
-    challenges = [r for r in r2_results.values() if r.get("target_agent") == agent]
-    sys_p, usr_p = round3_prompt(agent, ticker, scores[agent], challenges, all_r2, loop)
-    print(f"  [debate] R3-{loop} / {agent}...")
-    text = await call_gemini_async(sys_p, usr_p)
-    result = extract_json(text)
-    result["agent"] = agent
-    return agent, result
+    try:
+        challenges = [r for r in r2_results.values() if r.get("target_agent") == agent]
+        sys_p, usr_p = round3_prompt(agent, ticker, scores[agent], challenges, all_r2, loop)
+        print(f"  [debate] R3-{loop} / {agent}...")
+        text = await call_gemini_async(sys_p, usr_p)
+        result = extract_json(text)
+        result["agent"] = agent
+        return agent, result
+    except Exception as e:
+        print(f"  [debate] {agent} failed in R3-{loop}: {e}")
+        return agent, {"agent": agent, "revised_score": scores.get(agent, 5.0), "final_thesis": "", "_failed": True}
 
 
 # ── Main async orchestrator ────────────────────────────────────────────────────

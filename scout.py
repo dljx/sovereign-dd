@@ -288,10 +288,10 @@ async def run_scout(
         print(f"|  All {len(picks)} debates run in parallel (max 3)       |")
         print(f"+----------------------------------------------+")
 
-    # Phase 3 — parallel debates (max 3 concurrent)
+    # Phase 3 — parallel debates (max 4 concurrent — matches number of API keys)
     out_dir = Path("output/scouts")
     out_dir.mkdir(parents=True, exist_ok=True)
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(4)
 
     async def _debate_one(pick: dict) -> dict | None:
         ticker    = pick["ticker"].upper()
