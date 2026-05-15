@@ -239,7 +239,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             if verbose:
                 print(f"  OK Converged in {loop} loop(s).")
             break
-        elif prev_spread is not None and (prev_spread - spread) < 0.3:
+        elif prev_spread is not None and (prev_spread - spread) < 0.1:
             if verbose:
                 print(f"  ! Stalled ({prev_spread:.2f} -> {spread:.2f}), escalating to moderator early.")
             break

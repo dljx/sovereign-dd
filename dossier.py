@@ -48,7 +48,8 @@ def _fh(path: str, params: dict = None) -> dict | list:
         p = {"token": FINNHUB_KEY, **(params or {})}
         r = requests.get(f"{FH}{path}", params=p, timeout=15)
         if r.status_code == 429:
-            time.sleep(5)
+            import random
+            time.sleep(5 + random.uniform(0, 3))
             r = requests.get(f"{FH}{path}", params=p, timeout=15)
         return r.json() if r.ok else {}
     except requests.exceptions.RequestException as e:
@@ -242,8 +243,7 @@ def _yf_financials(ticker: str) -> dict:
             bs = t.balance_sheet
             if bs is not None and not bs.empty:
                 for col in bs.columns[:2]:
-                    def _bs(key):
-                        return int(bs.loc[key, col]) if key in bs.index and str(bs.loc[key, col]) != "nan" else None
+                    _bs = lambda key, c=col: int(bs.loc[key, c]) if key in bs.index and str(bs.loc[key, c]) != "nan" else None
                     balance.append({
                         "date": str(col.date()),
                         "total_assets": _bs("Total Assets"),
@@ -261,8 +261,7 @@ def _yf_financials(ticker: str) -> dict:
             cf = t.cashflow
             if cf is not None and not cf.empty:
                 for col in cf.columns[:2]:
-                    def _cf(key):
-                        return int(cf.loc[key, col]) if key in cf.index and str(cf.loc[key, col]) != "nan" else None
+                    _cf = lambda key, c=col: int(cf.loc[key, c]) if key in cf.index and str(cf.loc[key, c]) != "nan" else None
                     op = _cf("Operating Cash Flow") or _cf("Cash Flow From Continuing Operating Activities")
                     capex = _cf("Capital Expenditure")
                     fcf_val = (op + capex) if op and capex else None
