@@ -123,10 +123,11 @@ async def _r3_emit(
 
 # â”€â”€ Main async orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
+async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int | None = None) -> dict:
     """Run the full debate asynchronously. Returns the final consensus dict."""
     transcript: list[dict] = []
     company_name = dossier.get("profile", {}).get("name", ticker)
+    effective_max_loops = max_loops if max_loops is not None else MAX_LOOPS
 
     # Signal to frontend that the debate has started
     await emit_live(ticker, {"type": "START"})
@@ -166,7 +167,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
     r3_results: dict[str, dict] = {}
     prev_spread: float | None = None
 
-    for loop in range(1, MAX_LOOPS + 1):
+    for loop in range(1, effective_max_loops + 1):
         loops_run = loop
 
         if verbose:
@@ -242,7 +243,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
             if verbose:
                 print(f"  ! Stalled ({prev_spread:.2f} -> {spread:.2f}), escalating to moderator early.")
             break
-        elif loop < MAX_LOOPS:
+        elif loop < effective_max_loops:
             if verbose:
                 print(f"  X Not converged -- running loop {loop + 1}...")
             all_r1 = [
@@ -282,7 +283,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
         moderator_result.setdefault("confidence", "HIGH" if spread <= 1.0 else "MEDIUM")
     else:
         if verbose:
-            print(f"  [!] Did not converge after {MAX_LOOPS} loops (spread={spread:.2f}) -- calling moderator...")
+            print(f"  [!] Did not converge after {effective_max_loops} loops (spread={spread:.2f}) -- calling moderator...")
         sys_p, usr_p = moderator_prompt(ticker, transcript, loops_run, spread)
         print(f"  [debate] Moderator...")
         text = await call_gemini_async(sys_p, usr_p)

@@ -20,6 +20,38 @@ load_dotenv()
 
 BUY_THRESHOLD = 7.0
 
+# ── Continuous-mode knobs (override via env) ───────────────────────────────────
+SCOUT_HISTORY_FILE   = Path("output/scout_history.json")
+SCOUT_COOLDOWN_HOURS = int(os.getenv("SCOUT_COOLDOWN_HOURS", "24"))
+SCOUT_DEBATE_COUNT   = int(os.getenv("SCOUT_DEBATE_COUNT", "6"))
+SCOUT_MAX_LOOPS      = int(os.getenv("SCOUT_MAX_LOOPS", "3"))
+
+
+def _load_history() -> dict:
+    """Load {ticker: {ts, score, grade}} from disk. Returns {} if missing or corrupt."""
+    try:
+        if SCOUT_HISTORY_FILE.exists():
+            return json.loads(SCOUT_HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_history(history: dict) -> None:
+    """Persist scout history to disk."""
+    try:
+        SCOUT_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SCOUT_HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"  [scout] Warning: could not save history: {e}")
+
+
+def _recently_scouted(history: dict) -> set[str]:
+    """Return set of tickers analyzed within SCOUT_COOLDOWN_HOURS."""
+    cutoff = datetime.now(timezone.utc).timestamp() - SCOUT_COOLDOWN_HOURS * 3600
+    return {ticker for ticker, entry in history.items() if entry.get("ts", 0) >= cutoff}
+
+
 # Yahoo Finance predefined screener API — no key required
 YF_SCREENER_URL = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
 YF_HEADERS = {
@@ -107,8 +139,9 @@ def _yf_screen(lens: dict) -> tuple[dict, list[dict]]:
         return lens, []
 
 
-async def _run_all_screeners(portfolio: set[str]) -> list[dict]:
+async def _run_all_screeners(portfolio: set[str], exclude: set[str] | None = None) -> list[dict]:
     """Run all lenses in parallel. Returns deduplicated candidate list."""
+    skip = portfolio | (exclude or set())
     results = await asyncio.gather(*[
         asyncio.to_thread(_yf_screen, lens) for lens in SCREENER_LENSES
     ])
@@ -119,7 +152,7 @@ async def _run_all_screeners(portfolio: set[str]) -> list[dict]:
     for lens, items in results:
         for item in items:
             sym = (item.get("symbol") or "").upper().strip()
-            if not sym or sym in seen or sym in portfolio:
+            if not sym or sym in seen or sym in skip:
                 continue
             # Only plain US equity tickers (no ETFs like SPY, BRK.B, etc.)
             if not re.match(r'^[A-Z]{1,5}$', sym):
@@ -197,6 +230,7 @@ async def _triage_with_gemma(
     candidates: list[dict],
     portfolio: set[str],
     verbose: bool = True,
+    debate_count: int = 6,
 ) -> list[dict]:
     from llm import call_gemini_async, extract_json
 
@@ -222,11 +256,11 @@ async def _triage_with_gemma(
         ]
         if verbose:
             print(f"  [scout] Gemma selected: {[p['ticker'] for p in valid]}")
-        return valid[:6]
+        return valid[:debate_count]
     except Exception as e:
         print(f"  [scout] Triage parse error: {e}\n  Raw: {text[:300]}")
         import random
-        sample = random.sample(candidates, min(6, len(candidates)))
+        sample = random.sample(candidates, min(debate_count, len(candidates)))
         return [{"ticker": c["ticker"], "lens": c["lens"], "rationale": "fallback pick"} for c in sample]
 
 
@@ -240,8 +274,13 @@ async def run_scout(
     """
     Full scout pipeline:
       1. All screener lenses fire simultaneously
-      2. Gemma triage picks the 6 most interesting (grounded)
-      3. Full 5-agent debate on all picks in parallel (max 3 concurrent)
+      2. Gemma triage picks the N most interesting (grounded)
+      3. Full 5-agent debate on all picks in parallel (max 4 concurrent)
+
+    Configurable via env vars:
+      SCOUT_DEBATE_COUNT   — tickers to debate per run (default 6)
+      SCOUT_MAX_LOOPS      — max debate convergence loops (default 3)
+      SCOUT_COOLDOWN_HOURS — hours before re-analyzing a ticker (default 24)
 
     Returns list of BUY discovery dicts (score >= BUY_THRESHOLD only).
     """
@@ -250,6 +289,13 @@ async def run_scout(
 
     portfolio_set = {t.upper() for t in (portfolio or [])}
 
+    # Load dedup history — skip tickers analyzed within SCOUT_COOLDOWN_HOURS
+    history = _load_history()
+    recently = _recently_scouted(history)
+    if verbose and recently:
+        print(f"  [scout] Skipping {len(recently)} recently-analyzed ticker(s): "
+              f"{', '.join(sorted(recently))}")
+
     # Phase 1 — screeners (all lenses in parallel)
     if verbose:
         print(f"\n+----------------------------------------------+")
@@ -257,7 +303,7 @@ async def run_scout(
         print(f"|  Running all {len(SCREENER_LENSES)} lenses simultaneously...     |")
         print(f"+----------------------------------------------+")
 
-    candidates = await _run_all_screeners(portfolio_set)
+    candidates = await _run_all_screeners(portfolio_set, exclude=recently)
 
     if verbose:
         by_lens: dict[str, int] = {}
@@ -265,14 +311,17 @@ async def run_scout(
             by_lens[c["lens"]] = by_lens.get(c["lens"], 0) + 1
         for lens_name, count in by_lens.items():
             print(f"    {lens_name:<15} → {count} candidates")
-        print(f"  Total unique candidates: {len(candidates)}")
+        print(f"  Total unique candidates: {len(candidates)} (excluding {len(recently)} recently scouted)")
 
     if not candidates:
-        print("  [scout] No candidates — check FMP_API_KEY")
+        if verbose:
+            print("  [scout] No new candidates — all tickers within cooldown window")
         return []
 
     # Phase 2 — Gemma triage (one grounded call)
-    picks = await _triage_with_gemma(candidates, portfolio_set, verbose=verbose)
+    picks = await _triage_with_gemma(
+        candidates, portfolio_set, verbose=verbose, debate_count=SCOUT_DEBATE_COUNT
+    )
 
     if not picks:
         print("  [scout] Triage returned no picks")
@@ -285,13 +334,15 @@ async def run_scout(
         print(f"|  SOVEREIGN SCOUT — running debates           |")
         tickers_str = ", ".join(p["ticker"] for p in picks)
         print(f"|  Picks: {tickers_str:<39}|")
-        print(f"|  All {len(picks)} debates run in parallel (max 3)       |")
+        print(f"|  {len(picks)} debates · max {SCOUT_MAX_LOOPS} loop(s) · 4 concurrent     |")
         print(f"+----------------------------------------------+")
 
     # Phase 3 — parallel debates (max 4 concurrent — matches number of API keys)
     out_dir = Path("output/scouts")
     out_dir.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(4)
+    history_lock = asyncio.Lock()
+    history_updates: list[dict] = []
 
     async def _debate_one(pick: dict) -> dict | None:
         ticker    = pick["ticker"].upper()
@@ -305,7 +356,7 @@ async def run_scout(
                         print(f"          Gemma rationale: {rationale[:100]}")
 
                 dossier = await build_dossier(ticker, verbose=False)
-                result  = await run_debate(ticker, dossier, verbose=False)
+                result  = await run_debate(ticker, dossier, verbose=False, max_loops=SCOUT_MAX_LOOPS)
 
                 score = result.get("consensus_score", 0)
                 grade = result.get("consensus_grade", "HOLD")
@@ -318,6 +369,15 @@ async def run_scout(
                 if verbose:
                     print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]"
                           + (" ← BUY SIGNAL" if score >= BUY_THRESHOLD else ""))
+
+                # Record in history regardless of grade (prevents re-analysis in cooldown window)
+                async with history_lock:
+                    history_updates.append({
+                        "ticker": ticker,
+                        "ts":     datetime.now(timezone.utc).timestamp(),
+                        "score":  round(score, 2),
+                        "grade":  grade,
+                    })
 
                 if score >= BUY_THRESHOLD:
                     return {
@@ -340,8 +400,13 @@ async def run_scout(
     results = await asyncio.gather(*[_debate_one(p) for p in picks])
     discoveries = [r for r in results if r is not None]
 
+    # Persist history updates
+    for u in history_updates:
+        history[u["ticker"]] = {"ts": u["ts"], "score": u["score"], "grade": u["grade"]}
+    _save_history(history)
+
     if verbose:
         print(f"\n  Scout complete: {len(discoveries)} BUY signal(s) "
-              f"from {len(picks)} debated across all lenses")
+              f"from {len(picks)} debated · history now has {len(history)} ticker(s)")
 
     return discoveries

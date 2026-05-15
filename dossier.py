@@ -24,7 +24,9 @@ FH = "https://finnhub.io/api/v1"
 FMP = "https://financialmodelingprep.com/api/v3"
 
 _av_idx = 0
-_av_lock = threading.Lock()   # serialize AV key rotation across threads
+_av_lock = threading.Lock()      # serialize AV key rotation + rate-limit enforcement
+_av_last_call: float = 0.0       # timestamp of most recent AV request
+_AV_MIN_INTERVAL = 12.0          # seconds between calls (5 RPM limit = 1 per 12s)
 
 
 async def _fetch_and_emit(ticker: str, coro, source_name: str):
@@ -96,13 +98,18 @@ def _fred_cpi_yoy() -> float | None:
 
 
 def _av(function: str, params: dict = None) -> dict:
-    global _av_idx
+    global _av_idx, _av_last_call
     if not _av_keys:
         return {}
+    with _av_lock:
+        key = _av_keys[_av_idx % len(_av_keys)]
+        _av_idx += 1
+        # Enforce 5 RPM: sleep inside the lock so concurrent threads queue up
+        wait = _AV_MIN_INTERVAL - (time.time() - _av_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _av_last_call = time.time()
     try:
-        with _av_lock:
-            key = _av_keys[_av_idx % len(_av_keys)]
-            _av_idx += 1
         p = {"function": function, "apikey": key, **(params or {})}
         r = requests.get("https://www.alphavantage.co/query", params=p, timeout=15)
         return r.json() if r.ok else {}
@@ -120,7 +127,11 @@ def _get_vix() -> float | None:
 
 def _technicals(ticker: str) -> dict:
     try:
-        hist = yf.Ticker(ticker).history(period="1y")
+        try:
+            hist = yf.Ticker(ticker).history(period="1y")
+        except Exception:
+            time.sleep(5)
+            hist = yf.Ticker(ticker).history(period="1y")
         if hist.empty:
             return {}
         close = hist["Close"]
@@ -163,8 +174,13 @@ def _technicals(ticker: str) -> dict:
 
 def _yf_financials(ticker: str) -> dict:
     try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info or {}
+        except Exception:
+            time.sleep(5)
+            t = yf.Ticker(ticker)
+            info = t.info or {}
 
         def _pct(v):
             return round(v * 100, 2) if v is not None else None
