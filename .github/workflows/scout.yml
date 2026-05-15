@@ -2,9 +2,9 @@ name: Sovereign Scout (continuous)
 
 on:
   schedule:
-    # Every 15 min Mon-Fri, extended pre/post-market hours.
-    # ET (UTC-4 DST / UTC-5 EST) — 11:00-22:45 UTC covers ~7:00 AM - 6:45 PM ET (DST).
-    - cron: "*/15 11-22 * * 1-5"
+    # Every 15 min, 24/7. Dedup registry absorbs idle overnight runs cheaply
+    # (1 triage call when nothing new). Catches overnight catalysts before open.
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
 jobs:
