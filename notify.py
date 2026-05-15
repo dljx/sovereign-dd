@@ -36,7 +36,10 @@ def _send(message: str, topic_id: str = "") -> bool:
         "parse_mode": "HTML",
     }
     if topic_id:
-        payload["message_thread_id"] = int(topic_id)
+        try:
+            payload["message_thread_id"] = int(topic_id)
+        except ValueError:
+            print(f"  [notify] Invalid topic_id '{topic_id}' — sending to main chat")
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",

@@ -195,7 +195,7 @@ Bias toward less-covered names where genuine alpha exists. Avoid defaulting to h
 unless they have a specific, timely catalyst."""
 
 
-def _build_triage_prompt(candidates: list[dict], portfolio: set[str]) -> str:
+def _build_triage_prompt(candidates: list[dict], portfolio: set[str], debate_count: int = 12) -> str:
     lines = [
         f"Below is a pre-screened universe of {len(candidates)} US-listed stocks across "
         f"multiple investment lenses (value, growth, momentum, small_cap, contrarian, macro_tailwind).\n",
@@ -213,7 +213,7 @@ def _build_triage_prompt(candidates: list[dict], portfolio: set[str]) -> str:
             f"{c['mcap_b']:<10.2f} {(c['beta'] or 0):<6.2f} {c['lens']:<12}"
         )
     lines += [
-        "\nSelect EXACTLY 12 tickers from this list that represent the best risk-adjusted "
+        f"\nSelect EXACTLY {debate_count} tickers from this list that represent the best risk-adjusted "
         "opportunities based on your web research. Prefer less-covered names with asymmetric upside. "
         "Spread your picks across at least 3 different lenses so the output is diversified.",
         "\nReturn your answer as a JSON object with this exact structure:",
@@ -237,7 +237,7 @@ async def _triage_with_gemma(
     if not candidates:
         return []
 
-    prompt = _build_triage_prompt(candidates, portfolio)
+    prompt = _build_triage_prompt(candidates, portfolio, debate_count=debate_count)
 
     if verbose:
         print(f"  [scout] Triaging {len(candidates)} candidates with grounded Gemma...")
@@ -280,7 +280,7 @@ async def run_scout(
     Configurable via env vars:
       SCOUT_DEBATE_COUNT   — tickers to debate per run (default 6)
       SCOUT_MAX_LOOPS      — max debate convergence loops (default 3)
-      SCOUT_COOLDOWN_HOURS — hours before re-analyzing a ticker (default 24)
+      SCOUT_COOLDOWN_HOURS — hours before re-analyzing a ticker (default 48)
 
     Returns list of BUY discovery dicts (score >= BUY_THRESHOLD only).
     """
@@ -342,7 +342,6 @@ async def run_scout(
     out_dir.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(4)
     history_lock = asyncio.Lock()
-    history_updates: list[dict] = []
 
     async def _debate_one(pick: dict) -> dict | None:
         ticker    = pick["ticker"].upper()
@@ -371,13 +370,14 @@ async def run_scout(
                           + (" ← BUY SIGNAL" if score >= BUY_THRESHOLD else ""))
 
                 # Record in history regardless of grade (prevents re-analysis in cooldown window)
+                # Save immediately so a mid-run crash doesn't lose completed tickers
                 async with history_lock:
-                    history_updates.append({
-                        "ticker": ticker,
-                        "ts":     datetime.now(timezone.utc).timestamp(),
-                        "score":  round(score, 2),
-                        "grade":  grade,
-                    })
+                    history[ticker] = {
+                        "ts":    datetime.now(timezone.utc).timestamp(),
+                        "score": round(score, 2),
+                        "grade": grade,
+                    }
+                    _save_history(history)
 
                 if score >= BUY_THRESHOLD:
                     return {
@@ -401,11 +401,6 @@ async def run_scout(
 
     results = await asyncio.gather(*[_debate_one(p) for p in picks])
     discoveries = [r for r in results if r is not None]
-
-    # Persist history updates
-    for u in history_updates:
-        history[u["ticker"]] = {"ts": u["ts"], "score": u["score"], "grade": u["grade"]}
-    _save_history(history)
 
     if verbose:
         print(f"\n  Scout complete: {len(discoveries)} BUY signal(s) "

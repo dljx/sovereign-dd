@@ -38,7 +38,7 @@ async def _fetch_and_emit(ticker: str, coro, source_name: str):
 # Macro data (FRED + VIX) is identical for all tickers â€” fetch once per run
 _macro_cache: dict = {}
 _macro_fetched = False
-_macro_async_lock: asyncio.Lock | None = None
+_macro_async_lock = asyncio.Lock()
 
 
 # â”€â”€ Sync HTTP helpers (run inside asyncio.to_thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -382,9 +382,7 @@ def _latest_filing(ticker: str) -> dict:
 # â”€â”€ Async macro cache (fetched once per run, shared across all tickers) â”€â”€â”€â”€â”€â”€â”€
 
 async def _get_macro() -> dict:
-    global _macro_cache, _macro_fetched, _macro_async_lock
-    if _macro_async_lock is None:
-        _macro_async_lock = asyncio.Lock()
+    global _macro_cache, _macro_fetched
     async with _macro_async_lock:
         if _macro_fetched:
             return _macro_cache

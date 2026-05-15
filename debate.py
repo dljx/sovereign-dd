@@ -284,7 +284,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
     else:
         if verbose:
             print(f"  [!] Did not converge after {effective_max_loops} loops (spread={spread:.2f}) -- calling moderator...")
-        sys_p, usr_p = moderator_prompt(ticker, transcript, loops_run, spread)
+        sys_p, usr_p = moderator_prompt(ticker, transcript, loops_run, spread, threshold=CONVERGENCE_THRESHOLD)
         print(f"  [debate] Moderator...")
         text = await call_gemini_async(sys_p, usr_p)
         moderator_result = extract_json(text)

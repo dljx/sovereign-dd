@@ -219,7 +219,7 @@ Output ONLY this JSON:
 }}"""
 
 MODERATOR_TEMPLATE = """You are the Moderator. Five investment agents have debated {ticker}
-across {loops} debate loop(s) and scores have NOT converged (spread = {spread:.2f}, threshold = 1.5).
+across {loops} debate loop(s) and scores have NOT converged (spread = {spread:.2f}, threshold = {threshold:.1f}).
 Synthesize the full debate into a final consensus score. Give more weight to arguments backed by compelling evidence — whether quantitative metrics or well-supported qualitative analysis.
 Note any irreconcilable dissent clearly.
 
@@ -308,11 +308,10 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
 
 def round2_prompt(agent: str, ticker: str, my_score: float,
                   all_r1: list[dict], loop: int, target_agent: str = "") -> tuple[str, str]:
-    my_r1 = next((r for r in all_r1 if r.get("agent") == agent), {})
-    target_r1 = next((r for r in all_r1 if r.get("agent") == target_agent), {})
-    # Strip verbose web_research from cross-round context to reduce token count
-    for rec in (my_r1, target_r1):
-        rec.pop("web_research", None)
+    my_r1 = {k: v for k, v in next((r for r in all_r1 if r.get("agent") == agent), {}).items()
+              if k != "web_research"}
+    target_r1 = {k: v for k, v in next((r for r in all_r1 if r.get("agent") == target_agent), {}).items()
+                 if k != "web_research"}
     return (
         SYSTEM_PROMPTS[agent],
         ROUND2_TEMPLATE.format(
@@ -351,7 +350,7 @@ def synthesis_prompt(ticker: str, final_positions: list[dict]) -> tuple[str, str
 
 
 def moderator_prompt(ticker: str, transcript: list[dict],
-                     loops: int, spread: float) -> tuple[str, str]:
+                     loops: int, spread: float, threshold: float = 2.5) -> tuple[str, str]:
     system = ("You are a senior investment committee moderator. "
               "You synthesize multi-agent investment debates into final verdicts. "
               "You output strict JSON only.")
@@ -361,6 +360,7 @@ def moderator_prompt(ticker: str, transcript: list[dict],
             ticker=ticker,
             loops=loops,
             spread=spread,
+            threshold=threshold,
             transcript_json=json.dumps(transcript, indent=2),
         ),
     )
