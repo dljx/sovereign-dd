@@ -214,7 +214,8 @@ Output ONLY this JSON:
   "confidence": "<HIGH|MEDIUM|LOW>",
   "majority_thesis": "<2-3 sentence synthesis of the dominant view, citing the most compelling evidence>",
   "dissent": "<which agent(s) are furthest from consensus and why — or 'unanimous'>",
-  "key_swing_factor": "<the single data point or argument that most shaped the consensus>"
+  "key_swing_factor": "<the single data point or argument that most shaped the consensus>",
+  "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>"
 }}"""
 
 MODERATOR_TEMPLATE = """You are the Moderator. Five investment agents have debated {ticker}

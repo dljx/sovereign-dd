@@ -56,13 +56,18 @@ def alert_buy_signal(d: dict) -> bool:
     conf  = CONF_EMOJI.get(d.get("confidence", ""), "")
     lens      = d.get("scout_lens", "")
     rationale = d.get("gemma_rationale", "")
+    score_rat = d.get("score_rationale", "")
+    dissent   = d.get("dissent", "")
     lens_tag  = f" · <code>{lens}</code>" if lens else ""
+    # Prefer score_rationale (explicit penalty explanation); fall back to dissent
+    penalty = score_rat or dissent
     msg = (
         f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{lens_tag}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
         + (f"<b>Gemma flagged:</b> <i>{rationale[:180]}</i>\n" if rationale else "")
-        + f"\n<i>{d['thesis'][:350]}</i>\n\n"
-        f"<b>Key factor:</b> {d.get('key_swing_factor', '—')[:150]}\n"
+        + f"\n<b>Bull case:</b> <i>{d['thesis'][:300]}</i>\n\n"
+        + (f"<b>Why not higher:</b> <i>{penalty[:250]}</i>\n\n" if penalty else "")
+        + f"<b>Key factor:</b> {d.get('key_swing_factor', '—')[:150]}\n"
         f"⏰ {d['analyzed_at']}"
     )
     return _send(msg, TOPIC_TRADE_ALERTS)

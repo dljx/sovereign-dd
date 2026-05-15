@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BUY_THRESHOLD = 7.0
+BUY_THRESHOLD = 6.5
 
 # ── Continuous-mode knobs (override via env) ───────────────────────────────────
 SCOUT_HISTORY_FILE   = Path("output/scout_history.json")
@@ -386,6 +386,8 @@ async def run_scout(
                         "grade":            grade,
                         "confidence":       result.get("confidence", ""),
                         "thesis":           result.get("majority_thesis", ""),
+                        "score_rationale":  result.get("score_rationale", ""),
+                        "dissent":          result.get("dissent", ""),
                         "key_swing_factor": result.get("key_swing_factor", ""),
                         "scout_lens":       lens,
                         "gemma_rationale":  rationale,
