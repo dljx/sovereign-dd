@@ -27,6 +27,9 @@ You care deeply about: revenue growth rate and trajectory, gross margin expansio
 product-market fit signals, competitive positioning in large markets, and management's ability to reinvest at high rates.
 You are willing to pay a premium for genuine growth — but you distinguish real growth from financial engineering.
 You are optimistic by nature but not blind to unit economics or balance sheet risk.
+When growth metrics clearly demonstrate acceleration and improving unit economics,
+assign high-conviction BUY or STRONG BUY ratings with enthusiasm — genuine growth
+deserves recognition, not reflexive skepticism.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
     "QuantSignal": """You are QuantSignal, a systematic quantitative analyst.
@@ -47,7 +50,9 @@ regulatory/legal exposure, competitive disruption threats, insider selling patte
 customer concentration, and tail-risk scenarios.
 You are constructively skeptical — not permanently bearish, but you require compelling answers
 to every risk before allowing a high score.
-You score conservatively. If risks are unresolved, the score stays low.
+Score based on risk resolution — unresolved risks demand low scores, but well-mitigated risks
+should be reflected fairly. When a company has genuinely addressed key risks, your score must
+rise to acknowledge that reality.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
     "MacroLens": """You are MacroLens, a global macro strategist and sector rotation expert.
@@ -71,8 +76,9 @@ SEARCH_QUERIES = {
     ),
     "GrowthAlpha": (
         "Search for {ticker} {name} revenue growth catalysts, TAM expansion, new products "
-        "or market share wins, forward guidance upgrades, and analyst bullish commentary "
-        "on future growth prospects."
+        "or market share wins, forward guidance upgrades, analyst bullish commentary, "
+        "as well as risks to the growth thesis, competitive threats that could derail growth, "
+        "and bear case arguments that challenge the growth narrative."
     ),
     "QuantSignal": (
         "Search for {ticker} {name} technical analysis, momentum signals, short interest "
@@ -142,12 +148,17 @@ Output ONLY this JSON (no other text):
 }}"""
 
 ROUND2_TEMPLATE = """You have completed your Round 1 assessment of {ticker} (your score: {my_score}).
-You are assigned to challenge **{target_agent}**. Review their position and construct your strongest
-factual counter-argument, citing specific numbers from the dossier or your web research.
+You MUST challenge **{target_agent}** and NO ONE ELSE. This is your assigned debate opponent.
+Review their position and construct your strongest factual counter-argument, citing specific
+numbers from the dossier or your web research. Do not redirect your challenge to a different agent.
 
-=== ALL ROUND 1 ASSESSMENTS ===
-{all_r1_json}
-================================
+=== YOUR ROUND 1 POSITION ===
+{my_r1_json}
+==============================
+
+=== {target_agent}'s ROUND 1 POSITION (your opponent) ===
+{target_r1_json}
+======================================================
 
 Output ONLY this JSON:
 {{
@@ -208,7 +219,7 @@ Output ONLY this JSON:
 
 MODERATOR_TEMPLATE = """You are the Moderator. Five investment agents have debated {ticker}
 across {loops} debate loop(s) and scores have NOT converged (spread = {spread:.2f}, threshold = 1.5).
-Synthesize the full debate into a final consensus score. Give more weight to arguments backed by hard data.
+Synthesize the full debate into a final consensus score. Give more weight to arguments backed by compelling evidence — whether quantitative metrics or well-supported qualitative analysis.
 Note any irreconcilable dissent clearly.
 
 === FULL DEBATE TRANSCRIPT ===
@@ -296,12 +307,18 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
 
 def round2_prompt(agent: str, ticker: str, my_score: float,
                   all_r1: list[dict], loop: int, target_agent: str = "") -> tuple[str, str]:
+    my_r1 = next((r for r in all_r1 if r.get("agent") == agent), {})
+    target_r1 = next((r for r in all_r1 if r.get("agent") == target_agent), {})
+    # Strip verbose web_research from cross-round context to reduce token count
+    for rec in (my_r1, target_r1):
+        rec.pop("web_research", None)
     return (
         SYSTEM_PROMPTS[agent],
         ROUND2_TEMPLATE.format(
             ticker=ticker, agent=agent, my_score=my_score, loop=loop,
-            target_agent=target_agent or "the agent with the most opposing view",
-            all_r1_json=json.dumps(all_r1, indent=2),
+            target_agent=target_agent,
+            my_r1_json=json.dumps(my_r1, indent=2),
+            target_r1_json=json.dumps(target_r1, indent=2),
         ),
     )
 
