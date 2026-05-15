@@ -76,13 +76,17 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
     return results, index
 
 
-def collect_scout_results(scout_dir: Path) -> tuple[list, list]:
-    """Collect scout files written in the last 2 hours. Returns (results_list, discoveries_list)."""
+def collect_scout_results(scout_dir: Path) -> list:
+    """Collect BUY-signal scout files written in the last 2h. Returns discoveries_list only.
+
+    Individual scout:TICKER KV keys are intentionally NOT written — nothing in the dashboard
+    reads them and they consume ~12 of the 1,000 free-tier KV writes per run.
+    Only dd:scouts (the accumulated BUY list) is written via the payload 'scouts' field.
+    """
     if not scout_dir.exists():
         return [], []
 
     cutoff = time.time() - SCOUT_UPLOAD_WINDOW_SECS
-    results = []
     discoveries = []
 
     # Deduplicate by ticker — keep only the newest file per ticker
@@ -102,8 +106,6 @@ def collect_scout_results(scout_dir: Path) -> tuple[list, list]:
         score  = result.get("consensus_score", 0)
         grade  = result.get("consensus_grade", "?")
 
-        results.append({"key": f"scout:{ticker}", "value": data})
-
         if score >= BUY_THRESHOLD:
             discoveries.append({
                 "ticker":      ticker,
@@ -115,7 +117,7 @@ def collect_scout_results(scout_dir: Path) -> tuple[list, list]:
                 "analyzed_at": result.get("built_at", ""),
             })
 
-    return results, discoveries
+    return discoveries
 
 
 def main():
@@ -131,17 +133,15 @@ def main():
     print(f"  {len(portfolio_results)} ticker file(s) found")
 
     print("[upload] Collecting scout results (last 2h)...")
-    scout_results, discoveries = collect_scout_results(scout_dir)
-    print(f"  {len(scout_results)} scout file(s), {len(discoveries)} BUY signal(s)")
+    discoveries = collect_scout_results(scout_dir)
+    print(f"  {len(discoveries)} BUY signal(s)")
 
-    all_results = portfolio_results + scout_results
-
-    if not all_results and not index:
+    if not portfolio_results and not index and not discoveries:
         print("[upload] Nothing to upload.")
         return
 
     payload = {
-        "results": all_results,
+        "results": portfolio_results,
         "index":   index,
         "scouts":  discoveries if discoveries else None,
     }
@@ -149,7 +149,7 @@ def main():
     payload = _sanitize(payload)
 
     url = f"{UPLOAD_URL}/api/dd/upload"
-    print(f"\n[upload] POSTing {len(all_results)} keys to {url}...")
+    print(f"\n[upload] POSTing {len(portfolio_results)} portfolio key(s) + {len(discoveries)} scout BUY(s) to {url}...")
 
     try:
         r = requests.post(url, headers=HEADERS, json=payload, timeout=60)
