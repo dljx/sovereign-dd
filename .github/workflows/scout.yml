@@ -2,9 +2,9 @@ name: Sovereign Scout (continuous)
 
 on:
   schedule:
-    # Every 15 min during market hours Mon-Fri.
-    # ET (UTC-4 DST / UTC-5 EST) — using 13:00-20:45 UTC to cover 9:00 AM - 4:45 PM ET.
-    - cron: "*/15 13-20 * * 1-5"
+    # Every 15 min Mon-Fri, extended pre/post-market hours.
+    # ET (UTC-4 DST / UTC-5 EST) — 11:00-22:45 UTC covers ~7:00 AM - 6:45 PM ET (DST).
+    - cron: "*/15 11-22 * * 1-5"
   workflow_dispatch: {}
 
 jobs:
@@ -46,6 +46,7 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
+          SCOUT_DEBATE_COUNT: "12"
           SCOUT_COOLDOWN_HOURS: "8"
         run: python main.py --scout --save --notify
 
