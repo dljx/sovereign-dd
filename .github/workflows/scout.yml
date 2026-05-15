@@ -46,9 +46,6 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
-          # Continuous-mode: 3 debates per run, 1 convergence loop for speed
-          SCOUT_DEBATE_COUNT: "3"
-          SCOUT_MAX_LOOPS: "1"
           SCOUT_COOLDOWN_HOURS: "24"
         run: python main.py --scout --save --notify
 
