@@ -4,9 +4,26 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
+
+# Only upload scout files written in the last 2 hours — prevents re-uploading
+# the entire accumulated history on every run (each run adds 12 files; without
+# this filter the puts-per-upload grows unboundedly and blows the KV free tier).
+SCOUT_UPLOAD_WINDOW_SECS = 2 * 3600
+
+# Filenames to skip in output/ — not ticker results
+_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json"}
+
+UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
+UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
+
+HEADERS = {
+    "Authorization": f"Bearer {UPLOAD_SECRET}",
+    "Content-Type": "application/json",
+}
 
 
 def _sanitize(obj):
@@ -19,14 +36,6 @@ def _sanitize(obj):
         return [_sanitize(v) for v in obj]
     return obj
 
-UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
-UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
-
-HEADERS = {
-    "Authorization": f"Bearer {UPLOAD_SECRET}",
-    "Content-Type": "application/json",
-}
-
 
 def load_json(path: Path) -> dict | None:
     try:
@@ -38,16 +47,20 @@ def load_json(path: Path) -> dict | None:
 
 
 def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
-    """Collect all output/*.json files. Returns (results_list, index_dict)."""
+    """Collect output/*.json ticker result files. Returns (results_list, index_dict)."""
     results = []
     index = {}
 
     for path in sorted(output_dir.glob("*.json")):
+        if path.name in _SKIP_FILENAMES:
+            continue
         data = load_json(path)
         if not data:
             continue
         result = data.get("result", {})
-        ticker = result.get("ticker") or path.stem.split("_")[0].upper()
+        if not result.get("ticker"):
+            continue  # skip non-ticker files (e.g. history files)
+        ticker = result["ticker"]
         results.append({"key": f"dd:{ticker}", "value": data})
         index[ticker] = {
             "score":   result.get("consensus_score", 0),
@@ -62,25 +75,34 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
 
 
 def collect_scout_results(scout_dir: Path) -> tuple[list, list]:
-    """Collect scout/*.json files. Returns (results_list, discoveries_list)."""
+    """Collect scout files written in the last 2 hours. Returns (results_list, discoveries_list)."""
     if not scout_dir.exists():
         return [], []
 
+    cutoff = time.time() - SCOUT_UPLOAD_WINDOW_SECS
     results = []
     discoveries = []
 
-    for path in sorted(scout_dir.glob("*.json")):
+    # Deduplicate by ticker — keep only the newest file per ticker
+    latest: dict[str, Path] = {}
+    for path in scout_dir.glob("*.json"):
+        if path.stat().st_mtime < cutoff:
+            continue
+        ticker = path.stem.split("_")[0].upper()
+        if ticker not in latest or path.stat().st_mtime > latest[ticker].stat().st_mtime:
+            latest[ticker] = path
+
+    for ticker, path in sorted(latest.items()):
         data = load_json(path)
         if not data:
             continue
         result = data.get("result", {})
-        ticker = result.get("ticker") or path.stem.split("_")[0].upper()
         score  = result.get("consensus_score", 0)
         grade  = result.get("consensus_grade", "?")
 
         results.append({"key": f"scout:{ticker}", "value": data})
 
-        if score >= 7.0:
+        if score >= 6.5:
             discoveries.append({
                 "ticker":      ticker,
                 "score":       round(score, 2),
@@ -106,7 +128,7 @@ def main():
     portfolio_results, index = collect_portfolio_results(output_dir)
     print(f"  {len(portfolio_results)} ticker file(s) found")
 
-    print("[upload] Collecting scout results...")
+    print("[upload] Collecting scout results (last 2h)...")
     scout_results, discoveries = collect_scout_results(scout_dir)
     print(f"  {len(scout_results)} scout file(s), {len(discoveries)} BUY signal(s)")
 
