@@ -9,6 +9,8 @@ from pathlib import Path
 
 import requests
 
+from scout import BUY_THRESHOLD
+
 # Only upload scout files written in the last 2 hours — prevents re-uploading
 # the entire accumulated history on every run (each run adds 12 files; without
 # this filter the puts-per-upload grows unboundedly and blows the KV free tier).
@@ -102,7 +104,7 @@ def collect_scout_results(scout_dir: Path) -> tuple[list, list]:
 
         results.append({"key": f"scout:{ticker}", "value": data})
 
-        if score >= 6.5:
+        if score >= BUY_THRESHOLD:
             discoveries.append({
                 "ticker":      ticker,
                 "score":       round(score, 2),

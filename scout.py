@@ -22,7 +22,7 @@ BUY_THRESHOLD = 6.5
 
 # ── Continuous-mode knobs (override via env) ───────────────────────────────────
 SCOUT_HISTORY_FILE   = Path("output/scout_history.json")
-SCOUT_COOLDOWN_HOURS = int(os.getenv("SCOUT_COOLDOWN_HOURS", "24"))
+SCOUT_COOLDOWN_HOURS = int(os.getenv("SCOUT_COOLDOWN_HOURS", "48"))
 SCOUT_DEBATE_COUNT   = int(os.getenv("SCOUT_DEBATE_COUNT", "6"))
 SCOUT_MAX_LOOPS      = int(os.getenv("SCOUT_MAX_LOOPS", "3"))
 
@@ -99,7 +99,7 @@ SCREENER_LENSES: list[dict] = [
         "count": 50,
     },
     {
-        "name": "momentum",
+        "name": "breakout",
         "desc": "Day gainers — strong price action with near-term catalysts",
         "scrId": "day_gainers",
         "count": 50,
