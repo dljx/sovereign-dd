@@ -64,6 +64,7 @@ async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: i
         text = await call_gemini_async(sys_p, usr_p)
         result = extract_json(text)
         result["agent"] = agent
+        result["target_agent"] = target  # enforce assignment; prevent LLM from redirecting
         return agent, result
     except Exception as e:
         print(f"  [debate] {agent} failed in R2-{loop}: {e}")
@@ -175,12 +176,15 @@ async def run(ticker: str, dossier: dict, verbose: bool = True) -> dict:
             print(f"+----------------------------------------------+")
 
         _sorted = sorted(AGENTS, key=lambda a: scores[a])
+        _mean = sum(scores[a] for a in AGENTS) / len(AGENTS)
+        _bull_dist = scores[_sorted[4]] - _mean
+        _bear_dist = _mean - scores[_sorted[0]]
         r2_targets = {
             _sorted[0]: _sorted[4],
             _sorted[4]: _sorted[0],
             _sorted[1]: _sorted[3],
             _sorted[3]: _sorted[1],
-            _sorted[2]: _sorted[4],
+            _sorted[2]: _sorted[4] if _bull_dist >= _bear_dist else _sorted[0],
         }
 
         r2_pairs = await asyncio.gather(
