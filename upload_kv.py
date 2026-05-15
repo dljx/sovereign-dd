@@ -1,11 +1,23 @@
 """Upload sovereign-dd output JSONs to Sovereign Eye via the /api/dd/upload endpoint."""
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
 
 import requests
+
+
+def _sanitize(obj):
+    """Recursively replace NaN/inf floats with None so requests can serialize the payload."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
 UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
@@ -109,6 +121,8 @@ def main():
         "index":   index,
         "scouts":  discoveries if discoveries else None,
     }
+
+    payload = _sanitize(payload)
 
     url = f"{UPLOAD_URL}/api/dd/upload"
     print(f"\n[upload] POSTing {len(all_results)} keys to {url}...")
