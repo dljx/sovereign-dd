@@ -46,7 +46,7 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
-          SCOUT_COOLDOWN_HOURS: "24"
+          SCOUT_COOLDOWN_HOURS: "8"
         run: python main.py --scout --save --notify
 
       - name: Save scout history
