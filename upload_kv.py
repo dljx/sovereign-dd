@@ -29,13 +29,20 @@ HEADERS = {
 
 
 def _sanitize(obj):
-    """Recursively replace NaN/inf floats with None so requests can serialize the payload."""
-    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-        return None
+    """Recursively replace NaN/inf floats with None so requests can serialize the payload.
+
+    Uses a try/except around math.isnan so numpy.float64 (and other numeric subtypes
+    that aren't isinstance float in numpy 2.x) are handled correctly.
+    """
     if isinstance(obj, dict):
         return {k: _sanitize(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_sanitize(v) for v in obj]
+    try:
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+    except (TypeError, ValueError):
+        pass
     return obj
 
 

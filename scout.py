@@ -242,7 +242,12 @@ async def _triage_with_gemma(
     if verbose:
         print(f"  [scout] Triaging {len(candidates)} candidates with grounded Gemma...")
 
-    text = await call_gemini_async(TRIAGE_SYSTEM, prompt, grounding=True, temperature=0.3)
+    try:
+        text = await call_gemini_async(TRIAGE_SYSTEM, prompt, grounding=True, temperature=0.3)
+    except Exception as e:
+        print(f"  [scout] Triage LLM call failed: {e}")
+        print("  [scout] Gemma quota likely exhausted — skipping run to conserve budget")
+        return []
 
     try:
         parsed = extract_json(text)
@@ -397,6 +402,15 @@ async def run_scout(
                 return None
             except Exception as e:
                 print(f"  [scout] {ticker} failed: {e}")
+                # Mark in history so this ticker isn't re-queued until the cooldown expires.
+                # Prevents quota-exhausted tickers from being re-debated every run.
+                async with history_lock:
+                    history[ticker] = {
+                        "ts":    datetime.now(timezone.utc).timestamp(),
+                        "score": 0.0,
+                        "grade": "FAILED",
+                    }
+                    _save_history(history)
                 return None
 
     results = await asyncio.gather(*[_debate_one(p) for p in picks])
