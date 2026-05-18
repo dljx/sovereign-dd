@@ -67,7 +67,7 @@ def render(result: dict, dossier: dict) -> None:
 
     # Show raw score if it differs from adjusted
     raw_score = result.get("raw_consensus_score")
-    if raw_score and abs(raw_score - score) >= 0.01:
+    if raw_score is not None and abs(raw_score - score) >= 0.01:
         score_text.append(f"  (raw: {raw_score:.2f} → adjusted: {score:.2f})\n", style="dim")
 
     score_text.append(f"  {_score_bar(score)}\n", style=grade_color)
@@ -171,7 +171,7 @@ def render(result: dict, dossier: dict) -> None:
 
         if adj_dict:
             adj_lines = []
-            if adj_dict.get("earnings_durability", {}).get("applied") is not False:
+            if "earnings_durability" in adj_dict and adj_dict["earnings_durability"].get("applied") is not False:
                 ed = adj_dict["earnings_durability"]
                 adj_lines.append(f"  Earnings durability: {ed.get('label','?')} ({ed.get('score','?')}/10) → {ed.get('result','?'):.2f}")
             if adj_dict.get("consensus_gap", {}).get("applied"):
