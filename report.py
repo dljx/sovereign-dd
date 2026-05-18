@@ -9,20 +9,23 @@ from rich import box
 console = Console()
 
 GRADE_COLORS = {
-    "STRONG BUY":  "bold green",
-    "BUY":         "green",
-    "HOLD":        "yellow",
-    "SELL":        "red",
-    "STRONG SELL": "bold red",
+    "CONVICTION BUY": "bold bright_green",
+    "STRONG BUY":     "bold green",
+    "BUY":            "green",
+    "HOLD":           "yellow",
+    "SELL":           "red",
+    "STRONG SELL":    "bold red",
+    "AVOID":          "bold bright_red",
 }
 
 AGENT_COLORS = {
-    "ValueHunter":  "cyan",
-    "GrowthAlpha":  "bright_green",
-    "QuantSignal":  "bright_blue",
-    "RiskSentinel": "red",
-    "MacroLens":    "magenta",
-    "Moderator":    "white",
+    "ValueHunter":   "cyan",
+    "GrowthAlpha":   "bright_green",
+    "QuantSignal":   "bright_blue",
+    "RiskSentinel":  "red",
+    "MacroLens":     "magenta",
+    "MoatForensics": "bright_yellow",
+    "Moderator":     "white",
 }
 
 
@@ -61,14 +64,51 @@ def render(result: dict, dossier: dict) -> None:
     score_text = Text()
     score_text.append(f"\n  CONSENSUS SCORE  ", style="bold white")
     score_text.append(f"{score:.2f} / 10\n", style=f"bold {grade_color}")
+
+    # Show raw score if it differs from adjusted
+    raw_score = result.get("raw_consensus_score")
+    if raw_score and abs(raw_score - score) >= 0.01:
+        score_text.append(f"  (raw: {raw_score:.2f} → adjusted: {score:.2f})\n", style="dim")
+
     score_text.append(f"  {_score_bar(score)}\n", style=grade_color)
     score_text.append(f"\n  GRADE: ", style="bold white")
     score_text.append(f"{grade}", style=f"bold {grade_color}")
-    score_text.append(f"   CONFIDENCE: {result.get('confidence', '?')}\n", style="yellow")
+    score_text.append(f"   CONFIDENCE: {result.get('confidence', '?')}", style="yellow")
+
+    # Banger tag
+    banger = result.get("banger", {})
+    if isinstance(banger, dict) and banger.get("is_banger"):
+        score_text.append(f"   🔥 BANGER\n", style="bold bright_yellow")
+    else:
+        score_text.append(f"\n", style="")
+
+    # Position guidance
+    pos = result.get("position_guidance", {})
+    if isinstance(pos, dict) and pos.get("range"):
+        score_text.append(f"  Suggested allocation: {pos['range']}  ({pos.get('reasoning', '')})\n", style="dim")
+
     score_text.append(f"\n  {result.get('majority_thesis', '')}\n", style="white")
 
     console.print(Panel(score_text, title="[bold]Investment Verdict[/bold]",
                         border_style=grade_color))
+
+    # ── Catalyst & Asymmetry ───────────────────────────────────────────────────
+    catalyst = result.get("catalyst", "")
+    asymmetry = result.get("asymmetry_ratio", "")
+    cycle_pos = result.get("cycle_position", {})
+    moat_comp = result.get("moat_composite")
+
+    if catalyst or asymmetry or cycle_pos or moat_comp:
+        parts = []
+        if catalyst:
+            parts.append(f"[bold]Catalyst:[/bold] {catalyst[:200]}")
+        if asymmetry:
+            parts.append(f"[bold]Asymmetry:[/bold] {asymmetry}")
+        if isinstance(cycle_pos, dict) and cycle_pos.get("phase"):
+            parts.append(f"[bold]Cycle:[/bold] {cycle_pos.get('regime', '')} — {cycle_pos.get('phase', '')}  ({cycle_pos.get('evidence', '')[:100]})")
+        if moat_comp is not None:
+            parts.append(f"[bold]Moat:[/bold] {moat_comp:.1f}/10" if isinstance(moat_comp, (int, float)) else f"[bold]Moat:[/bold] {moat_comp}")
+        console.print(Panel("\n".join(parts), title="[bold]Opportunity Profile[/bold]", border_style="bright_yellow"))
 
     # ── Agent Score Table ──────────────────────────────────────────────────
     loops = result.get("loops_run", 1)
@@ -103,6 +143,54 @@ def render(result: dict, dossier: dict) -> None:
 
     console.print(table)
 
+    # ── Score Decomposition ────────────────────────────────────────────────────
+    decomp = result.get("score_decomposition", {})
+    adj_dict = result.get("score_adjustments", {})
+    if decomp or adj_dict:
+        dtable = Table(title="Score Decomposition", box=box.SIMPLE_HEAVY,
+                       show_header=True, header_style="bold white")
+        dtable.add_column("Agent", style="bold", width=14)
+        dtable.add_column("Valuation", justify="right", width=9)
+        dtable.add_column("Growth", justify="right", width=8)
+        dtable.add_column("Risk/Rwd", justify="right", width=9)
+        dtable.add_column("Catalyst", justify="right", width=9)
+        dtable.add_column("DataConv", justify="right", width=9)
+
+        for agent, bd in decomp.items():
+            if not isinstance(bd, dict):
+                continue
+            color = AGENT_COLORS.get(agent, "white")
+            dtable.add_row(
+                Text(agent, style=color),
+                f"{bd.get('valuation', '—')}",
+                f"{bd.get('growth_quality', '—')}",
+                f"{bd.get('risk_reward', '—')}",
+                f"{bd.get('catalyst_strength', '—')}",
+                f"{bd.get('data_conviction', '—')}",
+            )
+
+        if adj_dict:
+            adj_lines = []
+            if adj_dict.get("earnings_durability", {}).get("applied") is not False:
+                ed = adj_dict["earnings_durability"]
+                adj_lines.append(f"  Earnings durability: {ed.get('label','?')} ({ed.get('score','?')}/10) → {ed.get('result','?'):.2f}")
+            if adj_dict.get("consensus_gap", {}).get("applied"):
+                cg = adj_dict["consensus_gap"]
+                adj_lines.append(f"  Consensus gap: {cg.get('gap_pct','?'):.1f}% ({cg.get('label','?')}) → {cg.get('result','?'):.2f}")
+            if adj_dict.get("cycle_position", {}).get("applied"):
+                cp = adj_dict["cycle_position"]
+                adj_lines.append(f"  Cycle position: {cp.get('reason','?')} ({cp.get('adjustment',0):+.1f}) → {cp.get('result','?'):.2f}")
+            if adj_dict.get("data_confidence", {}).get("applied"):
+                adj_lines.append(f"  Data confidence penalty: -0.5")
+
+            if adj_lines:
+                console.print("\n[dim]Adjustments:[/dim]")
+                for line in adj_lines:
+                    console.print(f"[dim]{line}[/dim]")
+
+        if decomp:
+            console.print(dtable)
+
     # ── Key Factors ────────────────────────────────────────────────────────
     console.print(Panel(
         f"[bold]Key Swing Factor:[/bold] {result.get('key_swing_factor', '—')}\n\n"
@@ -129,8 +217,10 @@ def render(result: dict, dossier: dict) -> None:
 
 
 def _grade(score: float) -> str:
+    if score >= 9.0: return "CONVICTION BUY"
     if score >= 8.0: return "STRONG BUY"
     if score >= 6.5: return "BUY"
     if score >= 5.0: return "HOLD"
     if score >= 3.5: return "SELL"
-    return "STRONG SELL"
+    if score >= 2.0: return "STRONG SELL"
+    return "AVOID"

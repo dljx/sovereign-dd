@@ -15,11 +15,13 @@ TOPIC_DEEP_DIVES    = os.getenv("TELEGRAM_TOPIC_DEEP_DIVES", "")
 TOPIC_SCAN_RESULTS  = os.getenv("TELEGRAM_TOPIC_SCAN_RESULTS", "")
 
 GRADE_EMOJI = {
-    "STRONG BUY":  "🟢🟢",
-    "BUY":         "🟢",
-    "HOLD":        "🟡",
-    "SELL":        "🔴",
-    "STRONG SELL": "🔴🔴",
+    "CONVICTION BUY": "🟢🟢🟢",
+    "STRONG BUY":     "🟢🟢",
+    "BUY":            "🟢",
+    "HOLD":           "🟡",
+    "SELL":           "🔴",
+    "STRONG SELL":    "🔴🔴",
+    "AVOID":          "🔴🔴🔴",
 }
 
 CONF_EMOJI = {"HIGH": "⭐⭐⭐", "MEDIUM": "⭐⭐", "LOW": "⭐"}
@@ -61,17 +63,29 @@ def alert_buy_signal(d: dict) -> bool:
     rationale = d.get("gemma_rationale", "")
     score_rat = d.get("score_rationale", "")
     dissent   = d.get("dissent", "")
+    catalyst  = d.get("catalyst", "")
+    asymmetry = d.get("asymmetry_ratio", "")
+    banger    = d.get("banger", {})
+    pos       = d.get("position_guidance", {})
+    cycle_pos = d.get("cycle_position", {})
+
     lens_tag  = f" · <code>{lens}</code>" if lens else ""
-    # Prefer score_rationale (explicit penalty explanation); fall back to dissent
+    banger_tag = "\n🔥 <b>BANGER</b> — " + banger.get("reason","")[:150] if isinstance(banger, dict) and banger.get("is_banger") else ""
     penalty = score_rat or dissent
+
     msg = (
         f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{lens_tag}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
         + (f"<b>Gemma flagged:</b> <i>{rationale[:180]}</i>\n" if rationale else "")
+        + (f"\n<b>Catalyst:</b> <i>{catalyst[:200]}</i>\n" if catalyst else "")
+        + (f"<b>Asymmetry:</b> {asymmetry}\n" if asymmetry else "")
+        + (f"<b>Cycle:</b> {cycle_pos.get('regime','')} — {cycle_pos.get('phase','')}\n" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
         + f"\n<b>Bull case:</b> <i>{d['thesis'][:300]}</i>\n\n"
         + (f"<b>Why not higher:</b> <i>{penalty[:250]}</i>\n\n" if penalty else "")
         + f"<b>Key factor:</b> {d.get('key_swing_factor', '—')[:150]}\n"
-        f"⏰ {d['analyzed_at']}"
+        + (f"<b>Position:</b> {pos.get('range','?')} ({pos.get('reasoning','')[:100]})\n" if isinstance(pos, dict) and pos.get("range") else "")
+        + banger_tag
+        + f"\n⏰ {d['analyzed_at']}"
     )
     return _send(msg, TOPIC_TRADE_ALERTS)
 
@@ -97,11 +111,17 @@ def alert_dd_result(result: dict) -> bool:
     agents_block = "\n".join(agent_lines)
     thesis = result.get("majority_thesis", "")[:350]
 
+    catalyst = result.get("catalyst", "")
+    banger = result.get("banger", {})
+    banger_line = f"\n🔥 <b>BANGER</b> — {banger.get('reason','')[:120]}" if isinstance(banger, dict) and banger.get("is_banger") else ""
+
     msg = (
         f"{emoji} <b>SOVEREIGN DD — {ticker}</b>\n"
         f"<b>Score:</b> {score:.2f}/10 · {grade} · {cconf}\n\n"
         f"<pre>{agents_block}</pre>\n\n"
-        f"<i>{thesis}</i>"
+        + (f"<b>Catalyst:</b> <i>{catalyst[:200]}</i>\n\n" if catalyst else "")
+        + f"<i>{thesis}</i>"
+        + banger_line
     )
     return _send(msg, TOPIC_DEEP_DIVES)
 
