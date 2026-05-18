@@ -105,7 +105,7 @@ def consensus_gap_adjust(
         adj, label = 0.3, "STRONG UPSIDE vs consensus"
     elif gap_pct > 10:
         adj, label = 0.15, "MODERATE UPSIDE vs consensus"
-    elif gap_pct >= -5:
+    elif gap_pct > -5:
         adj, label = 0.0, "AT CONSENSUS"
     elif gap_pct >= -20:
         adj, label = -0.15, "MINIMAL UPSIDE vs consensus"
@@ -335,7 +335,10 @@ def position_size(
         multiplier *= 1.5
         modifiers.append("1.5× BANGER bonus")
 
-    final_pct = round(base * multiplier * 100, 2)
+    # Cap final_pct to the tier ceiling to keep range label accurate
+    tier_cap = {0.05: 0.06, 0.035: 0.04, 0.015: 0.02, 0.005: 0.01, 0.0: 0.0}
+    cap = tier_cap.get(base, base * 2)
+    final_pct = round(min(cap, base * multiplier) * 100, 2)
     reasoning = label + (" base" if multiplier == 1.0 else f" base × {multiplier:.2f}")
     if modifiers:
         reasoning += " (" + ", ".join(modifiers) + ")"

@@ -130,7 +130,7 @@ def validate_dossier(dossier: dict) -> dict:
     # Assign data confidence
     if not warnings:
         confidence = "HIGH"
-    elif len(warnings) >= 3 or any("FOREIGN STOCK" in w and "PE" not in w for w in warnings):
+    elif len(warnings) >= 3:
         confidence = "LOW"
     else:
         confidence = "MEDIUM"
