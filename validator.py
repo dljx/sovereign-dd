@@ -69,7 +69,7 @@ def validate_dossier(dossier: dict) -> dict:
 
     # 2. FORWARD PE CROSS-CHECK
     yf_fwd_pe = ratios.get("fwd_pe")
-    fmp_fwd_pe = fmp_ratios.get("priceToEarningsRatioTTM") or fmp_ratios.get("peRatioTTM")
+    fmp_fwd_pe = fmp_ratios.get("priceEarningsRatioTTM")
     if yf_fwd_pe and fmp_fwd_pe:
         _flag_divergence(warnings, "Forward PE",
                          {"yfinance": yf_fwd_pe, "fmp": fmp_fwd_pe},

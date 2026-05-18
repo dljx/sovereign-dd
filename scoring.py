@@ -108,9 +108,9 @@ def consensus_gap_adjust(
     elif gap_pct > -5:
         adj, label = 0.0, "AT CONSENSUS"
     elif gap_pct >= -20:
-        adj, label = -0.15, "MINIMAL UPSIDE vs consensus"
+        adj, label = -0.15, "ABOVE CONSENSUS (moderate)"
     else:
-        adj, label = -0.3, "TRADING ABOVE CONSENSUS"
+        adj, label = -0.3, "SIGNIFICANTLY ABOVE CONSENSUS"
 
     adjusted = round(min(10.0, max(1.0, score + adj)), 2)
     return adjusted, {
@@ -374,7 +374,7 @@ def portfolio_overlap_adjust(
     if overlap_ratio > 0.7:
         adj = -0.5
         flag = "REDUNDANT_EXPOSURE"
-    elif overlap_ratio < 0.1 and sector not in all_sectors:
+    elif overlap_ratio < 0.20 and sector not in all_sectors:
         adj = 0.15
         flag = "DIVERSIFICATION_VALUE"
     else:
@@ -457,7 +457,12 @@ def apply_adjustments(
         cycle_phase = None
 
     # Extract moat composite from debate result (set by MoatForensics)
-    moat_composite = result.get("moat_composite")
+    # Coerce to float — LLMs sometimes return the string "null" or "7.5"
+    _mc = result.get("moat_composite")
+    try:
+        moat_composite = float(_mc) if _mc is not None and str(_mc).lower() != "null" else None
+    except (ValueError, TypeError):
+        moat_composite = None
 
     score = raw_score
     adjustments = {"raw": raw_score}
@@ -515,3 +520,17 @@ def apply_adjustments(
         "banger":            banger,
         "position_guidance": sizing,
     }
+
+
+def _safe_apply_adjustments(raw_score, result, dossier, portfolio_sectors=None):
+    """Wrapper around apply_adjustments that never raises — degrades gracefully on error."""
+    try:
+        return apply_adjustments(raw_score, result, dossier, portfolio_sectors)
+    except Exception as e:
+        return {
+            "adjusted_score":    raw_score,
+            "consensus_grade":   grade(raw_score),
+            "score_adjustments": {"raw": raw_score, "error": str(e)},
+            "banger":            {"is_banger": False, "conditions_met": [], "conditions_failed": ["pipeline error"], "reason": str(e)},
+            "position_guidance": {"range": "N/A", "basis_pct": 0.0, "reasoning": "scoring pipeline error", "modifiers": []},
+        }

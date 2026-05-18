@@ -306,21 +306,11 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
 
     # â"€â"€ Post-debate scoring pipeline â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     raw_score = moderator_result.get("consensus_score", round(avg, 2))
-    try:
-        scoring_output = scoring.apply_adjustments(
-            raw_score=raw_score,
-            result=moderator_result,
-            dossier=dossier,
-        )
-    except Exception as e:
-        print(f"  [debate] scoring pipeline failed (using raw score): {e}")
-        scoring_output = {
-            "adjusted_score":    raw_score,
-            "consensus_grade":   _grade(raw_score),
-            "score_adjustments": {"raw": raw_score, "error": str(e)},
-            "banger":            {"is_banger": False, "reason": "scoring error"},
-            "position_guidance": {},
-        }
+    scoring_output = scoring._safe_apply_adjustments(
+        raw_score=raw_score,
+        result=moderator_result,
+        dossier=dossier,
+    )
     # Merge adjusted values back into moderator_result so the transcript captures them
     moderator_result["raw_consensus_score"]  = raw_score
     moderator_result["consensus_score"]      = scoring_output["adjusted_score"]
