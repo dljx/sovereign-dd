@@ -314,10 +314,11 @@ def _yf_financials(ticker: str) -> dict:
             pass
 
         return {"ratios": ratios, "analyst": analyst,
-                "income": income, "balance": balance, "cashflow": cashflow}
+                "income": income, "balance": balance, "cashflow": cashflow,
+                "industry": info.get("industry", "")}
     except Exception as e:
         return {"error": str(e), "ratios": {}, "analyst": {},
-                "income": [], "balance": [], "cashflow": []}
+                "income": [], "balance": [], "cashflow": [], "industry": ""}
 
 
 SECTOR_TERMINAL = {
@@ -487,15 +488,16 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     )
 
     # â”€â”€ Profile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    sector = profile_raw.get("finnhubIndustry", "Unknown")
-    dossier["profile"] = {
-        "name":          profile_raw.get("name", ticker),
-        "sector":        sector,
-        "exchange":      profile_raw.get("exchange", ""),
-        "market_cap_bn": round((profile_raw.get("marketCapitalization") or 0) / 1000, 2),
-        "ipo_date":      profile_raw.get("ipo", ""),
-        "employees":     profile_raw.get("employeeTotal", ""),
-        "country":       profile_raw.get("country", ""),
+    sector = profile_raw.get(“finnhubIndustry”, “Unknown”)
+    dossier[“profile”] = {
+        “name”:          profile_raw.get(“name”, ticker),
+        “sector”:        sector,
+        “industry”:      yf_fin.get(“industry”, “”),
+        “exchange”:      profile_raw.get(“exchange”, “”),
+        “market_cap_bn”: round((profile_raw.get(“marketCapitalization”) or 0) / 1000, 2),
+        “ipo_date”:      profile_raw.get(“ipo”, “”),
+        “employees”:     profile_raw.get(“employeeTotal”, “”),
+        “country”:       profile_raw.get(“country”, “”),
         “website”:       profile_raw.get(“weburl”, “”),
     }
     dossier[“cycle_type”] = _cycle_type(sector)

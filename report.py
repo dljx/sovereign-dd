@@ -173,7 +173,7 @@ def render(result: dict, dossier: dict) -> None:
 
         if adj_dict:
             adj_lines = []
-            if "earnings_durability" in adj_dict and adj_dict["earnings_durability"].get("applied") is not False:
+            if "earnings_durability" in adj_dict:
                 ed = adj_dict["earnings_durability"]
                 adj_lines.append(f"  Earnings durability: {ed.get('label','?')} ({ed.get('score','?')}/10) → {ed.get('result', 0.0):.2f}")
             if adj_dict.get("consensus_gap", {}).get("applied"):

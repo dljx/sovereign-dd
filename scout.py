@@ -3,7 +3,7 @@
 Every run:
   1. All 7 screener calls fire simultaneously (Yahoo Finance free API, no key needed)
   2. One grounded Gemma call picks the 12 most interesting from the combined pool
-  3. Full 5-agent debate on those 12 picks — all run in parallel (max 3 concurrent)
+  3. Full 6-agent debate on those 12 picks — all run in parallel (max 4 concurrent)
 """
 
 import asyncio
@@ -280,7 +280,7 @@ async def run_scout(
     Full scout pipeline:
       1. All screener lenses fire simultaneously
       2. Gemma triage picks the N most interesting (grounded)
-      3. Full 5-agent debate on all picks in parallel (max 4 concurrent)
+      3. Full 6-agent debate on all picks in parallel (max 4 concurrent)
 
     Configurable via env vars:
       SCOUT_DEBATE_COUNT   — tickers to debate per run (default 6)

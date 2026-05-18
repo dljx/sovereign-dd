@@ -91,7 +91,7 @@ def collect_scout_results(scout_dir: Path) -> list:
     Only dd:scouts (the accumulated BUY list) is written via the payload 'scouts' field.
     """
     if not scout_dir.exists():
-        return [], []
+        return []
 
     cutoff = time.time() - SCOUT_UPLOAD_WINDOW_SECS
     discoveries = []
@@ -115,13 +115,18 @@ def collect_scout_results(scout_dir: Path) -> list:
 
         if score >= BUY_THRESHOLD:
             discoveries.append({
-                "ticker":      ticker,
-                "score":       round(score, 2),
-                "grade":       grade,
-                "conf":        result.get("confidence", ""),
-                "thesis":      result.get("majority_thesis", "")[:200],
-                "key_swing":   result.get("key_swing_factor", "")[:150],
-                "analyzed_at": result.get("built_at", ""),
+                "ticker":           ticker,
+                "score":            round(score, 2),
+                "grade":            grade,
+                "conf":             result.get("confidence", ""),
+                "thesis":           result.get("majority_thesis", "")[:200],
+                "key_swing":        result.get("key_swing_factor", "")[:150],
+                "analyzed_at":      result.get("built_at", ""),
+                "catalyst":         result.get("catalyst", ""),
+                "asymmetry_ratio":  result.get("asymmetry_ratio", ""),
+                "banger":           result.get("banger", {}),
+                "position_guidance": result.get("position_guidance", {}),
+                "cycle_position":   result.get("cycle_position", {}),
             })
 
     return discoveries
