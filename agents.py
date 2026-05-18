@@ -8,6 +8,7 @@ AGENTS = [
     "QuantSignal",
     "RiskSentinel",
     "MacroLens",
+    "MoatForensics",
 ]
 
 SYSTEM_PROMPTS = {
@@ -64,6 +65,33 @@ Macro conditions create powerful tailwinds AND headwinds — your job is to asse
 A mediocre business riding a multi-year sector tailwind can outperform a great business facing macro headwinds.
 When the macro setup is clearly favorable for this stock, score high with conviction. When macro is clearly
 adverse, score low. Symmetric assessment is your defining discipline.
+Additionally, you MUST classify where this specific stock sits in its relevant industry/business cycle. This is separate from the macro environment — it is about THIS company's cycle positioning.
+
+CYCLE REGIMES — classify into the most relevant one:
+- Technology Adoption Cycle: infrastructure → platforms → applications → second-order effects
+- Commodity Price Cycle: trough → recovery → expansion → peak → contraction
+- Credit Cycle: expansion → peak → contraction → trough
+- SaaS Valuation Cycle: expansion → compression → trough → recovery
+- Capex/Industrial Cycle: order growth → backlog build → peak delivery → normalization
+- Insurance Underwriting Cycle: hard market → transition → soft market
+
+PHASE MATURITY SIGNALS to assess:
+- Revenue growth 2nd derivative (accelerating = early cycle, decelerating = late cycle)
+- Current valuation vs stock's own historical range (low percentile = early/trough)
+- Institutional accumulation vs distribution patterns
+- Management tone: aggressive investment guidance = early cycle; cost-cutting/caution = late cycle
+You ALWAYS output strict JSON only. No prose outside the JSON.""",
+
+    "MoatForensics": """You are MoatForensics, a competitive advantage analyst in the tradition of Pat Dorsey and Michael Mauboussin.
+Your mandate: assess the durability and strength of the company's economic moat using three dimensions:
+1. REPLICATION DIFFICULTY (1-10): Can a well-funded competitor fully replicate this business in 5 years?
+   Consider: network effects, data moats, regulatory barriers, switching costs, brand lock-in, proprietary technology, infrastructure scale.
+2. CUSTOMER STICKINESS (1-10): Would customers leave if a 20% cheaper alternative appeared?
+   Consider: integration depth, data migration costs, workflow dependency, contractual lock-in, retraining costs.
+3. SCALE COMPOUNDING (1-10): Does the competitive advantage compound with scale or erode with competition?
+   Consider: data flywheels, network effects, cost advantages from scale, ecosystem lock-in, R&D leverage.
+Score the COMPOSITE moat as the average of all three. A wide but narrowing moat is more dangerous than a narrow but widening one.
+You assess moat TRAJECTORY — is the moat widening, stable, or narrowing? This matters as much as the current score.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 }
 
@@ -97,6 +125,12 @@ SEARCH_QUERIES = {
         "geopolitical risks, macro headwinds, AND sector tailwinds, favorable policy changes, "
         "and macro catalysts that could benefit this company or industry."
     ),
+    "MoatForensics": (
+        "Search for {ticker} {name} competitive advantages, economic moat analysis, "
+        "switching costs, network effects, customer retention rates, customer lock-in, "
+        "market share trends and pricing power evidence, "
+        "and any competitive threats, moat erosion signals, or new market entrants challenging the business."
+    ),
 }
 
 RESEARCH_SYSTEM = """You are a financial research assistant. Search the web for current information
@@ -117,6 +151,8 @@ TICKER: {ticker}
 {dossier_json}
 ================================
 
+CYCLE TYPE: {cycle_type} — factor this into your earnings durability and cycle regime assessment.
+{data_quality_warning}
 SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRENT price:
   9.0-10.0  Exceptional — top-decile opportunity, overwhelming evidence, minimal risks
   7.0-8.9   Strong — compelling thesis with manageable risks, clear near-term catalysts
@@ -134,7 +170,7 @@ Output ONLY this JSON (no other text):
   "round": 1,
   "score": <float 1.0-10.0>,
   "conviction": "<HIGH|MEDIUM|LOW>",
-  "grade": "<STRONG BUY|BUY|HOLD|SELL|STRONG SELL>",
+  "grade": "<CONVICTION BUY|STRONG BUY|BUY|HOLD|SELL|STRONG SELL|AVOID>",
   "thesis": "<2-3 sentence investment thesis from your perspective>",
   "evidence": [
     "<key data point 1 — cite specific numbers>",
@@ -142,10 +178,28 @@ Output ONLY this JSON (no other text):
     "<key data point 3 — cite specific numbers>"
   ],
   "web_finding": "<the single most important thing your web research revealed>",
-  "bull_case": "<one-sentence best-case scenario>",
-  "bear_case": "<one-sentence worst-case scenario>",
-  "key_risk": "<the single most important risk you see>"
-}}"""
+  "catalyst": "<specific near-term event that will force re-pricing — include expected timeline e.g. Q3 2026 earnings>",
+  "catalyst_magnitude": "<HIGH|MEDIUM|LOW — expected size of re-rating if catalyst hits>",
+  "floor_price_rationale": "<bear case: what is the downside floor and why — cite specific numbers>",
+  "asymmetry_estimate": "<rough upside/downside ratio e.g. 3:1, or N/A if insufficient data>",
+  "key_risk": "<the single most important risk you see>",
+  "score_breakdown": {{
+    "valuation": <float 1-10>,
+    "growth_quality": <float 1-10>,
+    "risk_reward": <float 1-10>,
+    "catalyst_strength": <float 1-10>,
+    "data_conviction": <float 1-10>
+  }}
+}}
+If you are MoatForensics, also add:
+  "moat_scores": {{"replication": <1-10>, "stickiness": <1-10>, "compounding": <1-10>}},
+  "moat_trajectory": "<WIDENING|STABLE|NARROWING>",
+  "moat_evidence": "<one sentence citing specific evidence for the trajectory assessment>"
+If you are MacroLens, also add:
+  "cycle_regime": "<most relevant cycle type from the list in your system prompt>",
+  "cycle_phase": "<EARLY|MID|LATE|PEAK|TROUGH>",
+  "cycle_evidence": "<one sentence: why this phase — cite specific data points>"
+"""
 
 ROUND2_TEMPLATE = """You have completed your Round 1 assessment of {ticker} (your score: {my_score}).
 You MUST challenge **{target_agent}** and NO ONE ELSE. This is your assigned debate opponent.
@@ -195,10 +249,18 @@ Output ONLY this JSON:
   "score_delta": <revised_score minus your_previous_score — positive = more bullish>,
   "rebuttal": "<your response to the strongest challenge against you>",
   "concessions": "<arguments from others you found compelling — or 'none'>",
-  "final_thesis": "<your updated 2-sentence thesis after this debate loop>"
+  "final_thesis": "<your updated 2-sentence thesis after this debate loop>",
+  "catalyst_update": "<updated view on the catalyst after hearing debate — or 'unchanged'>",
+  "revised_breakdown": {{
+    "valuation": <float 1-10>,
+    "growth_quality": <float 1-10>,
+    "risk_reward": <float 1-10>,
+    "catalyst_strength": <float 1-10>,
+    "data_conviction": <float 1-10>
+  }}
 }}"""
 
-SYNTHESIS_TEMPLATE = """Five investment agents have debated {ticker} and their scores have converged.
+SYNTHESIS_TEMPLATE = """Six investment agents have debated {ticker} and their scores have converged.
 Synthesize their final positions into a coherent consensus verdict.
 
 === FINAL AGENT POSITIONS ===
@@ -215,10 +277,15 @@ Output ONLY this JSON:
   "majority_thesis": "<2-3 sentence synthesis of the dominant view, citing the most compelling evidence>",
   "dissent": "<which agent(s) are furthest from consensus and why — or 'unanimous'>",
   "key_swing_factor": "<the single data point or argument that most shaped the consensus>",
-  "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>"
+  "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>",
+  "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
+  "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
+  "moat_composite": "<MoatForensics composite score if available, else null>",
+  "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
+  "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
 
-MODERATOR_TEMPLATE = """You are the Moderator. Five investment agents have debated {ticker}
+MODERATOR_TEMPLATE = """You are the Moderator. Six investment agents have debated {ticker}
 across {loops} debate loop(s) and scores have NOT converged (spread = {spread:.2f}, threshold = {threshold:.1f}).
 Synthesize the full debate into a final consensus score. Give more weight to arguments backed by compelling evidence — whether quantitative metrics or well-supported qualitative analysis.
 Note any irreconcilable dissent clearly.
@@ -237,7 +304,12 @@ Output ONLY this JSON:
   "majority_thesis": "<2-3 sentence synthesis of the dominant view>",
   "dissent": "<which agent(s) dissent and why — or 'unanimous'>",
   "key_swing_factor": "<the single argument that most influenced the final score>",
-  "score_rationale": "<why this score, not higher or lower>"
+  "score_rationale": "<why this score, not higher or lower>",
+  "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
+  "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
+  "moat_composite": "<MoatForensics composite score if available, else null>",
+  "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
+  "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
 
 
@@ -295,6 +367,18 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
 
     slim["financials_summary"] = summary
 
+    dq = dossier.get("data_quality", {})
+    warnings = dq.get("warnings", [])
+    confidence = dq.get("data_confidence", "HIGH")
+    if warnings:
+        dq_warning = (
+            f"\n⚠️  DATA QUALITY: {confidence}\nWarnings:\n"
+            + "\n".join(f"  • {w}" for w in warnings)
+            + "\nAgents: verify flagged metrics against your web research before relying on them.\n"
+        )
+    else:
+        dq_warning = ""
+
     return (
         SYSTEM_PROMPTS[agent],
         ROUND1_TEMPLATE.format(
@@ -302,6 +386,8 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
             agent=agent,
             web_research=web_research or "(no web research available)",
             dossier_json=json.dumps(slim, indent=2, default=str),
+            cycle_type=dossier.get("cycle_type", "UNKNOWN"),
+            data_quality_warning=dq_warning,
         ),
     )
 
