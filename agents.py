@@ -368,8 +368,16 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
     slim["financials_summary"] = summary
 
     dq = dossier.get("data_quality", {})
-    warnings = dq.get("warnings", [])
+    warnings = list(dq.get("warnings", []))
     confidence = dq.get("data_confidence", "HIGH")
+
+    # If forward PE was nulled by the sanity check, surface that to agents explicitly
+    if ratios.get("fwd_pe") is None and ratios.get("pe") is not None:
+        warnings.insert(0,
+            "fwd_pe was REMOVED (implied >100% YoY earnings growth — likely ADR/FX data error). "
+            "Use your web research to find the correct forward PE before scoring."
+        )
+
     if warnings:
         dq_warning = (
             f"\n⚠️  DATA QUALITY: {confidence}\nWarnings:\n"

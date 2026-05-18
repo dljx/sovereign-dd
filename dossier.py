@@ -534,13 +534,29 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         fmp_cashflow = fmp_cashflow_raw[:2] if isinstance(fmp_cashflow_raw, list) else []
 
     yf_r = yf_fin.get("ratios", {})
+
+    # Forward PE sanity check: if implied earnings growth > 100% vs trailing PE, the
+    # forward EPS estimate is almost certainly a data error (common for ADRs where yfinance
+    # mixes underlying-share EPS with ADR-level price). Null it out rather than debate wrong data.
+    _pe_trailing = yf_r.get("pe") or fmp_ratios_data.get("peRatioTTM")
+    _pe_forward  = yf_r.get("fwd_pe") or fmp_ratios_data.get("priceEarningsRatioTTM")
+    _fwd_pe_clean: float | None = _pe_forward
+    if _pe_trailing and _pe_forward and _pe_trailing > 0 and _pe_forward > 0:
+        _implied_growth = _pe_trailing / _pe_forward - 1
+        if _implied_growth > 1.0:  # forward PE implies >100% earnings growth in one year
+            _fwd_pe_clean = None
+            if verbose:
+                print(f"  [dossier] {ticker}: forward PE ({_pe_forward:.1f}x) vs trailing "
+                      f"({_pe_trailing:.1f}x) implies {_implied_growth:.0%} YoY growth — "
+                      f"likely data error (ADR/FX mismatch?), nulling fwd_pe")
+
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
         "balance":  yf_fin.get("balance")  or fmp_balance,
         "cashflow": yf_fin.get("cashflow") or fmp_cashflow,
         "ratios_ttm": {
-            "pe":            yf_r.get("pe")           or fmp_ratios_data.get("peRatioTTM"),
-            "fwd_pe":        yf_r.get("fwd_pe")       or fmp_ratios_data.get("priceEarningsRatioTTM"),
+            "pe":            _pe_trailing,
+            "fwd_pe":        _fwd_pe_clean,
             "pb":            yf_r.get("pb")            or fmp_ratios_data.get("priceToBookRatioTTM"),
             "ps":            yf_r.get("ps")            or fmp_ratios_data.get("priceToSalesRatioTTM"),
             "ev_ebitda":     yf_r.get("ev_ebitda")    or fmp_ratios_data.get("enterpriseValueMultipleTTM"),
