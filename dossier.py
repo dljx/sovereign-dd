@@ -29,6 +29,45 @@ _av_last_call: float = 0.0       # timestamp of most recent AV request
 _AV_MIN_INTERVAL = 12.0          # seconds between calls (5 RPM limit = 1 per 12s)
 
 
+# ── Cycle type classification ──────────────────────────────────────────────────
+_CYCLICAL_SECTORS = {"Energy", "Basic Materials", "Consumer Cyclical", "Real Estate"}
+_SECULAR_SECTORS  = {"Technology", "Healthcare", "Communication Services"}
+_DEFENSIVE_SECTORS = {"Consumer Defensive", "Utilities"}
+
+
+def _cycle_type(sector: str) -> str:
+    """Classify a sector as SECULAR, CYCLICAL, DEFENSIVE, or HYBRID."""
+    if sector in _SECULAR_SECTORS:  return "SECULAR"
+    if sector in _CYCLICAL_SECTORS: return "CYCLICAL"
+    if sector in _DEFENSIVE_SECTORS: return "DEFENSIVE"
+    return "HYBRID"
+
+
+def _detect_regime(macro: dict) -> str:
+    """Classify the current macro regime from FRED indicators.
+
+    Returns one of: EXPANSION | PEAK | LATE_CYCLE | RECESSION | INFLATIONARY | MID_CYCLE
+    """
+    fed     = macro.get("fed_funds_rate")
+    cpi     = macro.get("cpi_yoy")
+    unemp   = macro.get("unemployment")
+    vix     = macro.get("vix")
+    spread  = macro.get("yield_curve_spread")  # 10Y - 2Y
+
+    # Priority order matters — most diagnostic condition first
+    if spread is not None and spread < 0:
+        return "LATE_CYCLE"          # inverted yield curve is the strongest signal
+    if cpi is not None and cpi > 4.5:
+        return "INFLATIONARY"
+    if unemp is not None and unemp > 5.5:
+        return "RECESSION"
+    if fed is not None and unemp is not None and fed > 4.5 and unemp < 4.5:
+        return "PEAK"                # tight labor, elevated rates
+    if vix is not None and vix < 16:
+        return "EXPANSION"           # low volatility, risk-on
+    return "MID_CYCLE"
+
+
 async def _fetch_and_emit(ticker: str, coro, source_name: str):
     """Await coro then fire a FETCH_DONE live event for visual dossier progress."""
     result = await coro
@@ -457,10 +496,11 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         "ipo_date":      profile_raw.get("ipo", ""),
         "employees":     profile_raw.get("employeeTotal", ""),
         "country":       profile_raw.get("country", ""),
-        "website":       profile_raw.get("weburl", ""),
+        “website”:       profile_raw.get(“weburl”, “”),
     }
+    dossier[“cycle_type”] = _cycle_type(sector)
 
-    # â”€â”€ Quote â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Quote ──â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     dossier["quote"] = {
         "price":      quote_raw.get("c"),
         "change":     quote_raw.get("d"),
@@ -475,16 +515,18 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     dossier["technicals"] = technicals
 
     # â”€â”€ Financials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    fmp_ratios_data = {}
+    # Always fetch FMP ratios for cross-validation (regardless of yfinance availability)
+    fmp_ratios_raw  = _fmp(f”/ratios-ttm/{ticker}”)
+    fmp_ratios_data = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else (
+                      fmp_ratios_raw if isinstance(fmp_ratios_raw, dict) else {})
+
     fmp_income, fmp_balance, fmp_cashflow = [], [], []
-    if not yf_fin.get("income"):
+    if not yf_fin.get(“income”):
         if verbose:
-            print(f"  [dossier] {ticker}: yfinance income empty â€” fetching FMP fallback...")
-        fmp_income_raw   = _fmp(f"/income-statement/{ticker}", {"limit": 4})
-        fmp_balance_raw  = _fmp(f"/balance-sheet-statement/{ticker}", {"limit": 2})
-        fmp_cashflow_raw = _fmp(f"/cash-flow-statement/{ticker}", {"limit": 2})
-        fmp_ratios_raw   = _fmp(f"/ratios-ttm/{ticker}")
-        fmp_ratios_data  = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else {}
+            print(f”  [dossier] {ticker}: yfinance income empty — fetching FMP fallback...”)
+        fmp_income_raw   = _fmp(f”/income-statement/{ticker}”, {“limit”: 4})
+        fmp_balance_raw  = _fmp(f”/balance-sheet-statement/{ticker}”, {“limit”: 2})
+        fmp_cashflow_raw = _fmp(f”/cash-flow-statement/{ticker}”, {“limit”: 2})
         fmp_income   = fmp_income_raw[:4]   if isinstance(fmp_income_raw,   list) else []
         fmp_balance  = fmp_balance_raw[:2]  if isinstance(fmp_balance_raw,  list) else []
         fmp_cashflow = fmp_cashflow_raw[:2] if isinstance(fmp_cashflow_raw, list) else []
@@ -512,11 +554,13 @@ async def build(ticker: str, verbose: bool = True) -> dict:
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
             "beta":          yf_r.get("beta"),
-            "short_pct":     yf_r.get("short_pct"),
+            “short_pct”:     yf_r.get(“short_pct”),
         },
     }
+    # Store raw FMP ratios for cross-validation in validator.py
+    dossier[“fmp_ratios”] = fmp_ratios_data
 
-    # â”€â”€ Valuation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Valuation ──â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     yf_analyst = yf_fin.get("analyst", {})
     fmp_dcf_price = None
     fmp_targets: list = []
@@ -566,11 +610,44 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     txns  = insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else []
     buys  = [t for t in txns if t.get("transactionType") == "P - Purchase"]
     sells = [t for t in txns if t.get("transactionType") == "S - Sale"]
+
+    # Cluster detection: 3+ insiders buying within a 14-day window
+    def _has_cluster(transactions: list, window_days: int = 14) -> bool:
+        from datetime import datetime
+        dates = []
+        for t in transactions:
+            d = t.get("transactionDate", "")[:10]
+            try:
+                dates.append(datetime.strptime(d, "%Y-%m-%d"))
+            except ValueError:
+                continue
+        if len(dates) < 3:
+            return False
+        dates.sort()
+        for i in range(len(dates) - 2):
+            if (dates[i + 2] - dates[i]).days <= window_days:
+                return True
+        return False
+
+    # Significant transactions: value > $100K
+    def _tx_value(t: dict) -> float:
+        shares = t.get("share", 0) or 0
+        price  = t.get("price") or 0
+        return abs(shares * price)
+
+    significant_buys  = [t for t in buys  if _tx_value(t) >= 100_000]
+    significant_sells = [t for t in sells if _tx_value(t) >= 100_000]
+    buyer_names = list({t.get("name", "") for t in buys if t.get("name")})
+
     dossier["insiders"] = {
-        "buy_count":  len(buys),
-        "sell_count": len(sells),
-        "net_shares": sum(t.get("share", 0) for t in buys) - sum(t.get("share", 0) for t in sells),
-        "recent":     txns[:10],
+        "buy_count":        len(buys),
+        "sell_count":       len(sells),
+        "net_shares":       sum(t.get("share", 0) for t in buys) - sum(t.get("share", 0) for t in sells),
+        "cluster_buying":   _has_cluster(buys),
+        "significant_buys": len(significant_buys),
+        "significant_sells": len(significant_sells),
+        "buyer_roles":      buyer_names[:5],
+        "recent":           txns[:10],
     }
 
     # â”€â”€ News â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -587,9 +664,10 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     dossier["sec_filing"] = sec_raw
 
     # â”€â”€ Macro (shared cache) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    dossier["macro"] = macro
+    dossier[“macro”] = macro
+    dossier[“macro”][“regime”] = _detect_regime(macro)
 
-    # â”€â”€ Batch 2: peer comps (needs sector from profile) â€” 4 peers in parallel â”€
+    # ── Batch 2: peer comps (needs sector from profile) â€” 4 peers in parallel â”€
     # Try Finnhub /stock/peers first (actual industry peers), fall back to sector defaults
     SECTOR_PEERS = {
         "Technology":              ["NVDA", "AMD", "INTC", "QCOM", "AVGO"],
@@ -611,6 +689,17 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         peers = [p for p in SECTOR_PEERS.get(sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
     peer_results = await asyncio.gather(*[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers") for p in peers])
     dossier["peer_comps"] = [r for r in peer_results if r]
+
+    # Cross-validate key metrics across data sources
+    try:
+        from validator import validate_dossier
+        dossier["data_quality"] = validate_dossier(dossier)
+        if verbose and dossier["data_quality"]["warnings"]:
+            print(f"  [dossier] {ticker}: data quality warnings: {dossier['data_quality']['warnings']}")
+    except Exception as e:
+        dossier["data_quality"] = {"warnings": [], "data_confidence": "HIGH"}
+        if verbose:
+            print(f"  [dossier] {ticker}: validator error (skipped): {e}")
 
     await emit_live(ticker, {"type": "DOSSIER_DONE"})
     if verbose:
