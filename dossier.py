@@ -228,11 +228,29 @@ def _yf_financials(ticker: str) -> dict:
         def _r(v, n=2):
             return round(v, n) if v is not None else None
 
+        # For ADRs / foreign stocks, yfinance mixes underlying share counts with ADR-level price.
+        # sharesOutstanding = underlying Japanese/foreign shares (not ADR units).
+        # floatShares ≈ ADR-equivalent tradeable shares. Use floatShares for per-share math
+        # when it's substantially smaller than sharesOutstanding (ratio > 2 = ADR structure likely).
+        shares_out = info.get("sharesOutstanding") or 0
+        float_shares = info.get("floatShares") or 0
+        _is_adr_mismatch = float_shares > 0 and shares_out > 0 and shares_out / float_shares > 2
+        _safe_shares = float_shares if _is_adr_mismatch else shares_out
+
+        # P/B and P/S from yfinance are computed as price / (metric / sharesOutstanding).
+        # For ADRs this produces wrong values; null them out and let agents use web research.
+        _pb = None if _is_adr_mismatch else _r(info.get("priceToBook"))
+        _ps = None if _is_adr_mismatch else _r(info.get("priceToSalesTrailing12Months"))
+        _fcf_ps = None  # always compute from safe_shares below if fcf available
+        _fcf = info.get("freeCashflow")
+        if _fcf and _safe_shares:
+            _fcf_ps = _r(_fcf / _safe_shares)
+
         ratios = {
             "pe":            _r(info.get("trailingPE")),
             "fwd_pe":        _r(info.get("forwardPE")),
-            "pb":            _r(info.get("priceToBook")),
-            "ps":            _r(info.get("priceToSalesTrailing12Months")),
+            "pb":            _pb,
+            "ps":            _ps,
             "ev_ebitda":     _r(info.get("enterpriseToEbitda")),
             "gross_margin":  _pct(info.get("grossMargins")),
             "net_margin":    _pct(info.get("profitMargins")),
@@ -240,14 +258,14 @@ def _yf_financials(ticker: str) -> dict:
             "roa":           _pct(info.get("returnOnAssets")),
             "debt_equity":   _r(info.get("debtToEquity")),
             "current_ratio": _r(info.get("currentRatio")),
-            "fcf":           info.get("freeCashflow"),
-            "fcf_per_share": _r(info.get("freeCashflow") / info.get("sharesOutstanding", 1)
-                                if info.get("freeCashflow") and info.get("sharesOutstanding") else None),
+            "fcf":           _fcf,
+            "fcf_per_share": _fcf_ps,
             "revenue_ttm":   info.get("totalRevenue"),
             "ebitda":        info.get("ebitda"),
             "beta":          _r(info.get("beta")),
-            "shares_out":    info.get("sharesOutstanding"),
+            "shares_out":    _safe_shares,
             "short_pct":     _pct(info.get("shortPercentOfFloat")),
+            "adr_mismatch":  _is_adr_mismatch,  # flag for downstream consumers
         }
 
         analyst = {

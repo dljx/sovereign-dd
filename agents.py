@@ -371,11 +371,17 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
     warnings = list(dq.get("warnings", []))
     confidence = dq.get("data_confidence", "HIGH")
 
-    # If forward PE was nulled by the sanity check, surface that to agents explicitly
+    # Surface nulled per-share metrics so agents know to look them up, not assume they're zero
     if ratios.get("fwd_pe") is None and ratios.get("pe") is not None:
         warnings.insert(0,
             "fwd_pe was REMOVED (implied >100% YoY earnings growth — likely ADR/FX data error). "
             "Use your web research to find the correct forward PE before scoring."
+        )
+    if ratios.get("adr_mismatch"):
+        warnings.insert(0,
+            "ADR SHARE COUNT MISMATCH detected — P/B and P/S have been nulled (underlying share "
+            "count is >2x the ADR float, making per-share ratios unreliable). "
+            "Look up P/B, P/S, and EV/EBITDA from your web research using ADR-adjusted figures."
         )
 
     if warnings:

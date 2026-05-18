@@ -87,11 +87,19 @@ def validate_dossier(dossier: dict) -> dict:
     # 4. FOREIGN STOCK / ADR FLAG
     country = profile.get("country") or ""
     exchange = profile.get("exchange") or ""
+    adr_mismatch = (fin.get("ratios_ttm") or {}).get("adr_mismatch", False)
     if country and country.upper() not in ("US", "USA", "UNITED STATES", ""):
-        warnings.append(
-            f"FOREIGN STOCK ({country}, exchange: {exchange}) — ADR share structure "
-            f"may distort PE/EPS ratios. Verify all valuation multiples independently."
-        )
+        if adr_mismatch:
+            warnings.append(
+                f"FOREIGN STOCK / ADR ({country}, exchange: {exchange}) — confirmed share count "
+                f"mismatch (underlying shares >> ADR float). P/B and P/S have been nulled. "
+                f"Forward PE was nulled if growth implied >100%. Use web research for correct multiples."
+            )
+        else:
+            warnings.append(
+                f"FOREIGN STOCK ({country}, exchange: {exchange}) — ADR share structure "
+                f"may distort PE/EPS ratios. Verify all valuation multiples independently."
+            )
 
     # 5. EXTREME VALUE SANITY CHECKS
     pe = yf_pe or fmp_pe or computed_pe
