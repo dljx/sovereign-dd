@@ -306,11 +306,21 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
 
     # â"€â"€ Post-debate scoring pipeline â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     raw_score = moderator_result.get("consensus_score", round(avg, 2))
-    scoring_output = scoring.apply_adjustments(
-        raw_score=raw_score,
-        result=moderator_result,
-        dossier=dossier,
-    )
+    try:
+        scoring_output = scoring.apply_adjustments(
+            raw_score=raw_score,
+            result=moderator_result,
+            dossier=dossier,
+        )
+    except Exception as e:
+        print(f"  [debate] scoring pipeline failed (using raw score): {e}")
+        scoring_output = {
+            "adjusted_score":    raw_score,
+            "consensus_grade":   _grade(raw_score),
+            "score_adjustments": {"raw": raw_score, "error": str(e)},
+            "banger":            {"is_banger": False, "reason": "scoring error"},
+            "position_guidance": {},
+        }
     # Merge adjusted values back into moderator_result so the transcript captures them
     moderator_result["raw_consensus_score"]  = raw_score
     moderator_result["consensus_score"]      = scoring_output["adjusted_score"]
@@ -346,7 +356,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "asymmetry_ratio":      moderator_result.get("asymmetry_ratio", ""),
         "moat_composite":       moderator_result.get("moat_composite"),
         "cycle_position":       moderator_result.get("cycle_position", {}),
-        "data_confidence":      moderator_result.get("data_confidence", "HIGH"),
+        "data_confidence":      dossier.get("data_quality", {}).get("data_confidence", "HIGH"),
         "score_adjustments":    moderator_result.get("score_adjustments", {}),
         "banger":               moderator_result.get("banger", {}),
         "position_guidance":    moderator_result.get("position_guidance", {}),

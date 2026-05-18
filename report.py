@@ -1,6 +1,7 @@
 """Rich terminal report renderer."""
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -101,11 +102,12 @@ def render(result: dict, dossier: dict) -> None:
     if catalyst or asymmetry or cycle_pos or moat_comp:
         parts = []
         if catalyst:
-            parts.append(f"[bold]Catalyst:[/bold] {catalyst[:200]}")
+            parts.append(f"[bold]Catalyst:[/bold] {escape(catalyst[:200])}")
         if asymmetry:
-            parts.append(f"[bold]Asymmetry:[/bold] {asymmetry}")
+            parts.append(f"[bold]Asymmetry:[/bold] {escape(str(asymmetry))}")
         if isinstance(cycle_pos, dict) and cycle_pos.get("phase"):
-            parts.append(f"[bold]Cycle:[/bold] {cycle_pos.get('regime', '')} — {cycle_pos.get('phase', '')}  ({cycle_pos.get('evidence', '')[:100]})")
+            parts.append(f"[bold]Cycle:[/bold] {escape(cycle_pos.get('regime', ''))} — {escape(cycle_pos.get('phase', ''))}"
+                         f"  ({escape(cycle_pos.get('evidence', '')[:100])})")
         if moat_comp is not None:
             parts.append(f"[bold]Moat:[/bold] {moat_comp:.1f}/10" if isinstance(moat_comp, (int, float)) else f"[bold]Moat:[/bold] {moat_comp}")
         console.print(Panel("\n".join(parts), title="[bold]Opportunity Profile[/bold]", border_style="bright_yellow"))
@@ -173,13 +175,13 @@ def render(result: dict, dossier: dict) -> None:
             adj_lines = []
             if "earnings_durability" in adj_dict and adj_dict["earnings_durability"].get("applied") is not False:
                 ed = adj_dict["earnings_durability"]
-                adj_lines.append(f"  Earnings durability: {ed.get('label','?')} ({ed.get('score','?')}/10) → {ed.get('result','?'):.2f}")
+                adj_lines.append(f"  Earnings durability: {ed.get('label','?')} ({ed.get('score','?')}/10) → {ed.get('result', 0.0):.2f}")
             if adj_dict.get("consensus_gap", {}).get("applied"):
                 cg = adj_dict["consensus_gap"]
-                adj_lines.append(f"  Consensus gap: {cg.get('gap_pct','?'):.1f}% ({cg.get('label','?')}) → {cg.get('result','?'):.2f}")
+                adj_lines.append(f"  Consensus gap: {cg.get('gap_pct', 0.0):.1f}% ({cg.get('label','?')}) → {cg.get('result', 0.0):.2f}")
             if adj_dict.get("cycle_position", {}).get("applied"):
                 cp = adj_dict["cycle_position"]
-                adj_lines.append(f"  Cycle position: {cp.get('reason','?')} ({cp.get('adjustment',0):+.1f}) → {cp.get('result','?'):.2f}")
+                adj_lines.append(f"  Cycle position: {cp.get('reason','?')} ({cp.get('adjustment',0):+.1f}) → {cp.get('result', 0.0):.2f}")
             if adj_dict.get("data_confidence", {}).get("applied"):
                 adj_lines.append(f"  Data confidence penalty: -0.5")
 

@@ -516,7 +516,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
 
     # â”€â”€ Financials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Always fetch FMP ratios for cross-validation (regardless of yfinance availability)
-    fmp_ratios_raw  = _fmp(f”/ratios-ttm/{ticker}”)
+    fmp_ratios_raw  = await asyncio.to_thread(_fmp, f”/ratios-ttm/{ticker}”)
     fmp_ratios_data = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else (
                       fmp_ratios_raw if isinstance(fmp_ratios_raw, dict) else {})
 
@@ -664,8 +664,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     dossier["sec_filing"] = sec_raw
 
     # â”€â”€ Macro (shared cache) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    dossier[“macro”] = macro
-    dossier[“macro”][“regime”] = _detect_regime(macro)
+    dossier[“macro”] = {**macro, “regime”: _detect_regime(macro)}
 
     # ── Batch 2: peer comps (needs sector from profile) â€” 4 peers in parallel â”€
     # Try Finnhub /stock/peers first (actual industry peers), fall back to sector defaults
