@@ -11,7 +11,6 @@ import requests
 import yfinance as yf
 from dotenv import load_dotenv
 
-from fair_value import compute_fair_values
 from live_events import emit_live
 
 load_dotenv()
@@ -776,6 +775,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
 
     # ── Archetype-based fair value ──────────────────────────────────────────────
     try:
+        from fair_value import compute_fair_values
         dossier["fair_values"] = compute_fair_values(dossier)
         if verbose:
             fv = dossier["fair_values"]

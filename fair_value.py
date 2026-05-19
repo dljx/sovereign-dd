@@ -27,6 +27,20 @@ def _safe(val, fallback=None):
     return val
 
 
+def _norm_margin(v):
+    """Normalise gross/net margin to fractional (0–1).
+    yfinance stores as percentage (e.g. 65.4); FMP stores as fraction (0.654).
+    Auto-detect: if abs(v) > 1, assume percentage and divide by 100.
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return f / 100 if abs(f) > 1 else f
+    except (ValueError, TypeError):
+        return None
+
+
 def _cagr(start, end, years):
     """Compound annual growth rate. Returns None if inputs invalid."""
     try:
@@ -118,7 +132,7 @@ def classify_archetype(dossier: dict) -> dict:
     net_income    = _safe(income0.get("net_income"))
     fcf           = _safe(cf0.get("free_cash_flow")) or _safe(ratios.get("fcf"))
     revenue_ttm   = _safe(ratios.get("revenue_ttm"))
-    gross_margin  = _safe(ratios.get("gross_margin"))
+    gross_margin  = _norm_margin(ratios.get("gross_margin"))
     capex         = _safe(cf0.get("capex"))
 
     # ── Revenue growth YoY ────────────────────────────────────────────────────
@@ -273,6 +287,7 @@ def compute_fair_values(dossier: dict) -> dict:
         ARCHETYPE_MATURE:         _value_mature_compounder,
     }
 
+    archetype_info: dict = {}  # init before try — prevents UnboundLocalError in handler
     try:
         archetype_info = classify_archetype(dossier)
         archetype_key  = archetype_info["archetype"]
