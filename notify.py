@@ -151,3 +151,75 @@ def alert_scout_summary(discoveries: list[dict]) -> bool:
         lines.append("\nFull reports sent to Deep Dives ↑")
         msg = "\n".join(lines)
     return _send(msg, TOPIC_SCAN_RESULTS)
+
+
+def alert_gems_signal(d: dict, pillar_scores: dict | None = None) -> bool:
+    """Send a BUY signal alert for a gems discovery → Trade Alerts topic."""
+    emoji  = GRADE_EMOJI.get(d.get("grade", ""), "")
+    conf   = CONF_EMOJI.get(d.get("confidence", ""), "")
+    score  = d.get("score", 0)
+    grade  = d.get("grade", "?")
+    ticker = d.get("ticker", "?")
+    composite  = d.get("gems_composite_score", 0)
+    rationale  = d.get("gems_pillar_rationale", "") or d.get("gemma_rationale", "")
+    catalyst   = d.get("catalyst", "")
+    asymmetry  = d.get("asymmetry_ratio", "")
+    thesis     = d.get("thesis", "")
+    key_swing  = d.get("key_swing_factor", "—")
+    pos        = d.get("position_guidance", {})
+    banger     = d.get("banger", {})
+    cycle_pos  = d.get("cycle_position", {})
+
+    # Pillar score bar (compact, single line)
+    pillar_line = ""
+    if pillar_scores and isinstance(pillar_scores, dict):
+        fp  = pillar_scores.get("financial_physics", 0)
+        mp  = pillar_scores.get("moat_proxy", 0)
+        tmp = pillar_scores.get("temporal", 0)
+        mgm = pillar_scores.get("management", 0)
+        chk = pillar_scores.get("chokepoint_proxy", 0)
+        pillar_line = (
+            f"\n💎 <b>Pillars:</b> "
+            f"Fin:{fp:.1f} Moat:{mp:.1f} Tempo:{tmp:.1f} "
+            f"Mgmt:{mgm:.1f} Choke:{chk:.1f} → <b>{composite:.1f}/10</b>"
+        )
+
+    banger_tag = (
+        "\n🔥 <b>BANGER</b> — " + banger.get("reason", "")[:150]
+        if isinstance(banger, dict) and banger.get("is_banger") else ""
+    )
+
+    msg = (
+        f"{emoji} <b>GEMS SIGNAL — {ticker}</b> · <code>gems</code>\n"
+        f"<b>Score:</b> {score:.1f}/10 · {grade} · {conf}"
+        + pillar_line
+        + (f"\n\n<b>Why flagged:</b> <i>{rationale[:200]}</i>" if rationale else "")
+        + (f"\n<b>Catalyst:</b> <i>{catalyst[:200]}</i>" if catalyst else "")
+        + (f"\n<b>Asymmetry:</b> {asymmetry}" if asymmetry else "")
+        + (f"\n<b>Cycle:</b> {cycle_pos.get('regime','')} — {cycle_pos.get('phase','')}" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
+        + f"\n\n<b>Bull case:</b> <i>{thesis[:300]}</i>"
+        + (f"\n<b>Key factor:</b> {key_swing[:150]}" if key_swing and key_swing != "—" else "")
+        + (f"\n<b>Position:</b> {pos.get('range','?')} ({pos.get('reasoning','')[:100]})" if isinstance(pos, dict) and pos.get("range") else "")
+        + banger_tag
+        + f"\n⏰ {d.get('analyzed_at', '')}"
+    )
+    return _send(msg, TOPIC_TRADE_ALERTS)
+
+
+def alert_gems_summary(discoveries: list[dict]) -> bool:
+    """Send gems run summary → Scan Results topic."""
+    if not discoveries:
+        msg = "💎 <b>SOVEREIGN GEMS</b>\n\nNo BUY signals found in today's scan."
+    else:
+        lines = [f"💎 <b>SOVEREIGN GEMS — {len(discoveries)} signal(s) found</b>\n"]
+        for d in sorted(discoveries, key=lambda x: x.get("score", 0), reverse=True):
+            emoji = GRADE_EMOJI.get(d.get("grade", ""), "")
+            composite = d.get("gems_composite_score", 0)
+            lines.append(
+                f"{emoji} <b>{d['ticker']}</b>  "
+                f"{d.get('score', 0):.1f}/10  "
+                f"(pillar: {composite:.1f})"
+            )
+        lines.append("\nFull reports sent to Deep Dives ↑")
+        msg = "\n".join(lines)
+    return _send(msg, TOPIC_SCAN_RESULTS)
