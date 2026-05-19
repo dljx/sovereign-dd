@@ -167,7 +167,17 @@ async def _triage_with_tools(
         )
     except Exception as e:
         print(f"  [gems] Triage LLM call failed: {e}")
-        return []
+        print("  [gems] Falling back to top-N by composite score")
+        sorted_cands = sorted(
+            candidates,
+            key=lambda c: scores.get(c["ticker"], {}).get("composite", 0),
+            reverse=True,
+        )
+        return [
+            {"ticker": c["ticker"], "pillar_rationale": "top composite score (LLM fallback)", "conviction": "MEDIUM"}
+            for c in sorted_cands[:debate_count]
+            if c["ticker"] not in recently_analyzed
+        ]
 
     try:
         parsed = extract_json(text)

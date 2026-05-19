@@ -196,6 +196,8 @@ async def _main():
             "  python main.py --scout [--save] [--notify]\n"
             "  python main.py --gems [--save] [--notify]\n"
             "  python main.py --scout --gems [--save] [--notify]\n"
+            "  python main.py --portfolio --gems [--save] [--notify]\n"
+            "  python main.py --portfolio --scout --gems [--save] [--notify]\n"
             "  python main.py --portfolio --scout [--save] [--notify]"
         )
         sys.exit(1)
