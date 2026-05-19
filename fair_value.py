@@ -30,7 +30,7 @@ def _safe(val, fallback=None):
 def _cagr(start, end, years):
     """Compound annual growth rate. Returns None if inputs invalid."""
     try:
-        if start and end and years > 0 and start > 0:
+        if start and end is not None and years > 0 and start > 0:
             return (end / start) ** (1 / years) - 1
     except Exception:
         pass
@@ -273,10 +273,9 @@ def compute_fair_values(dossier: dict) -> dict:
         ARCHETYPE_MATURE:         _value_mature_compounder,
     }
 
-    archetype_info = classify_archetype(dossier)
-    archetype_key  = archetype_info["archetype"]
-
     try:
+        archetype_info = classify_archetype(dossier)
+        archetype_key  = archetype_info["archetype"]
         engine = _ENGINES[archetype_key]
         result = engine(dossier)
     except Exception as exc:
@@ -413,7 +412,7 @@ def _value_asset_light(dossier: dict) -> dict:
         ps_multiple = 3
 
     secondary_fv = None
-    if revenue_ttm is not None and shares_out is not None and shares_out > 0:
+    if revenue_ttm is not None and revenue_ttm > 0 and shares_out is not None and shares_out > 0:
         secondary_fv = (ps_multiple * revenue_ttm) / shares_out
 
     secondary = [{
@@ -819,8 +818,12 @@ def _value_early_stage(dossier: dict) -> dict:
         ev_num = market_cap_bn * 1e9 + (total_debt or 0) - (cash or 0)
         ev_revenue = ev_num / revenue_ttm
 
-    # Runway signal
-    if cash_runway_months is None:
+    # Runway signal — distinguish "not burning" from "truly critical"
+    if free_cash_flow is None:
+        runway_signal = "DATA_UNAVAILABLE"
+    elif free_cash_flow >= 0:
+        runway_signal = "NOT_BURNING"
+    elif cash_runway_months is None:
         runway_signal = "CRITICAL"
     elif cash_runway_months >= 18:
         runway_signal = "ADEQUATE"
