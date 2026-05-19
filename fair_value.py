@@ -671,7 +671,7 @@ def _value_financial(dossier: dict) -> dict:
             "dividend_yield": None,
         },
         "blind_spots": blind_spots,
-        "invalid": ["EV_FCF_INVALID_FOR_FINANCIALS", "STANDARD_DCF_INVALID_FOR_FINANCIALS"],
+        "invalid": ["EV_FCF_INVALID_FOR_FINANCIALS", "STANDARD_DCF_INVALID_FOR_FINANCIALS", "DDM_INVALID_NO_DIVIDEND_DATA"],
     }
 
 
