@@ -20,13 +20,12 @@ GRADE_COLORS = {
 }
 
 AGENT_COLORS = {
-    "ValueHunter":   "cyan",
-    "GrowthAlpha":   "bright_green",
-    "QuantSignal":   "bright_blue",
-    "RiskSentinel":  "red",
-    "MacroLens":     "magenta",
-    "MoatForensics": "bright_yellow",
-    "Moderator":     "white",
+    "StructuralEdge":       "bright_yellow",
+    "FundamentalForensics": "cyan",
+    "ValuationEngine":      "bright_green",
+    "CatalystHunter":       "magenta",
+    "MarketStructure":      "bright_blue",
+    "Moderator":            "white",
 }
 
 

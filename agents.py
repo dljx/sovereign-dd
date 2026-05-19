@@ -283,11 +283,11 @@ Output ONLY this JSON (no other text):
     "data_conviction": <float 1-10>
   }}
 }}
-If you are MoatForensics, also add:
+If you are StructuralEdge, also add:
   "moat_scores": {{"replication": <1-10>, "stickiness": <1-10>, "compounding": <1-10>}},
   "moat_trajectory": "<WIDENING|STABLE|NARROWING>",
   "moat_evidence": "<one sentence citing specific evidence for the trajectory assessment>"
-If you are MacroLens, also add:
+If you are CatalystHunter, also add:
   "cycle_regime": "<most relevant cycle type from the list in your system prompt>",
   "cycle_phase": "<EARLY|MID|LATE|PEAK|TROUGH>",
   "cycle_evidence": "<one sentence: why this phase — cite specific data points>"
@@ -372,7 +372,7 @@ Output ONLY this JSON:
   "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>",
   "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
   "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
-  "moat_composite": "<MoatForensics composite score if available, else null>",
+  "moat_composite": "<StructuralEdge composite score if available, else null>",
   "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
   "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
@@ -399,7 +399,7 @@ Output ONLY this JSON:
   "score_rationale": "<why this score, not higher or lower>",
   "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
   "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
-  "moat_composite": "<MoatForensics composite score if available, else null>",
+  "moat_composite": "<StructuralEdge composite score if available, else null>",
   "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
   "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
