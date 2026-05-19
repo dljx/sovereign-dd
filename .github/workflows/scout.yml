@@ -2,9 +2,11 @@ name: Sovereign Scout (continuous)
 
 on:
   schedule:
-    # Every 15 min, 24/7. Dedup registry absorbs idle overnight runs cheaply
-    # (1 triage call when nothing new). Catches overnight catalysts before open.
-    - cron: "*/15 * * * *"
+    # Every 4 hours. With 48h dedup there is no value running more frequently —
+    # the candidate pool doesn't change meaningfully in under 4 hours and
+    # back-to-back 15-min runs were exhausting the daily RPD quota by midday.
+    # 6 runs/day × 12 debates × ~37 calls = ~2,664 RPD (35% of 7,500 budget).
+    - cron: "0 */4 * * *"
   workflow_dispatch: {}
 
 concurrency:
