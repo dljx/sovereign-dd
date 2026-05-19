@@ -121,13 +121,16 @@ def render(result: dict, dossier: dict) -> None:
         if fv is not None:
             try:
                 fv_float = float(fv)
-                mos = (fv_float - price_now) / fv_float * 100 if fv_float > 0 else 0
-                mos_color = "green" if mos >= 15 else ("yellow" if mos >= 0 else "red")
-                mos_str = f"{mos:+.1f}%"
-                fv_parts.append(
-                    f"[bold]Fair Value:[/bold] ${fv_float:.2f}  "
-                    f"[bold]MoS:[/bold] [{mos_color}]{mos_str}[/{mos_color}] vs ${price_now:.2f}"
-                )
+                mos = (fv_float - price_now) / fv_float * 100 if (fv_float > 0 and price_now > 0) else None
+                if mos is not None:
+                    mos_color = "green" if mos >= 15 else ("yellow" if mos >= 0 else "red")
+                    mos_str = f"{mos:+.1f}%"
+                    fv_parts.append(
+                        f"[bold]Fair Value:[/bold] ${fv_float:.2f}  "
+                        f"[bold]MoS:[/bold] [{mos_color}]{mos_str}[/{mos_color}] vs ${price_now:.2f}"
+                    )
+                else:
+                    fv_parts.append(f"[bold]Fair Value:[/bold] ${fv_float:.2f}")
             except (ValueError, TypeError):
                 fv_parts.append(f"[bold]Fair Value:[/bold] {escape(str(fv))}")
         if entry:
@@ -221,9 +224,9 @@ def render(result: dict, dossier: dict) -> None:
 
     # ── Key Factors ────────────────────────────────────────────────────────
     console.print(Panel(
-        f"[bold]Key Swing Factor:[/bold] {result.get('key_swing_factor', '—')}\n\n"
-        f"[bold]Rationale:[/bold] {result.get('score_rationale', '—')}\n\n"
-        f"[bold]Dissent:[/bold] {result.get('dissent', '—')}",
+        f"[bold]Key Swing Factor:[/bold] {escape(str(result.get('key_swing_factor', '—')))}\n\n"
+        f"[bold]Rationale:[/bold] {escape(str(result.get('score_rationale', '—')))}\n\n"
+        f"[bold]Dissent:[/bold] {escape(str(result.get('dissent', '—')))}",
         title="[bold]Debate Summary[/bold]", border_style="dim white",
     ))
 

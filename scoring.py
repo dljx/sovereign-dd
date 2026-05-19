@@ -247,9 +247,9 @@ def banger_check(result: dict, dossier: dict) -> dict:
         fv_composite = float(fv_composite) if fv_composite is not None else None
     except (ValueError, TypeError):
         fv_composite = None
-    floor_iv = fv_composite or dcf_iv
+    floor_iv = fv_composite if fv_composite is not None else dcf_iv
     if price and floor_iv and price > 0 and floor_iv >= price * 0.7:
-        source = "FV composite" if fv_composite else "DCF IV"
+        source = "FV composite" if fv_composite is not None else "DCF IV"
         conditions_met.append(f"{source} ${floor_iv:.2f} >= 70% of price ${price:.2f}")
     else:
         conditions_failed.append("insufficient fair value floor support")
