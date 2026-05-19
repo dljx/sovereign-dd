@@ -449,14 +449,14 @@ def apply_adjustments(
     data_confidence = dq.get("data_confidence", "HIGH")
     cycle_type = dossier.get("cycle_type")
 
-    # Extract cycle phase from debate result (set by MacroLens synthesis)
+    # Extract cycle phase from debate result (set by CatalystHunter synthesis)
     cycle_pos = result.get("cycle_position") or {}
     if isinstance(cycle_pos, dict):
         cycle_phase = cycle_pos.get("phase")
     else:
         cycle_phase = None
 
-    # Extract moat composite from debate result (set by MoatForensics)
+    # Extract moat composite from debate result (set by StructuralEdge synthesis)
     # Coerce to float — LLMs sometimes return the string "null" or "7.5"
     _mc = result.get("moat_composite")
     try:

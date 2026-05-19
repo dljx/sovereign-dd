@@ -352,7 +352,7 @@ Output ONLY this JSON:
   }}
 }}"""
 
-SYNTHESIS_TEMPLATE = """Six investment agents have debated {ticker} and their scores have converged.
+SYNTHESIS_TEMPLATE = """Five investment analysts have debated {ticker} and their scores have converged.
 Synthesize their final positions into a coherent consensus verdict.
 
 === FINAL AGENT POSITIONS ===
@@ -377,7 +377,7 @@ Output ONLY this JSON:
   "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
 
-MODERATOR_TEMPLATE = """You are the Moderator. Six investment agents have debated {ticker}
+MODERATOR_TEMPLATE = """You are the Moderator. Five investment analysts have debated {ticker}
 across {loops} debate loop(s) and scores have NOT converged (spread = {spread:.2f}, threshold = {threshold:.1f}).
 Synthesize the full debate into a final consensus score. Give more weight to arguments backed by compelling evidence — whether quantitative metrics or well-supported qualitative analysis.
 Note any irreconcilable dissent clearly.
