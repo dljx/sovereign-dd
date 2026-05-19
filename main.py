@@ -5,6 +5,8 @@ Usage:
     python main.py TICKER --save                   # single ticker, save JSON
     python main.py --portfolio --save --notify     # all portfolio tickers + Telegram summary
     python main.py --scout --save --notify         # scout mode + Telegram BUY alerts
+    python main.py --gems [--save] [--notify]      # gems pipeline + Telegram BUY alerts
+    python main.py --scout --gems [--save] [--notify]  # scout + gems concurrently
 
 Portfolio tickers are read from the PORTFOLIO_TICKERS env var (comma-separated).
 """
@@ -101,6 +103,28 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
 
 # ── Scout mode ────────────────────────────────────────────────────────────────
 
+async def _run_gems(save: bool = False, notify: bool = False):
+    from gems import run_gems
+    discoveries = await run_gems(verbose=True)
+
+    if notify:
+        from notify import alert_buy_signal, alert_scout_summary, alert_dd_result
+        for d in discoveries:
+            alert_buy_signal(d)
+            if d.get("output_file"):
+                try:
+                    with open(d["output_file"]) as f:
+                        data = json.load(f)
+                    alert_dd_result(data["result"])
+                except Exception:
+                    pass
+        if discoveries:
+            alert_scout_summary(discoveries)
+        console.print(f"[dim]Gems alerts sent to Telegram ({len(discoveries)} signal(s))[/dim]")
+
+    return discoveries
+
+
 async def _run_scout(save: bool = False, notify: bool = False):
     from scout import run_scout
     portfolio = _portfolio_tickers() if os.getenv("PORTFOLIO_TICKERS") else []
@@ -132,18 +156,36 @@ async def _main():
     notify         = "--notify"    in args
     portfolio_mode = "--portfolio" in args
     scout_mode     = "--scout"     in args
+    gems_mode      = "--gems"      in args
     positional     = [a for a in args if not a.startswith("--")]
 
-    if portfolio_mode and scout_mode:
-        # Run both concurrently
+    if portfolio_mode and scout_mode and gems_mode:
         await asyncio.gather(
             _run_portfolio(save=save, notify=notify),
             _run_scout(save=save, notify=notify),
+            _run_gems(save=save, notify=notify),
+        )
+    elif scout_mode and gems_mode:
+        await asyncio.gather(
+            _run_scout(save=save, notify=notify),
+            _run_gems(save=save, notify=notify),
+        )
+    elif portfolio_mode and scout_mode:
+        await asyncio.gather(
+            _run_portfolio(save=save, notify=notify),
+            _run_scout(save=save, notify=notify),
+        )
+    elif portfolio_mode and gems_mode:
+        await asyncio.gather(
+            _run_portfolio(save=save, notify=notify),
+            _run_gems(save=save, notify=notify),
         )
     elif portfolio_mode:
         await _run_portfolio(save=save, notify=notify)
     elif scout_mode:
         await _run_scout(save=save, notify=notify)
+    elif gems_mode:
+        await _run_gems(save=save, notify=notify)
     elif positional:
         await _run_single(positional[0].upper(), save=save)
     else:
@@ -152,6 +194,8 @@ async def _main():
             "  python main.py TICKER [--save]\n"
             "  python main.py --portfolio [--save] [--notify]\n"
             "  python main.py --scout [--save] [--notify]\n"
+            "  python main.py --gems [--save] [--notify]\n"
+            "  python main.py --scout --gems [--save] [--notify]\n"
             "  python main.py --portfolio --scout [--save] [--notify]"
         )
         sys.exit(1)
