@@ -300,13 +300,13 @@ If you are FundamentalForensics, also add these fields to your JSON:
 
 If you are ValuationEngine, also add these fields to your JSON:
   "archetype_validation": "<agree with pre-classification or override — with reasoning>",
-  "fair_value_assessment": {
+  "fair_value_assessment": {{
     "primary_method": "<valuation method name>",
     "method_rationale": "<why this method is most appropriate>",
     "fair_value_estimate": <float>,
     "margin_of_safety_pct": <float>,
     "historical_multiple_position": "<PREMIUM|FAIR|DISCOUNT|DEEP_DISCOUNT>"
-  },
+  }},
   "blind_spot_check": "<what the archetype's structural blind spot revealed — cite evidence>",
   "expectation_disconnect": "<description of market vs reality gap, if any>"
 
@@ -314,19 +314,19 @@ If you are CatalystHunter, also add these fields to your JSON:
   "cycle_regime": "<most relevant cycle type from your system prompt>",
   "cycle_phase": "<EARLY|MID|LATE|PEAK|TROUGH>",
   "cycle_evidence": "<one sentence: why this phase — cite specific data points>",
-  "risk_matrix": [{"risk": "<description>", "probability": "<HIGH|MED|LOW>", "impact": "<HIGH|MED|LOW>"}],
+  "risk_matrix": [{{"risk": "<description>", "probability": "<HIGH|MED|LOW>", "impact": "<HIGH|MED|LOW>"}}],
   "macro_sensitivity": "<HIGH|MEDIUM|LOW> — <key exposure>"
 
 If you are MarketStructure, also add these fields to your JSON:
   "trend_alignment": "<BULLISH_STACK|PARTIAL|BEARISH_STACK|TRANSITIONING>",
   "accumulation_signal": "<ACCUMULATING|DISTRIBUTING|NEUTRAL>",
-  "entry_assessment": {
+  "entry_assessment": {{
     "timing": "<ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
     "entry_zone": "<price range or description>",
     "stop_loss_level": "<price or percentage>",
     "reasoning": "<why this entry timing>"
-  },
-  "volatility_profile": {"beta": <float>, "archetype": "<description>"}
+  }},
+  "volatility_profile": {{"beta": <float>, "archetype": "<description>"}}
 """
 
 ROUND2_TEMPLATE = """You have completed your Round 1 assessment of {ticker} (your score: {my_score}).
