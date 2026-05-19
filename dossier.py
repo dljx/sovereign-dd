@@ -352,11 +352,12 @@ def _yf_financials(ticker: str) -> dict:
         return {"ratios": ratios, "analyst": analyst,
                 "income": income, "balance": balance, "cashflow": cashflow,
                 "industry": info.get("industry", ""),
+                "sector": info.get("sector", ""),
                 "company_name": info.get("longName") or info.get("shortName", ""),
                 "market_cap": info.get("marketCap")}
     except Exception as e:
         return {"error": str(e), "ratios": {}, "analyst": {},
-                "income": [], "balance": [], "cashflow": [], "industry": ""}
+                "income": [], "balance": [], "cashflow": [], "industry": "", "sector": ""}
 
 
 SECTOR_TERMINAL = {
@@ -528,7 +529,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     )
 
     # â"€â"€ Profile â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    sector = profile_raw.get("finnhubIndustry", "Unknown")
+    sector = profile_raw.get("finnhubIndustry") or yf_fin.get("sector") or "Unknown"
     dossier["profile"] = {
         "name":          profile_raw.get("name") or yf_fin.get("company_name") or ticker,
         "sector":        sector,
