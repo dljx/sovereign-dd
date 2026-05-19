@@ -272,6 +272,144 @@ async def call_gemini_async(
 
     raise RuntimeError(f"LLM failed after {max_retries} attempts: {last_err}")
 
+
+async def call_gemini_with_tools_async(
+    system: str,
+    user: str,
+    tools: "types.Tool",
+    tool_executor,          # callable: (fn_name, fn_args, **kwargs) -> Any
+    tool_executor_kwargs: dict | None = None,
+    model: str = "gemma-4-31b-it",
+    temperature: float = 0.2,
+    max_tool_turns: int = 6,
+    max_retries: int = 8,
+) -> str:
+    """Multi-turn function-calling loop for Gemini models.
+
+    Sends system+user prompt with tools declared. On each model turn:
+      - If the model returns function_call parts, execute them via tool_executor,
+        send results back as tool role messages, and continue.
+      - If the model returns a text response (no more function calls), return it.
+      - Stop after max_tool_turns to prevent infinite loops.
+
+    Args:
+        system: System prompt string.
+        user: User message string.
+        tools: google.genai types.Tool with function declarations.
+        tool_executor: Callable(fn_name: str, fn_args: dict, **tool_executor_kwargs) -> Any.
+        tool_executor_kwargs: Extra kwargs forwarded to tool_executor on every call.
+        model: Model string (default gemma-4-31b-it).
+        temperature: Sampling temperature.
+        max_tool_turns: Max number of tool call rounds before forcing a final text answer.
+        max_retries: Max API retry attempts (reuses existing key rotation logic).
+
+    Returns:
+        Final text response from the model as a string.
+    """
+    from google.genai import types as _types
+
+    tool_executor_kwargs = tool_executor_kwargs or {}
+
+    # Build initial contents list
+    contents: list[_types.Content] = [
+        _types.Content(role="user", parts=[_types.Part(text=user)])
+    ]
+
+    config = _types.GenerateContentConfig(
+        system_instruction=system,
+        tools=[tools],
+        temperature=temperature,
+    )
+
+    for turn in range(max_tool_turns + 1):
+        # Make API call with retries (reuse existing key rotation)
+        last_err = None
+        response = None
+        for attempt in range(max_retries):
+            key, wait = _pick_key()
+            if key is None:
+                raise RuntimeError(
+                    "All API keys have exhausted their daily quota. "
+                    "Quota resets at midnight UTC."
+                )
+            if wait > 0:
+                wait += random.uniform(0, 2)
+                await asyncio.sleep(wait)
+
+            async with _semaphore():
+                try:
+                    client = _client_for(key)
+                    resolved_model = _resolve_model(client, key, model)
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=resolved_model,
+                        contents=contents,
+                        config=config,
+                    )
+                    break  # success
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e).lower()
+                    is_retryable = (
+                        "429" in err_str or "quota" in err_str
+                        or "503" in err_str or "500" in err_str or "502" in err_str
+                    )
+                    if not is_retryable or attempt == max_retries - 1:
+                        raise
+                    if "429" in err_str or "quota" in err_str:
+                        if _is_daily_exhausted(err_str):
+                            _exhaust_key(key)
+                        else:
+                            _cool_key(key, _jittered(min(2 ** (attempt + 1), 30)))
+                    else:
+                        server_err_wait = _jittered(min(2 ** (attempt + 1), 10))
+                        await asyncio.sleep(server_err_wait)
+        else:
+            raise RuntimeError(f"LLM tool call failed after {max_retries} attempts: {last_err}")
+
+        if response is None:
+            raise RuntimeError("No response from LLM")
+
+        # Check for function call parts
+        fn_call_parts = [
+            part for part in (response.candidates[0].content.parts or [])
+            if hasattr(part, "function_call") and part.function_call is not None
+        ]
+
+        if not fn_call_parts or turn == max_tool_turns:
+            # No more tool calls — extract and return text
+            text_parts = [
+                part.text for part in (response.candidates[0].content.parts or [])
+                if hasattr(part, "text") and part.text
+            ]
+            return "\n".join(text_parts).strip() if text_parts else ""
+
+        # Add model's function call response to contents
+        contents.append(response.candidates[0].content)
+
+        # Execute each function call and add results
+        tool_response_parts = []
+        for part in fn_call_parts:
+            fc = part.function_call
+            fn_args = dict(fc.args) if fc.args else {}
+            result = tool_executor(fc.name, fn_args, **tool_executor_kwargs)
+            tool_response_parts.append(
+                _types.Part(
+                    function_response=_types.FunctionResponse(
+                        name=fc.name,
+                        response={"result": result},
+                    )
+                )
+            )
+
+        contents.append(
+            _types.Content(role="tool", parts=tool_response_parts)
+        )
+
+    # Fallback — should not reach here
+    return ""
+
+
 def extract_json(text: str) -> dict | list:
     """Extract the first JSON object or array from a text response."""
     text = re.sub(r"```(?:json)?\s*", "", text)
