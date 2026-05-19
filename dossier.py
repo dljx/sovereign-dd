@@ -137,6 +137,15 @@ def _fred_cpi_yoy() -> float | None:
         return None
 
 
+def _safe_float(val) -> float | None:
+    """Parse AV overview strings ('12.77', 'None', '-') to float or None."""
+    try:
+        f = float(val)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _av(function: str, params: dict = None) -> dict:
     global _av_idx, _av_last_call
     if not _av_keys:
@@ -489,6 +498,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         technicals,
         yf_fin,
         earnings_raw,
+        av_overview_raw,
         insiders_raw,
         fh_news_raw,
         sec_raw,
@@ -499,6 +509,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         _fetch_and_emit(ticker, asyncio.to_thread(_technicals, ticker), "technicals"),
         _fetch_and_emit(ticker, asyncio.to_thread(_yf_financials, ticker), "financials"),
         _fetch_and_emit(ticker, asyncio.to_thread(_av, "EARNINGS", {"symbol": ticker}), "earnings"),
+        _fetch_and_emit(ticker, asyncio.to_thread(_av, "OVERVIEW", {"symbol": ticker}), "av_overview"),
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/insider-transactions", {"symbol": ticker, "from": since}), "insiders"),
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/company-news", {"symbol": ticker, "from": from_date, "to": to_date}), "news"),
         _fetch_and_emit(ticker, asyncio.to_thread(_latest_filing, ticker), "sec_filing"),
@@ -553,20 +564,36 @@ async def build(ticker: str, verbose: bool = True) -> dict:
 
     yf_r = yf_fin.get("ratios", {})
 
-    # Forward PE sanity check: if implied earnings growth > 100% vs trailing PE, the
-    # forward EPS estimate is almost certainly a data error (common for ADRs where yfinance
-    # mixes underlying-share EPS with ADR-level price). Null it out rather than debate wrong data.
-    _pe_trailing = yf_r.get("pe") or fmp_ratios_data.get("peRatioTTM")
-    _pe_forward  = yf_r.get("fwd_pe") or fmp_ratios_data.get("priceEarningsRatioTTM")
-    _fwd_pe_clean: float | None = _pe_forward
-    if _pe_trailing and _pe_forward and _pe_trailing > 0 and _pe_forward > 0:
-        _implied_growth = _pe_trailing / _pe_forward - 1
-        if _implied_growth > 1.0:  # forward PE implies >100% earnings growth in one year
-            _fwd_pe_clean = None
-            if verbose:
-                print(f"  [dossier] {ticker}: forward PE ({_pe_forward:.1f}x) vs trailing "
-                      f"({_pe_trailing:.1f}x) implies {_implied_growth:.0%} YoY growth — "
-                      f"likely data error (ADR/FX mismatch?), nulling fwd_pe")
+    # AV OVERVIEW fields (returned as strings; missing/invalid → None via _safe_float)
+    av_fwd_pe      = _safe_float(av_overview_raw.get("ForwardPE"))
+    av_pb          = _safe_float(av_overview_raw.get("PriceToBookRatio"))
+    av_trailing_pe = _safe_float(av_overview_raw.get("PERatio"))
+
+    _pe_trailing = yf_r.get("pe") or fmp_ratios_data.get("peRatioTTM") or av_trailing_pe
+    _pe_forward_raw = yf_r.get("fwd_pe") or fmp_ratios_data.get("priceEarningsRatioTTM")
+
+    # Prefer AV OVERVIEW forward PE — it's derived from analyst consensus estimates and is
+    # correctly adjusted for ADR share structure (fixes the 6.25x vs 12.77x MFG discrepancy).
+    if av_fwd_pe:
+        _fwd_pe_clean: float | None = av_fwd_pe
+        if verbose and _pe_forward_raw and _pe_forward_raw > 0:
+            divergence = abs(av_fwd_pe - _pe_forward_raw) / max(av_fwd_pe, _pe_forward_raw)
+            if divergence > 0.10:
+                print(f"  [dossier] {ticker}: AV forward PE {av_fwd_pe}x overrides "
+                      f"yfinance/FMP {_pe_forward_raw}x ({divergence:.0%} divergence)")
+    else:
+        # Fallback: yfinance/FMP forward PE with sanity check.
+        # If implied YoY earnings growth > 100%, it's almost certainly a data error
+        # (common for ADRs where yfinance mixes underlying-share EPS with ADR price).
+        _fwd_pe_clean = _pe_forward_raw
+        if _pe_trailing and _pe_forward_raw and _pe_trailing > 0 and _pe_forward_raw > 0:
+            _implied_growth = _pe_trailing / _pe_forward_raw - 1
+            if _implied_growth > 1.0:
+                _fwd_pe_clean = None
+                if verbose:
+                    print(f"  [dossier] {ticker}: forward PE ({_pe_forward_raw:.1f}x) vs trailing "
+                          f"({_pe_trailing:.1f}x) implies {_implied_growth:.0%} YoY growth — "
+                          f"likely data error (ADR/FX mismatch?), nulling fwd_pe")
 
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
@@ -575,7 +602,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         "ratios_ttm": {
             "pe":            _pe_trailing,
             "fwd_pe":        _fwd_pe_clean,
-            "pb":            yf_r.get("pb")            or fmp_ratios_data.get("priceToBookRatioTTM"),
+            "pb":            yf_r.get("pb") or av_pb or fmp_ratios_data.get("priceToBookRatioTTM"),
             "ps":            yf_r.get("ps")            or fmp_ratios_data.get("priceToSalesRatioTTM"),
             "ev_ebitda":     yf_r.get("ev_ebitda")    or fmp_ratios_data.get("enterpriseValueMultipleTTM"),
             "gross_margin":  yf_r.get("gross_margin") or fmp_ratios_data.get("grossProfitMarginTTM"),
@@ -589,8 +616,9 @@ async def build(ticker: str, verbose: bool = True) -> dict:
             "fcf":           yf_r.get("fcf"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
-            "beta":          yf_r.get("beta"),
+            “beta”:          yf_r.get(“beta”),
             “short_pct”:     yf_r.get(“short_pct”),
+            “adr_mismatch”:  yf_r.get(“adr_mismatch”, False),
         },
     }
     # Store raw FMP ratios for cross-validation in validator.py
