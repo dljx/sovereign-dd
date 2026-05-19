@@ -351,7 +351,9 @@ def _yf_financials(ticker: str) -> dict:
 
         return {"ratios": ratios, "analyst": analyst,
                 "income": income, "balance": balance, "cashflow": cashflow,
-                "industry": info.get("industry", "")}
+                "industry": info.get("industry", ""),
+                "company_name": info.get("longName") or info.get("shortName", ""),
+                "market_cap": info.get("marketCap")}
     except Exception as e:
         return {"error": str(e), "ratios": {}, "analyst": {},
                 "income": [], "balance": [], "cashflow": [], "industry": ""}
@@ -528,11 +530,11 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     # â"€â"€ Profile â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     sector = profile_raw.get("finnhubIndustry", "Unknown")
     dossier["profile"] = {
-        "name":          profile_raw.get("name", ticker),
+        "name":          profile_raw.get("name") or yf_fin.get("company_name") or ticker,
         "sector":        sector,
         "industry":      yf_fin.get("industry", ""),
         "exchange":      profile_raw.get("exchange", ""),
-        "market_cap_bn": round((profile_raw.get("marketCapitalization") or 0) / 1000, 2),
+        "market_cap_bn": round((profile_raw.get("marketCapitalization") or (yf_fin.get("market_cap") or 0) / 1e6 or 0) / 1000, 2),
         "ipo_date":      profile_raw.get("ipo", ""),
         "employees":     profile_raw.get("employeeTotal", ""),
         "country":       profile_raw.get("country", ""),
@@ -542,7 +544,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
 
     # ── Quote ──â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     dossier["quote"] = {
-        "price":      quote_raw.get("c"),
+        "price":      quote_raw.get("c") or (technicals.get("price") if isinstance(technicals, dict) else None),
         "change":     quote_raw.get("d"),
         "change_pct": quote_raw.get("dp"),
         "high":       quote_raw.get("h"),

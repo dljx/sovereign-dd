@@ -126,6 +126,21 @@ async def _r3_emit(
 
 # â"€â"€ Main async orchestrator â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
+def _extract_ve_fair_value(transcript: list) -> float | None:
+    """Extract ValuationEngine's fair_value_estimate from transcript R1 output."""
+    for entry in transcript:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("agent") == "ValuationEngine" and str(entry.get("round", "")).startswith("1"):
+            fva = entry.get("fair_value_assessment")
+            if isinstance(fva, dict) and fva.get("fair_value_estimate") is not None:
+                try:
+                    return float(fva["fair_value_estimate"])
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
 async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int | None = None) -> dict:
     """Run the full debate asynchronously. Returns the final consensus dict."""
     transcript: list[dict] = []
@@ -346,7 +361,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "asymmetry_ratio":      moderator_result.get("asymmetry_ratio", ""),
         "moat_composite":       moderator_result.get("moat_composite"),
         "cycle_position":       moderator_result.get("cycle_position", {}),
-        "fair_value_composite": moderator_result.get("fair_value_composite"),
+        "fair_value_composite": moderator_result.get("fair_value_composite") or _extract_ve_fair_value(transcript),
         "entry_assessment":     moderator_result.get("entry_assessment", ""),
         "data_confidence":      dossier.get("data_quality", {}).get("data_confidence", "HIGH"),
         "score_adjustments":    moderator_result.get("score_adjustments", {}),
