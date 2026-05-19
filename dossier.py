@@ -294,12 +294,16 @@ def _yf_financials(ticker: str) -> dict:
                     gp  = fin.loc["Gross Profit", col] if "Gross Profit" in fin.index else None
                     oi  = fin.loc["Operating Income", col] if "Operating Income" in fin.index else None
                     ni  = fin.loc["Net Income", col] if "Net Income" in fin.index else None
+                    rd  = fin.loc["Research And Development", col] if "Research And Development" in fin.index else None
+                    cor = fin.loc["Cost Of Revenue", col] if "Cost Of Revenue" in fin.index else None
                     income.append({
                         "date": str(col.date()),
                         "revenue": int(rev) if rev is not None and str(rev) != "nan" else None,
                         "gross_profit": int(gp) if gp is not None and str(gp) != "nan" else None,
                         "operating_income": int(oi) if oi is not None and str(oi) != "nan" else None,
                         "net_income": int(ni) if ni is not None and str(ni) != "nan" else None,
+                        "research_development": int(rd) if rd is not None and str(rd) != "nan" else None,
+                        "cost_of_revenue": int(cor) if cor is not None and str(cor) != "nan" else None,
                     })
         except Exception:
             pass
@@ -318,6 +322,9 @@ def _yf_financials(ticker: str) -> dict:
                         "cash": _bs("Cash And Cash Equivalents"),
                         "current_assets": _bs("Current Assets"),
                         "current_liabilities": _bs("Current Liabilities"),
+                        "goodwill": _bs("Goodwill"),
+                        "intangible_assets": _bs("Other Intangible Assets"),
+                        "inventory": _bs("Inventory"),
                     })
         except Exception:
             pass
@@ -331,11 +338,13 @@ def _yf_financials(ticker: str) -> dict:
                     op = _cf("Operating Cash Flow") or _cf("Cash Flow From Continuing Operating Activities")
                     capex = _cf("Capital Expenditure")
                     fcf_val = (op + capex) if op and capex else None
+                    sbc = _cf("Stock Based Compensation")
                     cashflow.append({
                         "date": str(col.date()),
                         "operating_cf": op,
                         "capex": capex,
                         "free_cash_flow": fcf_val,
+                        "stock_based_compensation": sbc,
                     })
         except Exception:
             pass
