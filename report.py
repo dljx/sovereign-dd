@@ -111,6 +111,33 @@ def render(result: dict, dossier: dict) -> None:
             parts.append(f"[bold]Moat:[/bold] {moat_comp:.1f}/10" if isinstance(moat_comp, (int, float)) else f"[bold]Moat:[/bold] {moat_comp}")
         console.print(Panel("\n".join(parts), title="[bold]Opportunity Profile[/bold]", border_style="bright_yellow"))
 
+    # ── Fair Value & Entry ─────────────────────────────────────────────────────
+    fv = result.get("fair_value_composite")
+    entry = result.get("entry_assessment", "")
+    price_now = quote.get("price") or 0
+
+    if fv or entry:
+        fv_parts = []
+        if fv is not None:
+            try:
+                fv_float = float(fv)
+                mos = (fv_float - price_now) / fv_float * 100 if fv_float > 0 else 0
+                mos_color = "green" if mos >= 15 else ("yellow" if mos >= 0 else "red")
+                mos_str = f"{mos:+.1f}%"
+                fv_parts.append(
+                    f"[bold]Fair Value:[/bold] ${fv_float:.2f}  "
+                    f"[bold]MoS:[/bold] [{mos_color}]{mos_str}[/{mos_color}] vs ${price_now:.2f}"
+                )
+            except (ValueError, TypeError):
+                fv_parts.append(f"[bold]Fair Value:[/bold] {escape(str(fv))}")
+        if entry:
+            entry_color = "green" if "ENTER_NOW" in str(entry).upper() else (
+                "yellow" if "WAIT" in str(entry).upper() else "red"
+            )
+            fv_parts.append(f"[bold]Entry:[/bold] [{entry_color}]{escape(str(entry))}[/{entry_color}]")
+        if fv_parts:
+            console.print(Panel("\n".join(fv_parts), title="[bold]Fair Value & Entry[/bold]", border_style="cyan"))
+
     # ── Agent Score Table ──────────────────────────────────────────────────
     loops = result.get("loops_run", 1)
     table = Table(title=f"Agent Scores — R1 → Final ({loops} debate loop(s))",
@@ -151,11 +178,11 @@ def render(result: dict, dossier: dict) -> None:
         dtable = Table(title="Score Decomposition", box=box.SIMPLE_HEAVY,
                        show_header=True, header_style="bold white")
         dtable.add_column("Agent", style="bold", width=14)
-        dtable.add_column("Valuation", justify="right", width=9)
-        dtable.add_column("Growth", justify="right", width=8)
-        dtable.add_column("Risk/Rwd", justify="right", width=9)
-        dtable.add_column("Catalyst", justify="right", width=9)
-        dtable.add_column("DataConv", justify="right", width=9)
+        dtable.add_column("StructMoat", justify="right", width=10)
+        dtable.add_column("FundQual", justify="right", width=9)
+        dtable.add_column("ValGap", justify="right", width=8)
+        dtable.add_column("CatalRisk", justify="right", width=9)
+        dtable.add_column("MktStruct", justify="right", width=9)
 
         for agent, bd in decomp.items():
             if not isinstance(bd, dict):
@@ -163,11 +190,11 @@ def render(result: dict, dossier: dict) -> None:
             color = AGENT_COLORS.get(agent, "white")
             dtable.add_row(
                 Text(agent, style=color),
-                f"{bd.get('valuation', '—')}",
-                f"{bd.get('growth_quality', '—')}",
-                f"{bd.get('risk_reward', '—')}",
-                f"{bd.get('catalyst_strength', '—')}",
-                f"{bd.get('data_conviction', '—')}",
+                f"{bd.get('structural_moat', '—')}",
+                f"{bd.get('fundamental_quality', '—')}",
+                f"{bd.get('valuation_gap', '—')}",
+                f"{bd.get('catalyst_risk', '—')}",
+                f"{bd.get('market_structure', '—')}",
             )
 
         if adj_dict:

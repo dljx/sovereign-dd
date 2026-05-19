@@ -239,13 +239,20 @@ def banger_check(result: dict, dossier: dict) -> dict:
     else:
         conditions_failed.append("no specific catalyst identified")
 
-    # Condition 3: DCF floor support
+    # Condition 3: fair value floor support (DCF from dossier or ValuationEngine consensus)
     price = (dossier.get("quote") or {}).get("price")
     dcf_iv = (dossier.get("valuation") or {}).get("dcf_iv_per_share")
-    if price and dcf_iv and price > 0 and dcf_iv >= price * 0.7:
-        conditions_met.append(f"DCF IV ${dcf_iv:.2f} >= 70% of price ${price:.2f}")
+    fv_composite = result.get("fair_value_composite")
+    try:
+        fv_composite = float(fv_composite) if fv_composite is not None else None
+    except (ValueError, TypeError):
+        fv_composite = None
+    floor_iv = fv_composite or dcf_iv
+    if price and floor_iv and price > 0 and floor_iv >= price * 0.7:
+        source = "FV composite" if fv_composite else "DCF IV"
+        conditions_met.append(f"{source} ${floor_iv:.2f} >= 70% of price ${price:.2f}")
     else:
-        conditions_failed.append("insufficient DCF floor support")
+        conditions_failed.append("insufficient fair value floor support")
 
     # Condition 4: insider net buying
     insiders = dossier.get("insiders") or {}

@@ -346,6 +346,8 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "asymmetry_ratio":      moderator_result.get("asymmetry_ratio", ""),
         "moat_composite":       moderator_result.get("moat_composite"),
         "cycle_position":       moderator_result.get("cycle_position", {}),
+        "fair_value_composite": moderator_result.get("fair_value_composite"),
+        "entry_assessment":     moderator_result.get("entry_assessment", ""),
         "data_confidence":      dossier.get("data_quality", {}).get("data_confidence", "HIGH"),
         "score_adjustments":    moderator_result.get("score_adjustments", {}),
         "banger":               moderator_result.get("banger", {}),
