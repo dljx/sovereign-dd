@@ -1,4 +1,4 @@
-"""Data dossier builder â€” async, parallel fetches per ticker, shared macro cache."""
+"""Data dossier builder â€" async, parallel fetches per ticker, shared macro cache."""
 
 import asyncio
 import os
@@ -74,13 +74,13 @@ async def _fetch_and_emit(ticker: str, coro, source_name: str):
     await emit_live(ticker, {"type": "FETCH_DONE", "source": source_name})
     return result
 
-# Macro data (FRED + VIX) is identical for all tickers â€” fetch once per run
+# Macro data (FRED + VIX) is identical for all tickers â€" fetch once per run
 _macro_cache: dict = {}
 _macro_fetched = False
 _macro_async_lock = asyncio.Lock()
 
 
-# â”€â”€ Sync HTTP helpers (run inside asyncio.to_thread) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€ Sync HTTP helpers (run inside asyncio.to_thread) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 def _fh(path: str, params: dict = None) -> dict | list:
     try:
@@ -445,7 +445,7 @@ def _latest_filing(ticker: str) -> dict:
     return {}
 
 
-# â”€â”€ Async macro cache (fetched once per run, shared across all tickers) â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€ Async macro cache (fetched once per run, shared across all tickers) â"€â"€â"€â"€â"€â"€â"€
 
 async def _get_macro() -> dict:
     global _macro_cache, _macro_fetched
@@ -475,10 +475,10 @@ async def _get_macro() -> dict:
         return _macro_cache
 
 
-# â”€â”€ Main async builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€ Main async builder â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 async def build(ticker: str, verbose: bool = True) -> dict:
-    """Build the full data dossier for a ticker. Async â€” all sources fetched in parallel."""
+    """Build the full data dossier for a ticker. Async â€" all sources fetched in parallel."""
     ticker = ticker.upper()
     if verbose:
         print(f"\n[dossier] Building dossier for {ticker} (parallel fetch)...")
@@ -489,7 +489,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     from_date  = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     to_date    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    # â”€â”€ Batch 1: everything that doesn't depend on another result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Batch 1: everything that doesn't depend on another result â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     await emit_live(ticker, {"type": "DOSSIER_START"})
 
     (
@@ -516,22 +516,22 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         _fetch_and_emit(ticker, _get_macro(), "macro"),
     )
 
-    # â”€â”€ Profile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    sector = profile_raw.get(“finnhubIndustry”, “Unknown”)
-    dossier[“profile”] = {
-        “name”:          profile_raw.get(“name”, ticker),
-        “sector”:        sector,
-        “industry”:      yf_fin.get(“industry”, “”),
-        “exchange”:      profile_raw.get(“exchange”, “”),
-        “market_cap_bn”: round((profile_raw.get(“marketCapitalization”) or 0) / 1000, 2),
-        “ipo_date”:      profile_raw.get(“ipo”, “”),
-        “employees”:     profile_raw.get(“employeeTotal”, “”),
-        “country”:       profile_raw.get(“country”, “”),
-        “website”:       profile_raw.get(“weburl”, “”),
+    # â"€â"€ Profile â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    sector = profile_raw.get("finnhubIndustry", "Unknown")
+    dossier["profile"] = {
+        "name":          profile_raw.get("name", ticker),
+        "sector":        sector,
+        "industry":      yf_fin.get("industry", ""),
+        "exchange":      profile_raw.get("exchange", ""),
+        "market_cap_bn": round((profile_raw.get("marketCapitalization") or 0) / 1000, 2),
+        "ipo_date":      profile_raw.get("ipo", ""),
+        "employees":     profile_raw.get("employeeTotal", ""),
+        "country":       profile_raw.get("country", ""),
+        "website":       profile_raw.get("weburl", ""),
     }
-    dossier[“cycle_type”] = _cycle_type(sector)
+    dossier["cycle_type"] = _cycle_type(sector)
 
-    # ── Quote ──â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Quote ──â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     dossier["quote"] = {
         "price":      quote_raw.get("c"),
         "change":     quote_raw.get("d"),
@@ -542,22 +542,22 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         "prev_close": quote_raw.get("pc"),
     }
 
-    # â”€â”€ Technicals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Technicals â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     dossier["technicals"] = technicals
 
-    # â”€â”€ Financials â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Financials â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     # Always fetch FMP ratios for cross-validation (regardless of yfinance availability)
-    fmp_ratios_raw  = await asyncio.to_thread(_fmp, f”/ratios-ttm/{ticker}”)
+    fmp_ratios_raw  = await asyncio.to_thread(_fmp, f"/ratios-ttm/{ticker}")
     fmp_ratios_data = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else (
                       fmp_ratios_raw if isinstance(fmp_ratios_raw, dict) else {})
 
     fmp_income, fmp_balance, fmp_cashflow = [], [], []
-    if not yf_fin.get(“income”):
+    if not yf_fin.get("income"):
         if verbose:
-            print(f”  [dossier] {ticker}: yfinance income empty — fetching FMP fallback...”)
-        fmp_income_raw   = _fmp(f”/income-statement/{ticker}”, {“limit”: 4})
-        fmp_balance_raw  = _fmp(f”/balance-sheet-statement/{ticker}”, {“limit”: 2})
-        fmp_cashflow_raw = _fmp(f”/cash-flow-statement/{ticker}”, {“limit”: 2})
+            print(f"  [dossier] {ticker}: yfinance income empty — fetching FMP fallback...")
+        fmp_income_raw   = _fmp(f"/income-statement/{ticker}", {"limit": 4})
+        fmp_balance_raw  = _fmp(f"/balance-sheet-statement/{ticker}", {"limit": 2})
+        fmp_cashflow_raw = _fmp(f"/cash-flow-statement/{ticker}", {"limit": 2})
         fmp_income   = fmp_income_raw[:4]   if isinstance(fmp_income_raw,   list) else []
         fmp_balance  = fmp_balance_raw[:2]  if isinstance(fmp_balance_raw,  list) else []
         fmp_cashflow = fmp_cashflow_raw[:2] if isinstance(fmp_cashflow_raw, list) else []
@@ -616,15 +616,15 @@ async def build(ticker: str, verbose: bool = True) -> dict:
             "fcf":           yf_r.get("fcf"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
-            “beta”:          yf_r.get(“beta”),
-            “short_pct”:     yf_r.get(“short_pct”),
-            “adr_mismatch”:  yf_r.get(“adr_mismatch”, False),
+            "beta":          yf_r.get("beta"),
+            "short_pct":     yf_r.get("short_pct"),
+            "adr_mismatch":  yf_r.get("adr_mismatch", False),
         },
     }
     # Store raw FMP ratios for cross-validation in validator.py
-    dossier[“fmp_ratios”] = fmp_ratios_data
+    dossier["fmp_ratios"] = fmp_ratios_data
 
-    # ── Valuation ──â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Valuation ──â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     yf_analyst = yf_fin.get("analyst", {})
     fmp_dcf_price = None
     fmp_targets: list = []
@@ -658,7 +658,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         "analyst_targets":   fmp_targets,
     }
 
-    # â”€â”€ Earnings surprises â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Earnings surprises â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     quarterly = earnings_raw.get("quarterlyEarnings", [])[:8]
     dossier["earnings_surprises"] = [
         {
@@ -670,7 +670,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         for e in quarterly
     ]
 
-    # â”€â”€ Insider transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Insider transactions â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     txns  = insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else []
     buys  = [t for t in txns if t.get("transactionType") == "P - Purchase"]
     sells = [t for t in txns if t.get("transactionType") == "S - Sale"]
@@ -714,7 +714,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         "recent":           txns[:10],
     }
 
-    # â”€â”€ News â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ News â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     fh_news = fh_news_raw[:10] if isinstance(fh_news_raw, list) else []
     dossier["news"] = {
         "finnhub": [
@@ -724,13 +724,13 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         ],
     }
 
-    # â”€â”€ SEC filing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ SEC filing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     dossier["sec_filing"] = sec_raw
 
-    # â”€â”€ Macro (shared cache) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    dossier[“macro”] = {**macro, “regime”: _detect_regime(macro)}
+    # â"€â"€ Macro (shared cache) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    dossier["macro"] = {**macro, "regime": _detect_regime(macro)}
 
-    # ── Batch 2: peer comps (needs sector from profile) â€” 4 peers in parallel â”€
+    # ── Batch 2: peer comps (needs sector from profile) â€" 4 peers in parallel â"€
     # Try Finnhub /stock/peers first (actual industry peers), fall back to sector defaults
     SECTOR_PEERS = {
         "Technology":              ["NVDA", "AMD", "INTC", "QCOM", "AVGO"],

@@ -1,4 +1,4 @@
-"""LLM wrapper â€” Gemma 4 31B, key rotation, auto model-ID detection, grounding, JSON extraction."""
+"""LLM wrapper â€" Gemma 4 31B, key rotation, auto model-ID detection, grounding, JSON extraction."""
 
 import asyncio
 import json
@@ -97,7 +97,7 @@ def call_gemini(
     """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation.
 
     Backoff caps at 120 s (with Â±25% jitter) so the retry window covers ~15 min
-    of API-wide instability â€” enough to outlast most Gemma outages.
+    of API-wide instability â€" enough to outlast most Gemma outages.
     """
     last_err = None
     for attempt in range(max_retries):
