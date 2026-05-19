@@ -276,21 +276,57 @@ Output ONLY this JSON (no other text):
   "asymmetry_estimate": "<rough upside/downside ratio e.g. 3:1, or N/A if insufficient data>",
   "key_risk": "<the single most important risk you see>",
   "score_breakdown": {{
-    "valuation": <float 1-10>,
-    "growth_quality": <float 1-10>,
-    "risk_reward": <float 1-10>,
-    "catalyst_strength": <float 1-10>,
-    "data_conviction": <float 1-10>
+    "structural_moat": <float 1-10>,
+    "fundamental_quality": <float 1-10>,
+    "valuation_gap": <float 1-10>,
+    "catalyst_risk": <float 1-10>,
+    "market_structure": <float 1-10>
   }}
 }}
-If you are StructuralEdge, also add:
+If you are StructuralEdge, also add these fields to your JSON:
+  "chokepoint_assessment": "<CHOKEPOINT|BOTTLENECK_SOLVER|COMMODITY|MIXED>",
+  "obsolescence_risk": "<LOW|MEDIUM|HIGH> — <one sentence why>",
+  "structural_durability": <1-10 — how defensible is this position in 5 years>,
   "moat_scores": {{"replication": <1-10>, "stickiness": <1-10>, "compounding": <1-10>}},
   "moat_trajectory": "<WIDENING|STABLE|NARROWING>",
-  "moat_evidence": "<one sentence citing specific evidence for the trajectory assessment>"
-If you are CatalystHunter, also add:
-  "cycle_regime": "<most relevant cycle type from the list in your system prompt>",
+  "moat_evidence": "<one sentence citing specific evidence for the trajectory>"
+
+If you are FundamentalForensics, also add these fields to your JSON:
+  "capital_efficiency": {{"roic": <float>, "wacc_est": <float>, "spread": <float>, "trend": "<EXPANDING|STABLE|COMPRESSING>"}},
+  "earnings_quality": "<HIGH|MEDIUM|LOW> — <NI vs FCF assessment>",
+  "management_score": <1-10>,
+  "management_signals": "<key insider/buyback/R&D observations>",
+  "archetype_forensics": "<archetype-specific check: SBC dilution for SaaS, peak earnings trap for cyclicals, duration mismatch for financials, buyback-masked stagnation for mature — cite numbers>"
+
+If you are ValuationEngine, also add these fields to your JSON:
+  "archetype_validation": "<agree with pre-classification or override — with reasoning>",
+  "fair_value_assessment": {
+    "primary_method": "<valuation method name>",
+    "method_rationale": "<why this method is most appropriate>",
+    "fair_value_estimate": <float>,
+    "margin_of_safety_pct": <float>,
+    "historical_multiple_position": "<PREMIUM|FAIR|DISCOUNT|DEEP_DISCOUNT>"
+  },
+  "blind_spot_check": "<what the archetype's structural blind spot revealed — cite evidence>",
+  "expectation_disconnect": "<description of market vs reality gap, if any>"
+
+If you are CatalystHunter, also add these fields to your JSON:
+  "cycle_regime": "<most relevant cycle type from your system prompt>",
   "cycle_phase": "<EARLY|MID|LATE|PEAK|TROUGH>",
-  "cycle_evidence": "<one sentence: why this phase — cite specific data points>"
+  "cycle_evidence": "<one sentence: why this phase — cite specific data points>",
+  "risk_matrix": [{"risk": "<description>", "probability": "<HIGH|MED|LOW>", "impact": "<HIGH|MED|LOW>"}],
+  "macro_sensitivity": "<HIGH|MEDIUM|LOW> — <key exposure>"
+
+If you are MarketStructure, also add these fields to your JSON:
+  "trend_alignment": "<BULLISH_STACK|PARTIAL|BEARISH_STACK|TRANSITIONING>",
+  "accumulation_signal": "<ACCUMULATING|DISTRIBUTING|NEUTRAL>",
+  "entry_assessment": {
+    "timing": "<ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
+    "entry_zone": "<price range or description>",
+    "stop_loss_level": "<price or percentage>",
+    "reasoning": "<why this entry timing>"
+  },
+  "volatility_profile": {"beta": <float>, "archetype": "<description>"}
 """
 
 ROUND2_TEMPLATE = """You have completed your Round 1 assessment of {ticker} (your score: {my_score}).
@@ -344,11 +380,11 @@ Output ONLY this JSON:
   "final_thesis": "<your updated 2-sentence thesis after this debate loop>",
   "catalyst_update": "<updated view on the catalyst after hearing debate — or 'unchanged'>",
   "revised_breakdown": {{
-    "valuation": <float 1-10>,
-    "growth_quality": <float 1-10>,
-    "risk_reward": <float 1-10>,
-    "catalyst_strength": <float 1-10>,
-    "data_conviction": <float 1-10>
+    "structural_moat": <float 1-10>,
+    "fundamental_quality": <float 1-10>,
+    "valuation_gap": <float 1-10>,
+    "catalyst_risk": <float 1-10>,
+    "market_structure": <float 1-10>
   }}
 }}"""
 
@@ -373,6 +409,8 @@ Output ONLY this JSON:
   "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
   "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
   "moat_composite": "<StructuralEdge composite score if available, else null>",
+  "fair_value_composite": <float or null — ValuationEngine's consensus fair value estimate>,
+  "entry_assessment": "<MarketStructure's timing recommendation: ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
   "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
   "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
@@ -400,6 +438,8 @@ Output ONLY this JSON:
   "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
   "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
   "moat_composite": "<StructuralEdge composite score if available, else null>",
+  "fair_value_composite": <float or null — ValuationEngine's consensus fair value estimate>,
+  "entry_assessment": "<MarketStructure's timing recommendation: ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
   "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
   "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
