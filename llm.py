@@ -367,8 +367,7 @@ async def call_gemini_with_tools_async(
         else:
             raise RuntimeError(f"LLM tool call failed after {max_retries} attempts: {last_err}")
 
-        if response is None:
-            raise RuntimeError("No response from LLM")
+        assert response is not None  # for/else guarantees this
 
         # Check for function call parts
         fn_call_parts = [
@@ -376,13 +375,25 @@ async def call_gemini_with_tools_async(
             if hasattr(part, "function_call") and part.function_call is not None
         ]
 
-        if not fn_call_parts or turn == max_tool_turns:
-            # No more tool calls — extract and return text
+        if not fn_call_parts:
+            # Normal exit — model gave text response
             text_parts = [
                 part.text for part in (response.candidates[0].content.parts or [])
                 if hasattr(part, "text") and part.text
             ]
             return "\n".join(text_parts).strip() if text_parts else ""
+
+        if turn == max_tool_turns:
+            # Forced exit — model still issuing tool calls; re-prompt for final prose answer
+            final_user = "You have used the available tools. Now provide your final analysis and recommendations in plain text."
+            accumulated = "\n".join(
+                part.text
+                for c in contents
+                for part in (c.parts or [])
+                if hasattr(part, "text") and part.text
+            )
+            final_prompt = f"{accumulated}\n\n{final_user}" if accumulated else final_user
+            return await call_gemini_async(system, final_prompt, model=model, temperature=temperature)
 
         # Add model's function call response to contents
         contents.append(response.candidates[0].content)

@@ -21,7 +21,11 @@ def compute_pillar_scores(ticker: str, candidates: dict[str, dict]) -> dict:
         {"error": "ticker not found"} if ticker not in candidates.
     """
     from pillar_scoring import compute_composite
-    fundament = candidates.get(ticker.upper()) or candidates.get(ticker)
+    fundament = (
+        candidates.get(ticker.upper())
+        or candidates.get(ticker.lower())
+        or candidates.get(ticker)
+    )
     if fundament is None:
         return {"error": f"ticker '{ticker}' not found in candidates"}
     return compute_composite(fundament)
