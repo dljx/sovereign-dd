@@ -216,7 +216,7 @@ def alert_gems_summary(discoveries: list[dict]) -> bool:
             emoji = GRADE_EMOJI.get(d.get("grade", ""), "")
             composite = d.get("gems_composite_score", 0)
             lines.append(
-                f"{emoji} <b>{d['ticker']}</b>  "
+                f"{emoji} <b>{d.get('ticker', '?')}</b>  "
                 f"{d.get('score', 0):.1f}/10  "
                 f"(pillar: {composite:.1f})"
             )
