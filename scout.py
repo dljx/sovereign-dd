@@ -62,47 +62,121 @@ YF_HEADERS = {
 # ── Screener lens definitions ──────────────────────────────────────────────────
 
 SCREENER_LENSES: list[dict] = [
+    # ── Cross-sector / factor lenses ───────────────────────────────────────────
     {
         "name": "value",
         "desc": "Large-cap undervalued stocks — low P/E, strong fundamentals",
         "scrId": "undervalued_large_caps",
-        "count": 50,
+        "count": 250,
     },
     {
         "name": "growth",
         "desc": "Technology growth stocks with strong revenue momentum",
         "scrId": "growth_technology_stocks",
-        "count": 50,
+        "count": 250,
     },
     {
         "name": "momentum",
         "desc": "Most actively traded — high volume, momentum plays",
         "scrId": "most_actives",
-        "count": 50,
+        "count": 250,
     },
     {
         "name": "small_cap",
         "desc": "Small-cap gainers — hidden gems with asymmetric upside",
         "scrId": "small_cap_gainers",
-        "count": 50,
+        "count": 250,
+    },
+    {
+        "name": "aggressive_small_cap",
+        "desc": "Aggressive small-caps — high-risk, high-reward growth",
+        "scrId": "aggressive_small_caps",
+        "count": 250,
     },
     {
         "name": "contrarian",
         "desc": "Day losers — oversold names with potential reversal setups",
         "scrId": "day_losers",
-        "count": 50,
+        "count": 250,
     },
     {
         "name": "macro_tailwind",
         "desc": "Undervalued growth — cyclical and macro-sensitive opportunities",
         "scrId": "undervalued_growth_stocks",
-        "count": 50,
+        "count": 250,
     },
     {
         "name": "breakout",
         "desc": "Day gainers — strong price action with near-term catalysts",
         "scrId": "day_gainers",
-        "count": 50,
+        "count": 250,
+    },
+    {
+        "name": "quality",
+        "desc": "Portfolio anchors — quality large-caps with durable franchises",
+        "scrId": "portfolio_anchors",
+        "count": 250,
+    },
+    # ── Sector lenses (Morningstar via YF) — ensures full market coverage ──────
+    {
+        "name": "sector_financials",
+        "desc": "Financial services — banks, insurance, asset managers, fintech",
+        "scrId": "ms_financial_services",
+        "count": 250,
+    },
+    {
+        "name": "sector_healthcare",
+        "desc": "Healthcare — biotech, pharma, medtech, managed care",
+        "scrId": "ms_healthcare",
+        "count": 250,
+    },
+    {
+        "name": "sector_energy",
+        "desc": "Energy — oil & gas, pipelines, renewables",
+        "scrId": "ms_energy",
+        "count": 250,
+    },
+    {
+        "name": "sector_industrials",
+        "desc": "Industrials — aerospace, defense, machinery, construction",
+        "scrId": "ms_industrials",
+        "count": 250,
+    },
+    {
+        "name": "sector_consumer_cyclical",
+        "desc": "Consumer cyclical — autos, retail, restaurants, travel",
+        "scrId": "ms_consumer_cyclical",
+        "count": 250,
+    },
+    {
+        "name": "sector_consumer_defensive",
+        "desc": "Consumer defensive — staples, beverages, household products",
+        "scrId": "ms_consumer_defensive",
+        "count": 250,
+    },
+    {
+        "name": "sector_real_estate",
+        "desc": "Real estate — REITs, data centers, industrial, residential",
+        "scrId": "ms_real_estate",
+        "count": 250,
+    },
+    {
+        "name": "sector_basic_materials",
+        "desc": "Basic materials — miners, chemicals, steel, forestry",
+        "scrId": "ms_basic_materials",
+        "count": 250,
+    },
+    {
+        "name": "sector_communication",
+        "desc": "Communication services — media, telecom, social, streaming",
+        "scrId": "ms_communication_services",
+        "count": 250,
+    },
+    {
+        "name": "sector_utilities",
+        "desc": "Utilities — electric, gas, water — defensive yield plays",
+        "scrId": "ms_utilities",
+        "count": 250,
     },
 ]
 
@@ -305,7 +379,7 @@ async def run_scout(
     if verbose:
         print(f"\n+----------------------------------------------+")
         print(f"|  SOVEREIGN SCOUT — quantitative screen       |")
-        print(f"|  Running all {len(SCREENER_LENSES)} lenses simultaneously...     |")
+        print(f"|  Running all {len(SCREENER_LENSES)} lenses simultaneously...  |")
         print(f"+----------------------------------------------+")
 
     candidates = await _run_all_screeners(portfolio_set, exclude=recently)
