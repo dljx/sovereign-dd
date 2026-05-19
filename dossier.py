@@ -11,6 +11,7 @@ import requests
 import yfinance as yf
 from dotenv import load_dotenv
 
+from fair_value import compute_fair_values
 from live_events import emit_live
 
 load_dotenv()
@@ -772,6 +773,19 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         dossier["data_quality"] = {"warnings": [], "data_confidence": "HIGH"}
         if verbose:
             print(f"  [dossier] {ticker}: validator error (skipped): {e}")
+
+    # ── Archetype-based fair value ──────────────────────────────────────────────
+    try:
+        dossier["fair_values"] = compute_fair_values(dossier)
+        if verbose:
+            fv = dossier["fair_values"]
+            arch = (fv.get("archetype") or {}).get("archetype", "?")
+            cfv = fv.get("composite_fair_value")
+            print(f"  [dossier] {ticker}: archetype={arch}, fair_value={cfv}")
+    except Exception as e:
+        dossier["fair_values"] = {"error": str(e), "composite_fair_value": None}
+        if verbose:
+            print(f"  [dossier] {ticker}: fair_value error (skipped): {e}")
 
     await emit_live(ticker, {"type": "DOSSIER_DONE"})
     if verbose:

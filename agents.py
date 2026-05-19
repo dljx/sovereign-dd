@@ -497,6 +497,17 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
     summary["dcf_assumptions"]   = val.get("dcf_assumptions") or {}
     summary["analyst_consensus"] = val.get("analyst_consensus") or {}
 
+    fv = dossier.get("fair_values") or {}
+    if not fv.get("error"):
+        summary["fair_value_archetype"]        = (fv.get("archetype") or {}).get("archetype")
+        summary["fair_value_archetype_conf"]   = (fv.get("archetype") or {}).get("confidence")
+        summary["fair_value_composite"]        = fv.get("composite_fair_value")
+        summary["fair_value_margin_of_safety"] = fv.get("margin_of_safety")
+        summary["fair_value_primary_method"]   = fv.get("primary_method")
+        summary["fair_value_blind_spots"]      = fv.get("blind_spot_flags") or []
+        summary["fair_value_invalid_methods"]  = fv.get("invalid_methods") or []
+        summary["fair_value_key_metrics"]      = fv.get("archetype_metrics") or {}
+
     slim["financials_summary"] = summary
 
     dq = dossier.get("data_quality", {})
