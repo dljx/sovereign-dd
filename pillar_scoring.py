@@ -170,6 +170,9 @@ def score_moat_proxy(fundament: dict) -> float:
     pe = _float(pe_raw)
     fwd_pe = _float(fwd_pe_raw)
 
+    if all(v is None for v in [gross_margin, roic, debt_eq, recom, fwd_pe, pe]):
+        return 5.0
+
     pts = 0.0
 
     # Gross Margin
@@ -218,6 +221,9 @@ def score_temporal(fundament: dict) -> float:
     _, sales_5y = _split_3y_5y(fundament.get("Sales past 3/5Y"))
     eps_qq = _pct(fundament.get("EPS Q/Q"))
     sales_qq = _pct(fundament.get("Sales Q/Q"))
+
+    if all(v is None for v in [eps_5y, sales_5y, eps_qq, sales_qq]):
+        return 5.0
 
     pts = 0.0
 
