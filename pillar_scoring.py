@@ -89,6 +89,15 @@ def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def _float(v: str | None) -> float | None:
+    if v is None or str(v).strip() in ("", "-"):
+        return None
+    try:
+        return float(str(v).strip())
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Pillar scorers
 # ---------------------------------------------------------------------------
@@ -151,20 +160,11 @@ def score_moat_proxy(fundament: dict) -> float:
     """
     gross_margin = _pct(fundament.get("Gross Margin"))
     roic = _pct(fundament.get("ROIC"))
-    debt_eq = _pct(fundament.get("Debt/Eq"))
     recom_raw = fundament.get("Recom")
     pe_raw = fundament.get("P/E")
     fwd_pe_raw = fundament.get("Forward P/E")
 
     # Parse Debt/Eq and Recom as plain floats (not percentages)
-    def _float(v: str | None) -> float | None:
-        if v is None or str(v).strip() in ("", "-"):
-            return None
-        try:
-            return float(str(v).strip())
-        except ValueError:
-            return None
-
     debt_eq = _float(fundament.get("Debt/Eq"))
     recom = _float(recom_raw)
     pe = _float(pe_raw)
@@ -277,6 +277,9 @@ def score_management(fundament: dict) -> float:
     inst_own = _pct(fundament.get("Inst Own"))
     roe = _pct(fundament.get("ROE"))
     roa = _pct(fundament.get("ROA"))
+
+    if all(v is None for v in (insider_trans, inst_own, roe, roa)):
+        return 5.0
 
     pts = 0.0
 
