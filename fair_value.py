@@ -348,7 +348,7 @@ def _value_asset_light(dossier: dict) -> dict:
     price       = _get_price(dossier)
     shares_out  = _safe(ratios.get("shares_out"))
     revenue_ttm = _safe(ratios.get("revenue_ttm"))
-    gross_margin= _safe(ratios.get("gross_margin"))
+    gross_margin= _norm_margin(ratios.get("gross_margin"))
     fcf         = _safe(ratios.get("fcf")) or _safe(cf0.get("free_cash_flow"))
     sbc         = _safe(cf0.get("stock_based_compensation"))
     total_debt  = _safe(balance.get("total_debt"), 0)
