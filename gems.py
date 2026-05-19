@@ -259,7 +259,11 @@ async def run_gems(
 
     # Phase 2 — Enrich
     tickers = [c["ticker"] for c in raw_candidates]
-    fundament_map = await asyncio.to_thread(enrich_candidates, tickers)
+    try:
+        fundament_map = await asyncio.to_thread(enrich_candidates, tickers)
+    except Exception as e:
+        print(f"  [gems] Enrichment failed: {e}")
+        return []
 
     # Attach fundament to each candidate
     for c in raw_candidates:
@@ -282,7 +286,14 @@ async def run_gems(
         try:
             scores[c["ticker"]] = compute_composite(c["fundament"])
         except Exception:
-            scores[c["ticker"]] = {"composite": 5.0}
+            scores[c["ticker"]] = {
+                "composite": 5.0,
+                "financial_physics": 5.0,
+                "moat_proxy": 5.0,
+                "temporal": 5.0,
+                "management": 5.0,
+                "chokepoint_proxy": 5.0,
+            }
 
     if verbose:
         top5 = sorted(scores.items(), key=lambda x: x[1].get("composite", 0), reverse=True)[:5]
@@ -300,7 +311,7 @@ async def run_gems(
         print(f"\n+----------------------------------------------+")
         print(f"|  SOVEREIGN GEMS — running debates            |")
         tickers_str = ", ".join(p["ticker"] for p in picks)
-        print(f"|  Picks: {tickers_str:<39}|")
+        print(f"|  Picks: {tickers_str[:39]:<39}|")
         print(f"|  {len(picks)} debates · max {GEMS_MAX_LOOPS} loop(s) · 4 concurrent     |")
         print(f"+----------------------------------------------+")
 
@@ -362,6 +373,8 @@ async def run_gems(
                         "cycle_position":        result.get("cycle_position", {}),
                         "gems_composite_score":  scores.get(ticker, {}).get("composite", 0),
                         "gems_pillar_rationale": pillar_rationale,
+                        "scout_lens":            "gems",
+                        "gemma_rationale":       pillar_rationale,
                         "analyzed_at":           ts,
                         "output_file":           str(out_path),
                     }
