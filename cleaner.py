@@ -109,8 +109,9 @@ async def clean_ticker_batch(tickers: list[str]) -> dict[str, dict]:
         text = await call_gemini_async(
             _SYSTEM,
             prompt,
+            model="gemma-4-31b-it",  # same model as rest of pipeline; grounding does the heavy lifting
             grounding=True,
-            temperature=0.0,   # deterministic — this is fact retrieval, not generation
+            temperature=0.0,          # deterministic — this is fact retrieval, not generation
         )
         raw = extract_json(text)
         if not isinstance(raw, dict):
