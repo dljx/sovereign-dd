@@ -32,12 +32,22 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restore scout history
+        id: restore-cache
         uses: actions/cache/restore@v4
         with:
-          path: output/scout_history.json
+          path: |
+            output/scout_history.json
+            output/scout_notified.json
           # Restore the most recent history cache from any previous run
           key: scout-history-${{ github.run_id }}
           restore-keys: scout-history-
+
+      - name: Restore scout history from KV (cache-miss fallback)
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+        env:
+          SOVEREIGN_EYE_URL: https://master.sovereign-eye.pages.dev
+          DD_UPLOAD_SECRET:  ${{ secrets.DD_UPLOAD_SECRET }}
+        run: python download_history.py
 
       - name: Run scout
         env:
@@ -60,7 +70,9 @@ jobs:
         uses: actions/cache/save@v4
         if: always()
         with:
-          path: output/scout_history.json
+          path: |
+            output/scout_history.json
+            output/scout_notified.json
           key: scout-history-${{ github.run_id }}
 
       - name: Upload results to Sovereign Eye

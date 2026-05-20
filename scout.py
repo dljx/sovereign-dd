@@ -22,7 +22,9 @@ BUY_THRESHOLD = 6.5
 
 # ── Continuous-mode knobs (override via env) ───────────────────────────────────
 SCOUT_HISTORY_FILE   = Path("output/scout_history.json")
-SCOUT_COOLDOWN_HOURS = int(os.getenv("SCOUT_COOLDOWN_HOURS", "48"))
+SCOUT_NOTIFIED_FILE  = Path("output/scout_notified.json")
+SCOUT_COOLDOWN_HOURS        = int(os.getenv("SCOUT_COOLDOWN_HOURS", "48"))
+SCOUT_NOTIFY_COOLDOWN_HOURS = int(os.getenv("SCOUT_NOTIFY_COOLDOWN_HOURS", "168"))  # 7 days
 SCOUT_DEBATE_COUNT   = int(os.getenv("SCOUT_DEBATE_COUNT", "6"))
 SCOUT_MAX_LOOPS      = int(os.getenv("SCOUT_MAX_LOOPS", "3"))
 
@@ -50,6 +52,31 @@ def _recently_scouted(history: dict) -> set[str]:
     """Return set of tickers analyzed within SCOUT_COOLDOWN_HOURS."""
     cutoff = datetime.now(timezone.utc).timestamp() - SCOUT_COOLDOWN_HOURS * 3600
     return {ticker for ticker, entry in history.items() if entry.get("ts", 0) >= cutoff}
+
+
+def _load_notified() -> dict:
+    """Load {ticker: {ts, score, grade}} Telegram notification history. Returns {} if missing."""
+    try:
+        if SCOUT_NOTIFIED_FILE.exists():
+            return json.loads(SCOUT_NOTIFIED_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_notified(notified: dict) -> None:
+    """Persist Telegram notification history to disk."""
+    try:
+        SCOUT_NOTIFIED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SCOUT_NOTIFIED_FILE.write_text(json.dumps(notified, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"  [scout] Warning: could not save notify history: {e}")
+
+
+def _recently_notified(notified: dict) -> set[str]:
+    """Return set of tickers Telegram-alerted within SCOUT_NOTIFY_COOLDOWN_HOURS."""
+    cutoff = datetime.now(timezone.utc).timestamp() - SCOUT_NOTIFY_COOLDOWN_HOURS * 3600
+    return {ticker for ticker, entry in notified.items() if entry.get("ts", 0) >= cutoff}
 
 
 # Yahoo Finance predefined screener API — no key required

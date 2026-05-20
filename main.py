@@ -126,13 +126,25 @@ async def _run_gems(save: bool = False, notify: bool = False):
 
 
 async def _run_scout(save: bool = False, notify: bool = False):
-    from scout import run_scout
+    from scout import run_scout, _load_notified, _save_notified, _recently_notified
     portfolio = _portfolio_tickers() if os.getenv("PORTFOLIO_TICKERS") else []
     discoveries = await run_scout(max_tickers=12, portfolio=portfolio, verbose=True)
 
     if notify:
         from notify import alert_scout_summary, alert_buy_signal, alert_dd_result
+
+        notified   = _load_notified()
+        suppressed = _recently_notified(notified)
+        alerted    = []
+
         for d in discoveries:
+            ticker = d["ticker"]
+            if ticker in suppressed:
+                console.print(
+                    f"[dim]  [notify] {ticker} already alerted within "
+                    f"{os.getenv('SCOUT_NOTIFY_COOLDOWN_HOURS', '168')}h cooldown — skipping[/dim]"
+                )
+                continue
             alert_buy_signal(d)
             if d.get("output_file"):
                 try:
@@ -141,8 +153,16 @@ async def _run_scout(save: bool = False, notify: bool = False):
                     alert_dd_result(data["result"])
                 except Exception:
                     pass
-        alert_scout_summary(discoveries)
-        console.print(f"[dim]Scout alerts sent to Telegram ({len(discoveries)} signal(s))[/dim]")
+            notified[ticker] = {
+                "ts":    datetime.now(timezone.utc).timestamp(),
+                "score": d["score"],
+                "grade": d["grade"],
+            }
+            _save_notified(notified)
+            alerted.append(d)
+
+        alert_scout_summary(alerted)
+        console.print(f"[dim]Scout alerts sent to Telegram ({len(alerted)} signal(s))[/dim]")
 
     return discoveries
 

@@ -206,21 +206,39 @@ def main():
     gems_discoveries = collect_gems_results(gems_dir)
     print(f"  {len(gems_discoveries)} gems BUY signal(s)")
 
+    # Include scout history files for KV backup (cache-miss recovery)
+    print("[upload] Collecting scout history for KV backup...")
+    scout_history = scout_notified = None
+    for fname, varname in [("scout_history.json", "scout_history"), ("scout_notified.json", "scout_notified")]:
+        path = output_dir / fname
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if varname == "scout_history":
+                    scout_history = data
+                else:
+                    scout_notified = data
+                print(f"  {len(data)} ticker(s) in {fname}")
+        except Exception as e:
+            print(f"  [upload] Could not read {fname}: {e}")
+
     if not portfolio_results and not index and not discoveries and not gems_discoveries:
         print("[upload] Nothing to upload.")
         return
 
     payload = {
-        "results": portfolio_results,
-        "index":   index,
-        "scouts":  discoveries if discoveries else None,
-        "gems":    gems_discoveries if gems_discoveries else None,
+        "results":        portfolio_results,
+        "index":          index,
+        "scouts":         discoveries if discoveries else None,
+        "gems":           gems_discoveries if gems_discoveries else None,
+        "scout_history":  scout_history,
+        "scout_notified": scout_notified,
     }
 
     payload = _sanitize(payload)
 
     url = f"{UPLOAD_URL}/api/dd/upload"
-    print(f"\n[upload] POSTing {len(portfolio_results)} portfolio key(s) + {len(discoveries)} scout + {len(gems_discoveries)} gems BUY(s) to {url}...")
+    print(f"\n[upload] POSTing {len(portfolio_results)} key(s) + {len(discoveries)} scout + {len(gems_discoveries)} gems BUY(s) + history to {url}...")
 
     try:
         r = requests.post(url, headers=HEADERS, json=payload, timeout=60)
