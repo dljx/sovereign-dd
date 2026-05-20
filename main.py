@@ -51,7 +51,11 @@ def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> 
 async def _run_single(ticker: str, save: bool = False):
     from cleaner import clean_ticker_batch
     console.rule(f"[bold blue]Sovereign DD — {ticker}[/bold blue]")
-    meta_map = await clean_ticker_batch([ticker])
+    try:
+        meta_map = await asyncio.wait_for(clean_ticker_batch([ticker]), timeout=30.0)
+    except asyncio.TimeoutError:
+        console.print("[dim]  [cleaner] timeout — proceeding without metadata override[/dim]")
+        meta_map = {}
     dossier = await build_dossier(ticker, verbose=True, meta=meta_map.get(ticker, {}))
     result  = await run_debate(ticker, dossier, verbose=True)
     console.rule("[bold]FINAL REPORT[/bold]")
@@ -90,7 +94,11 @@ async def _run_batch(tickers: list[str], save: bool = False):
         f"≤{max_concurrent} concurrent)[/bold blue]"
     )
 
-    batch_meta = await clean_ticker_batch(tickers)
+    try:
+        batch_meta = await asyncio.wait_for(clean_ticker_batch(tickers), timeout=45.0)
+    except asyncio.TimeoutError:
+        console.print("[dim]  [cleaner] timeout — proceeding without metadata override[/dim]")
+        batch_meta = {}
     if batch_meta:
         console.print(f"[dim]Cleaner resolved metadata for: {', '.join(batch_meta.keys())}[/dim]")
 
@@ -130,7 +138,11 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
         f"({len(tickers)} tickers, 3 concurrent)[/bold blue]"
     )
 
-    portfolio_meta = await clean_ticker_batch(tickers)
+    try:
+        portfolio_meta = await asyncio.wait_for(clean_ticker_batch(tickers), timeout=45.0)
+    except asyncio.TimeoutError:
+        console.print("[dim]  [cleaner] timeout — proceeding without metadata override[/dim]")
+        portfolio_meta = {}
     if portfolio_meta:
         console.print(f"[dim]Cleaner resolved metadata for: {', '.join(portfolio_meta.keys())}[/dim]")
 
