@@ -190,34 +190,34 @@ You ALWAYS output strict JSON only. No prose outside the JSON.""",
 # Grounded research queries — each agent searches for what's relevant to their analytical layer
 SEARCH_QUERIES = {
     "StructuralEdge": (
-        "Search for {ticker} {name} competitive advantages, value chain position, "
+        'Search for "{name}" (stock ticker: {ticker}) competitive advantages, value chain position, '
         "switching costs, network effects, customer lock-in, pricing power evidence, "
         "market share trends, AND competitive threats, new market entrants, "
         "technology disruption risks, commoditization signals, obsolescence risk."
     ),
     "FundamentalForensics": (
-        "Search for {ticker} {name} ROIC return on invested capital, gross margin trends, "
+        'Search for "{name}" (stock ticker: {ticker}) ROIC return on invested capital, gross margin trends, '
         "operating margin, earnings quality, free cash flow conversion, management "
         "capital allocation history, insider buying selling, share buyback track record, "
         "R&D spending efficiency, AND accounting concerns, revenue recognition issues, "
         "stock-based compensation dilution, debt maturity risks."
     ),
     "ValuationEngine": (
-        "Search for {ticker} {name} fair value estimate, price target consensus, "
+        'Search for "{name}" (stock ticker: {ticker}) fair value estimate, price target consensus, '
         "forward PE historical comparison, EV/EBITDA vs peers, PEG ratio, "
         "analyst upgrades downgrades, earnings estimate revisions, "
         "AND overvaluation warnings, stretched multiples, value trap signals, "
         "recent earnings reaction, beat or miss vs expectations."
     ),
     "CatalystHunter": (
-        "Search for {ticker} {name} upcoming catalysts, earnings preview, "
+        'Search for "{name}" (stock ticker: {ticker}) upcoming catalysts, earnings preview, '
         "product launch timeline, regulatory approval status, contract wins, "
         "macro sector outlook, interest rate sensitivity, AND risks, lawsuits, "
         "debt concerns, competitive threats, bear case arguments, "
         "management guidance changes."
     ),
     "MarketStructure": (
-        "Search for {ticker} {name} technical analysis, price momentum, "
+        'Search for "{name}" (stock ticker: {ticker}) technical analysis, price momentum, '
         "institutional ownership changes, volume trends, support resistance levels, "
         "moving average positioning, short interest changes, options activity, "
         "AND bearish technical signals, distribution patterns, breakdown risks, "
@@ -234,6 +234,7 @@ ROUND1_TEMPLATE = """Analyze the following company data dossier AND your web res
 Provide your independent investment assessment from your unique perspective.
 
 TICKER: {ticker}
+COMPANY: {company_name}
 
 === YOUR WEB RESEARCH (from Google Search) ===
 {web_research}
@@ -536,10 +537,13 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
     else:
         dq_warning = ""
 
+    company_name = dossier.get("profile", {}).get("name") or ticker
+
     return (
         SYSTEM_PROMPTS[agent],
         ROUND1_TEMPLATE.format(
             ticker=ticker,
+            company_name=company_name,
             agent=agent,
             web_research=web_research or "(no web research available)",
             dossier_json=json.dumps(slim, indent=2, default=str),

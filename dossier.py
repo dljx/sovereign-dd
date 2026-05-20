@@ -16,12 +16,10 @@ from live_events import emit_live
 load_dotenv()
 
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
-FMP_KEY = os.getenv("FMP_API_KEY", "")
 FRED_KEY = os.getenv("FRED_API_KEY", "")
 _av_keys = [k.strip() for k in os.getenv("ALPHA_VANTAGE_API_KEYS", os.getenv("ALPHA_VANTAGE_API_KEY", "")).split(",") if k.strip()]
 
 FH = "https://finnhub.io/api/v1"
-FMP = "https://financialmodelingprep.com/api/v3"
 
 _av_idx = 0
 _av_lock = threading.Lock()      # serialize AV key rotation + rate-limit enforcement
@@ -95,15 +93,6 @@ def _fh(path: str, params: dict = None) -> dict | list:
         print(f"  [dossier] Finnhub {path} failed: {e}")
         return {}
 
-
-def _fmp(path: str, params: dict = None) -> dict | list:
-    try:
-        p = {"apikey": FMP_KEY, **(params or {})}
-        r = requests.get(f"{FMP}{path}", params=p, timeout=15)
-        return r.json() if r.ok else {}
-    except requests.exceptions.RequestException as e:
-        print(f"  [dossier] FMP {path} failed: {e}")
-        return {}
 
 
 def _fred(series: str) -> float | None:
@@ -401,6 +390,27 @@ SECTOR_GROWTH_CAP = {
 _DEFAULT_GROWTH_CAP = 0.25
 
 
+def _compute_roic(yf_fin: dict) -> float | None:
+    """ROIC from yfinance: NOPAT / (Equity + Debt). Returns percentage or None."""
+    try:
+        income = yf_fin.get("income") or []
+        balance = yf_fin.get("balance") or []
+        if not income or not balance:
+            return None
+        op_income = income[0].get("operating_income")
+        equity = balance[0].get("stockholders_equity")
+        debt = balance[0].get("total_debt") or 0
+        if op_income is None or equity is None:
+            return None
+        invested_capital = equity + debt
+        if invested_capital <= 0:
+            return None
+        nopat = op_income * 0.79
+        return round(nopat / invested_capital * 100, 2)
+    except Exception:
+        return None
+
+
 def _dynamic_dcf(
     fcf: float | None,
     income: list,
@@ -624,6 +634,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     since      = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%d")
     from_date  = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     to_date    = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    since_yr   = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    fwd_30     = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
 
     # â"€â"€ Batch 1: everything that doesn't depend on another result â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     await emit_live(ticker, {"type": "DOSSIER_START"})
@@ -639,6 +651,10 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         fh_news_raw,
         sec_raw,
         macro,
+        rec_trends_raw,
+        insider_sent_raw,
+        usa_spending_raw,
+        earnings_cal_raw,
     ) = await asyncio.gather(
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/profile2", {"symbol": ticker}), "profile"),
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/quote", {"symbol": ticker}), "quote"),
@@ -650,6 +666,10 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/company-news", {"symbol": ticker, "from": from_date, "to": to_date}), "news"),
         _fetch_and_emit(ticker, asyncio.to_thread(_latest_filing, ticker), "sec_filing"),
         _fetch_and_emit(ticker, _get_macro(), "macro"),
+        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/recommendation", {"symbol": ticker}), "rec_trends"),
+        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/insider-sentiment", {"symbol": ticker, "from": since_yr, "to": to_date}), "insider_sentiment"),
+        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/usa-spending", {"symbol": ticker, "from": since, "to": to_date}), "usa_spending"),
+        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/calendar/earnings", {"symbol": ticker, "from": to_date, "to": fwd_30}), "earnings_cal"),
     )
 
     # ── Metadata overrides (from cleaner.clean_ticker_batch) ─────────────────
@@ -731,21 +751,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     dossier["technicals"] = technicals
 
     # â"€â"€ Financials â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    # Always fetch FMP ratios for cross-validation (regardless of yfinance availability)
-    fmp_ratios_raw  = await asyncio.to_thread(_fmp, f"/ratios-ttm/{ticker}")
-    fmp_ratios_data = fmp_ratios_raw[0] if isinstance(fmp_ratios_raw, list) and fmp_ratios_raw else (
-                      fmp_ratios_raw if isinstance(fmp_ratios_raw, dict) else {})
-
+    # FMP v3 API deprecated for keys created after Aug 2025 — yfinance is the sole source
     fmp_income, fmp_balance, fmp_cashflow = [], [], []
-    if not yf_fin.get("income"):
-        if verbose:
-            print(f"  [dossier] {ticker}: yfinance income empty — fetching FMP fallback...")
-        fmp_income_raw   = _fmp(f"/income-statement/{ticker}", {"limit": 4})
-        fmp_balance_raw  = _fmp(f"/balance-sheet-statement/{ticker}", {"limit": 2})
-        fmp_cashflow_raw = _fmp(f"/cash-flow-statement/{ticker}", {"limit": 2})
-        fmp_income   = fmp_income_raw[:4]   if isinstance(fmp_income_raw,   list) else []
-        fmp_balance  = fmp_balance_raw[:2]  if isinstance(fmp_balance_raw,  list) else []
-        fmp_cashflow = fmp_cashflow_raw[:2] if isinstance(fmp_cashflow_raw, list) else []
 
     yf_r = yf_fin.get("ratios", {})
 
@@ -754,8 +761,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     av_pb          = _safe_float(av_overview_raw.get("PriceToBookRatio"))
     av_trailing_pe = _safe_float(av_overview_raw.get("PERatio"))
 
-    _pe_trailing = yf_r.get("pe") or fmp_ratios_data.get("peRatioTTM") or av_trailing_pe
-    _pe_forward_raw = yf_r.get("fwd_pe") or fmp_ratios_data.get("priceEarningsRatioTTM")
+    _pe_trailing = yf_r.get("pe") or av_trailing_pe
+    _pe_forward_raw = yf_r.get("fwd_pe")
 
     # Prefer AV OVERVIEW forward PE — it's derived from analyst consensus estimates and is
     # correctly adjusted for ADR share structure (fixes the 6.25x vs 12.77x MFG discrepancy).
@@ -791,17 +798,17 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         "ratios_ttm": {
             "pe":            _pe_trailing,
             "fwd_pe":        _fwd_pe_clean,
-            "pb":            yf_r.get("pb") or av_pb or fmp_ratios_data.get("priceToBookRatioTTM"),
-            "ps":            yf_r.get("ps")            or fmp_ratios_data.get("priceToSalesRatioTTM"),
-            "ev_ebitda":     yf_r.get("ev_ebitda")    or fmp_ratios_data.get("enterpriseValueMultipleTTM"),
-            "gross_margin":  yf_r.get("gross_margin") or fmp_ratios_data.get("grossProfitMarginTTM"),
-            "net_margin":    yf_r.get("net_margin")   or fmp_ratios_data.get("netProfitMarginTTM"),
-            "roe":           yf_r.get("roe")           or fmp_ratios_data.get("returnOnEquityTTM"),
-            "roic":          fmp_ratios_data.get("returnOnCapitalEmployedTTM"),
+            "pb":            yf_r.get("pb") or av_pb,
+            "ps":            yf_r.get("ps"),
+            "ev_ebitda":     yf_r.get("ev_ebitda"),
+            "gross_margin":  yf_r.get("gross_margin"),
+            "net_margin":    yf_r.get("net_margin"),
+            "roe":           yf_r.get("roe"),
+            "roic":          _compute_roic(yf_fin),
             "roa":           yf_r.get("roa"),
-            "debt_equity":   yf_r.get("debt_equity")  or fmp_ratios_data.get("debtEquityRatioTTM"),
-            "current_ratio": yf_r.get("current_ratio") or fmp_ratios_data.get("currentRatioTTM"),
-            "fcf_per_share": yf_r.get("fcf_per_share") or fmp_ratios_data.get("freeCashFlowPerShareTTM"),
+            "debt_equity":   yf_r.get("debt_equity"),
+            "current_ratio": yf_r.get("current_ratio"),
+            "fcf_per_share": yf_r.get("fcf_per_share"),
             "fcf":           yf_r.get("fcf"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
@@ -811,20 +818,11 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "shares_out":    yf_r.get("shares_out"),
         },
     }
-    # Store raw FMP ratios for cross-validation in validator.py
-    dossier["fmp_ratios"] = fmp_ratios_data
 
     # ── Valuation ──â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     yf_analyst = yf_fin.get("analyst", {})
-    fmp_dcf_price = None
-    fmp_targets: list = []
-    _few_analysts = (yf_analyst.get("num_analysts") or 0) < 3
-    if not yf_analyst.get("target_mean") or _few_analysts:
-        dcf_raw = _fmp(f"/discounted-cash-flow/{ticker}")
-        fmp_dcf_price = (dcf_raw[0].get("dcf") if isinstance(dcf_raw, list) and dcf_raw else
-                         dcf_raw.get("dcf")     if isinstance(dcf_raw, dict) else None)
-        fmp_targets_raw = _fmp(f"/price-target/{ticker}")
-        fmp_targets = fmp_targets_raw[:5] if isinstance(fmp_targets_raw, list) else []
+    fmp_dcf_price = None   # FMP v3 dead
+    fmp_targets: list = [] # FMP v3 dead
 
     fcf_val = yf_r.get("fcf")
     if fcf_val is None:
@@ -857,15 +855,24 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
 
     # â"€â"€ Earnings surprises â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     quarterly = earnings_raw.get("quarterlyEarnings", [])[:8]
-    dossier["earnings_surprises"] = [
-        {
+    _surprises = []
+    for e in quarterly:
+        sp_raw = e.get("surprisePercentage")
+        try:
+            sp_f = float(sp_raw) if sp_raw is not None else None
+        except (TypeError, ValueError):
+            sp_f = None
+        _surprises.append({
             "date":          e.get("fiscalDateEnding"),
             "reported_eps":  e.get("reportedEPS"),
             "estimated_eps": e.get("estimatedEPS"),
-            "surprise_pct":  e.get("surprisePercentage"),
-        }
-        for e in quarterly
-    ]
+            "surprise_pct":  sp_raw,
+            # >50% surprise often signals a one-time item, not durable earnings power
+            "beat_quality":  ("LARGE_BEAT" if sp_f is not None and sp_f > 50 else
+                              "BEAT"        if sp_f is not None and sp_f > 0 else
+                              "MISS"        if sp_f is not None and sp_f < 0 else None),
+        })
+    dossier["earnings_surprises"] = _surprises
 
     # â"€â"€ Insider transactions â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     txns  = insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else []
@@ -918,6 +925,65 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             {"date": n.get("datetime"), "headline": n.get("headline"),
              "source": n.get("source"), "summary": n.get("summary", "")}
             for n in fh_news
+        ],
+    }
+
+    # â"€â"€ Analyst recommendation trends â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    _rec_list = rec_trends_raw if isinstance(rec_trends_raw, list) else []
+    _rec_latest = _rec_list[0] if _rec_list else {}
+    dossier["recommendation_trends"] = {
+        "period":      _rec_latest.get("period"),
+        "strong_buy":  _rec_latest.get("strongBuy"),
+        "buy":         _rec_latest.get("buy"),
+        "hold":        _rec_latest.get("hold"),
+        "sell":        _rec_latest.get("sell"),
+        "strong_sell": _rec_latest.get("strongSell"),
+    } if _rec_latest else {}
+
+    # â"€â"€ Insider sentiment (MSPR — Money-flow Smart Purchasing Ratio) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    _sent_data = insider_sent_raw.get("data", []) if isinstance(insider_sent_raw, dict) else []
+    _sent_recent = _sent_data[-3:] if _sent_data else []
+    dossier["insider_sentiment_mspr"] = {
+        "monthly": [
+            {
+                "year":     s.get("year"),
+                "month":    s.get("month"),
+                "mspr":     s.get("mspr"),     # positive = net buying pressure
+                "change":   s.get("change"),
+                "purchase": s.get("purchase"),
+                "sales":    s.get("sales"),
+            }
+            for s in _sent_recent
+        ],
+        "avg_mspr_3m": (round(sum(s.get("mspr") or 0 for s in _sent_recent) / len(_sent_recent), 4)
+                        if _sent_recent else None),
+    }
+
+    # â"€â"€ Government contracts (USA Spending) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # Finnhub returns {"data": [...], "symbol": "..."} for this endpoint
+    _contracts = (usa_spending_raw.get("data", []) if isinstance(usa_spending_raw, dict)
+                  else usa_spending_raw if isinstance(usa_spending_raw, list) else [])
+    dossier["government_contracts"] = {
+        "count":       len(_contracts),
+        "total_value": sum(c.get("totalValue", 0) or 0 for c in _contracts),
+        "recent":      _contracts[:5],
+    }
+
+    # â"€â"€ Upcoming earnings calendar â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    _ec_list = (earnings_cal_raw.get("earningsCalendar", [])
+                if isinstance(earnings_cal_raw, dict) else [])
+    _ec_upcoming = [e for e in _ec_list if e.get("epsActual") is None][:3]
+    dossier["earnings_calendar"] = {
+        "upcoming": [
+            {
+                "date":             e.get("date"),
+                "hour":             e.get("hour"),   # "bmo" or "amc"
+                "eps_estimate":     e.get("epsEstimate"),
+                "revenue_estimate": e.get("revenueEstimate"),
+                "quarter":          e.get("quarter"),
+                "year":             e.get("year"),
+            }
+            for e in _ec_upcoming
         ],
     }
 
