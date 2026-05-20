@@ -1,0 +1,543 @@
+"""Post-debate scoring pipeline — applies adjustments to raw consensus scores."""
+
+from __future__ import annotations
+
+
+# ── Sector / industry → earnings durability mappings ──────────────────────────
+
+_DURABILITY_BY_SECTOR: dict[str, int] = {
+    # High durability — recurring/contractual revenue
+    "Technology":             8,   # Many SaaS/platform businesses
+    "Healthcare":             7,   # Mix of recurring and project
+    "Communication Services": 7,
+    "Consumer Defensive":     8,   # Essential goods, stable demand
+    "Utilities":              9,   # Regulated, contractual
+    "Financials":             6,   # Rate-sensitive but recurring fees
+    # Medium durability
+    "Industrials":            5,
+    "Real Estate":            6,
+    # Lower durability — commodity/cyclical
+    "Consumer Cyclical":      4,
+    "Energy":                 3,
+    "Basic Materials":        3,
+}
+
+# Industry-level overrides (checked first)
+_DURABILITY_BY_INDUSTRY: dict[str, int] = {
+    # High durability industries
+    "Software—Application":    9,
+    "Software—Infrastructure": 9,
+    "Software":                9,
+    "Insurance":               9,
+    "Insurance—Diversified":   9,
+    "Insurance—Specialty":     9,
+    "Information Technology Services": 8,
+    "Internet Content & Information":  8,
+    "Semiconductor Equipment & Materials": 7,
+    "Semiconductors":          6,
+    # Lower durability industries
+    "Oil & Gas E&P":           2,
+    "Oil & Gas Integrated":    3,
+    "Oil & Gas Midstream":     5,
+    "Gold":                    2,
+    "Silver":                  2,
+    "Copper":                  2,
+    "Steel":                   3,
+    "Coal":                    2,
+    "Agricultural Inputs":     3,
+}
+
+
+def earnings_durability_adjust(
+    raw_score: float,
+    sector: str,
+    industry: str,
+) -> tuple[float, int, str]:
+    """Apply earnings durability multiplier to raw debate score.
+
+    Returns (adjusted_score, durability_score, revenue_label).
+
+    Formula: adjusted = raw * (0.7 + 0.03 * durability_score)
+    - durability 10 → ×1.0  (no penalty)
+    - durability 5  → ×0.85
+    - durability 1  → ×0.73
+    """
+    durability = (
+        _DURABILITY_BY_INDUSTRY.get(industry)
+        or _DURABILITY_BY_SECTOR.get(sector)
+        or 6  # default: moderate durability
+    )
+
+    # Build a label
+    if durability >= 9:
+        label = "contractual/recurring"
+    elif durability >= 7:
+        label = "structural/stable"
+    elif durability >= 5:
+        label = "market-dependent"
+    elif durability >= 3:
+        label = "commodity/cyclical"
+    else:
+        label = "speculative"
+
+    multiplier = 0.7 + 0.03 * durability
+    adjusted = round(min(10.0, max(1.0, raw_score * multiplier)), 2)
+    return adjusted, durability, label
+
+
+# ── Analyst consensus positioning ─────────────────────────────────────────────
+
+def consensus_gap_adjust(
+    score: float,
+    price: float | None,
+    analyst_target_mean: float | None,
+) -> tuple[float, dict]:
+    """Adjust score based on gap between current price and analyst consensus target.
+
+    Returns (adjusted_score, details_dict).
+    """
+    if not price or not analyst_target_mean or price <= 0:
+        return score, {"applied": False, "reason": "no analyst data"}
+
+    gap_pct = (analyst_target_mean - price) / price * 100
+
+    if gap_pct > 30:
+        adj, label = 0.3, "STRONG UPSIDE vs consensus"
+    elif gap_pct > 10:
+        adj, label = 0.15, "MODERATE UPSIDE vs consensus"
+    elif gap_pct > -5:
+        adj, label = 0.0, "AT CONSENSUS"
+    elif gap_pct >= -20:
+        adj, label = -0.15, "ABOVE CONSENSUS (moderate)"
+    else:
+        adj, label = -0.3, "SIGNIFICANTLY ABOVE CONSENSUS"
+
+    adjusted = round(min(10.0, max(1.0, score + adj)), 2)
+    return adjusted, {
+        "applied": True,
+        "price": price,
+        "target": analyst_target_mean,
+        "gap_pct": round(gap_pct, 1),
+        "adjustment": adj,
+        "label": label,
+    }
+
+
+# ── Cycle position adjustment ──────────────────────────────────────────────────
+
+def cycle_position_adjust(
+    score: float,
+    cycle_phase: str | None,
+    cycle_type: str | None,
+    moat_composite: float | None,
+) -> tuple[float, dict]:
+    """Adjust score based on business cycle positioning.
+
+    Returns (adjusted_score, details_dict).
+
+    Early cycle + secular business → +0.5 to +1.0
+    Trough + durable moat (>=7)    → +0.5 (supercycle entry)
+    Late/Peak cycle + cyclical     → -0.5 to -1.0
+    """
+    if not cycle_phase:
+        return score, {"applied": False}
+
+    phase = (cycle_phase or "").upper()
+    ctype = (cycle_type or "HYBRID").upper()
+
+    adj = 0.0
+    reason = ""
+
+    if phase in ("EARLY",):
+        if ctype == "SECULAR":
+            adj = 1.0
+            reason = "early cycle + secular business — maximum cycle boost"
+        elif ctype in ("HYBRID", "DEFENSIVE"):
+            adj = 0.5
+            reason = "early cycle — moderate boost"
+        else:  # CYCLICAL
+            adj = 0.3
+            reason = "early cycle — small boost even for cyclical"
+
+    elif phase == "TROUGH":
+        if moat_composite and moat_composite >= 7:
+            adj = 0.5
+            reason = f"cyclical trough + strong moat ({moat_composite:.1f}) — supercycle entry signal"
+        else:
+            adj = 0.2
+            reason = "at trough — small speculative boost"
+
+    elif phase == "MID":
+        adj = 0.0
+        reason = "mid-cycle — no adjustment"
+
+    elif phase in ("LATE", "PEAK"):
+        if ctype == "CYCLICAL":
+            adj = -1.0
+            reason = f"{phase.lower()} cycle + cyclical business — full penalty"
+        elif ctype == "HYBRID":
+            adj = -0.5
+            reason = f"{phase.lower()} cycle + hybrid business — moderate penalty"
+        else:
+            adj = -0.2
+            reason = f"{phase.lower()} cycle — small penalty even for secular"
+
+    adjusted = round(min(10.0, max(1.0, score + adj)), 2)
+    return adjusted, {
+        "applied": adj != 0.0,
+        "cycle_phase": phase,
+        "cycle_type": ctype,
+        "adjustment": adj,
+        "reason": reason,
+    }
+
+
+# ── Data confidence penalty ────────────────────────────────────────────────────
+
+def data_confidence_adjust(score: float, data_confidence: str) -> tuple[float, dict]:
+    """Penalize score when data quality is LOW.
+
+    Returns (adjusted_score, details_dict).
+    """
+    if data_confidence == "LOW":
+        adjusted = round(max(1.0, score - 0.5), 2)
+        return adjusted, {"applied": True, "adjustment": -0.5, "reason": "data quality LOW"}
+    return score, {"applied": False}
+
+
+# ── Banger detector ────────────────────────────────────────────────────────────
+
+def banger_check(result: dict, dossier: dict) -> dict:
+    """Check if a stock qualifies as an asymmetric 'BANGER' opportunity.
+
+    Four conditions must ALL be met:
+    1. Adjusted score >= 7.5
+    2. Catalyst present (from debate output)
+    3. DCF intrinsic value >= 0.7x current price (floor support)
+    4. Insider net buying (buy_count > sell_count)
+
+    Returns {"is_banger": bool, "conditions_met": list, "conditions_failed": list, "reason": str}
+    """
+    conditions_met = []
+    conditions_failed = []
+
+    # Condition 1: high adjusted score
+    score = result.get("consensus_score", 0)
+    if score >= 7.5:
+        conditions_met.append(f"score {score:.1f} >= 7.5")
+    else:
+        conditions_failed.append(f"score {score:.1f} < 7.5")
+
+    # Condition 2: catalyst present
+    catalyst = result.get("catalyst", "") or ""
+    cycle_pos = result.get("cycle_position", {})
+    cycle_phase = (cycle_pos.get("phase") or "").upper() if isinstance(cycle_pos, dict) else ""
+    if catalyst and len(catalyst.strip()) > 10:
+        conditions_met.append("specific catalyst identified")
+    elif cycle_phase in ("EARLY", "TROUGH"):
+        conditions_met.append(f"cycle at {cycle_phase} (favorable entry)")
+    else:
+        conditions_failed.append("no specific catalyst identified")
+
+    # Condition 3: fair value floor support (DCF from dossier or ValuationEngine consensus)
+    price = (dossier.get("quote") or {}).get("price")
+    dcf_iv = (dossier.get("valuation") or {}).get("dcf_iv_per_share")
+    fv_composite = result.get("fair_value_composite")
+    try:
+        fv_composite = float(fv_composite) if fv_composite is not None else None
+    except (ValueError, TypeError):
+        fv_composite = None
+    floor_iv = fv_composite if fv_composite is not None else dcf_iv
+    if price and floor_iv and price > 0 and floor_iv >= price * 0.7:
+        source = "FV composite" if fv_composite is not None else "DCF IV"
+        conditions_met.append(f"{source} ${floor_iv:.2f} >= 70% of price ${price:.2f}")
+    else:
+        conditions_failed.append("insufficient fair value floor support")
+
+    # Condition 4: insider net buying
+    insiders = dossier.get("insiders") or {}
+    buy_count = insiders.get("buy_count", 0)
+    sell_count = insiders.get("sell_count", 0)
+    cluster = insiders.get("cluster_buying", False)
+    if cluster or buy_count > sell_count:
+        detail = "cluster buying" if cluster else f"net buying ({buy_count}B/{sell_count}S)"
+        conditions_met.append(detail)
+    else:
+        conditions_failed.append(f"no insider net buying ({buy_count}B/{sell_count}S)")
+
+    is_banger = len(conditions_failed) == 0
+
+    if is_banger:
+        reason = "All 4 conditions met: " + "; ".join(conditions_met)
+    else:
+        reason = "Failed: " + "; ".join(conditions_failed)
+
+    return {
+        "is_banger": is_banger,
+        "conditions_met": conditions_met,
+        "conditions_failed": conditions_failed,
+        "reason": reason,
+    }
+
+
+# ── Position sizing guidance ───────────────────────────────────────────────────
+
+def position_size(
+    score: float,
+    confidence: str,
+    is_banger: bool,
+    cycle_type: str | None,
+    cycle_phase: str | None,
+    durability_score: int,
+    data_confidence: str,
+) -> dict:
+    """Map adjusted score to suggested portfolio allocation %.
+
+    Returns {"range": "1-2%", "basis_pct": float, "reasoning": str, "modifiers": list}
+    """
+    # Base allocation from score
+    if score >= 9.0:
+        base = 0.05   # 4-6%
+        label = "4-6%"
+    elif score >= 8.0:
+        base = 0.035  # 3-4%
+        label = "3-4%"
+    elif score >= 6.5:
+        base = 0.015  # 1-2%
+        label = "1-2%"
+    elif score >= 5.0:
+        base = 0.005  # 0.5%
+        label = "0.5%"
+    else:
+        base = 0.0
+        label = "0%"
+
+    modifiers = []
+    multiplier = 1.0
+
+    # Halve for low conviction
+    if confidence == "LOW":
+        multiplier *= 0.5
+        modifiers.append("halved: low conviction")
+
+    # Halve for commodity/cyclical at late cycle
+    phase = (cycle_phase or "").upper()
+    ctype = (cycle_type or "HYBRID").upper()
+    if ctype == "CYCLICAL" and phase in ("LATE", "PEAK"):
+        multiplier *= 0.5
+        modifiers.append("halved: cyclical + late cycle")
+
+    # Halve for low earnings durability
+    if durability_score < 5:
+        multiplier *= 0.5
+        modifiers.append(f"halved: low earnings durability ({durability_score}/10)")
+
+    # Halve for low data confidence
+    if data_confidence == "LOW":
+        multiplier *= 0.5
+        modifiers.append("halved: low data confidence")
+
+    # BANGER bonus: allow 1.5x
+    if is_banger:
+        multiplier *= 1.5
+        modifiers.append("1.5× BANGER bonus")
+
+    # Cap final_pct to the tier ceiling to keep range label accurate
+    tier_cap = {0.05: 0.06, 0.035: 0.04, 0.015: 0.02, 0.005: 0.01, 0.0: 0.0}
+    cap = tier_cap.get(base, base * 2)
+    final_pct = round(min(cap, base * multiplier) * 100, 2)
+    reasoning = label + (" base" if multiplier == 1.0 else f" base × {multiplier:.2f}")
+    if modifiers:
+        reasoning += " (" + ", ".join(modifiers) + ")"
+
+    return {
+        "range": label,
+        "basis_pct": final_pct,
+        "reasoning": reasoning,
+        "modifiers": modifiers,
+    }
+
+
+# ── Portfolio overlap adjustment ───────────────────────────────────────────────
+
+def portfolio_overlap_adjust(
+    score: float,
+    sector: str,
+    portfolio_sectors: dict[str, str],  # {ticker: sector}
+) -> tuple[float, dict]:
+    """Adjust score based on portfolio sector overlap.
+
+    Returns (adjusted_score, details_dict).
+    """
+    if not portfolio_sectors:
+        return score, {"applied": False}
+
+    all_sectors = list(portfolio_sectors.values())
+    sector_count = sum(1 for s in all_sectors if s == sector)
+    total = len(all_sectors)
+
+    overlap_ratio = sector_count / total if total > 0 else 0
+
+    if overlap_ratio > 0.7:
+        adj = -0.5
+        flag = "REDUNDANT_EXPOSURE"
+    elif overlap_ratio < 0.20 and sector not in all_sectors:
+        adj = 0.15
+        flag = "DIVERSIFICATION_VALUE"
+    else:
+        adj = 0.0
+        flag = None
+
+    # Concentration warning
+    concentration_warning = None
+    if total > 0:
+        sector_pcts = {}
+        for s in all_sectors:
+            sector_pcts[s] = sector_pcts.get(s, 0) + 1
+        for s, cnt in sector_pcts.items():
+            if cnt / total > 0.4:
+                concentration_warning = f"Portfolio already >40% {s}"
+
+    adjusted = round(min(10.0, max(1.0, score + adj)), 2)
+    return adjusted, {
+        "applied": adj != 0.0,
+        "sector_overlap_count": sector_count,
+        "sector_overlap_ratio": round(overlap_ratio, 2),
+        "adjustment": adj,
+        "flag": flag,
+        "concentration_warning": concentration_warning,
+    }
+
+
+# ── Grade function ─────────────────────────────────────────────────────────────
+
+def grade(score: float) -> str:
+    """7-tier grading scale."""
+    if score >= 9.0: return "CONVICTION BUY"
+    if score >= 8.0: return "STRONG BUY"
+    if score >= 6.5: return "BUY"
+    if score >= 5.0: return "HOLD"
+    if score >= 3.5: return "SELL"
+    if score >= 2.0: return "STRONG SELL"
+    return "AVOID"
+
+
+# ── Master pipeline orchestrator ───────────────────────────────────────────────
+
+def apply_adjustments(
+    raw_score: float,
+    result: dict,
+    dossier: dict,
+    portfolio_sectors: dict[str, str] | None = None,
+) -> dict:
+    """Run the full post-debate scoring pipeline.
+
+    Input: raw_score from LLM debate consensus, full result dict, full dossier dict.
+    Output: enriched dict with adjusted score, grade, all adjustment details, banger, position guidance.
+
+    Pipeline order:
+    1. Earnings durability multiplier
+    2. Analyst consensus gap adjustment
+    3. Cycle position adjustment
+    4. Data confidence penalty
+    5. Portfolio overlap (if portfolio provided)
+    6. Grade assignment
+    7. Banger detection
+    8. Position sizing
+    """
+    profile = dossier.get("profile") or {}
+    sector = profile.get("sector") or "Unknown"
+    industry = profile.get("industry") or ""  # may not be in profile, will default gracefully
+    quote = dossier.get("quote") or {}
+    price = quote.get("price")
+    valuation = dossier.get("valuation") or {}
+    analyst_target = (valuation.get("analyst_consensus") or {}).get("target_mean")
+    dq = dossier.get("data_quality") or {}
+    data_confidence = dq.get("data_confidence", "HIGH")
+    cycle_type = dossier.get("cycle_type")
+
+    # Extract cycle phase from debate result (set by CatalystHunter synthesis)
+    cycle_pos = result.get("cycle_position") or {}
+    if isinstance(cycle_pos, dict):
+        cycle_phase = cycle_pos.get("phase")
+    else:
+        cycle_phase = None
+
+    # Extract moat composite from debate result (set by StructuralEdge synthesis)
+    # Coerce to float — LLMs sometimes return the string "null" or "7.5"
+    _mc = result.get("moat_composite")
+    try:
+        moat_composite = float(_mc) if _mc is not None and str(_mc).lower() != "null" else None
+    except (ValueError, TypeError):
+        moat_composite = None
+
+    score = raw_score
+    adjustments = {"raw": raw_score}
+
+    # 1. Earnings durability
+    score, durability_score, durability_label = earnings_durability_adjust(score, sector, industry)
+    adjustments["earnings_durability"] = {
+        "score": durability_score,
+        "label": durability_label,
+        "result": score,
+    }
+
+    # 2. Analyst consensus
+    score, consensus_details = consensus_gap_adjust(score, price, analyst_target)
+    adjustments["consensus_gap"] = {**consensus_details, "result": score}
+
+    # 3. Cycle position
+    score, cycle_details = cycle_position_adjust(score, cycle_phase, cycle_type, moat_composite)
+    adjustments["cycle_position"] = {**cycle_details, "result": score}
+
+    # 4. Data confidence
+    score, dc_details = data_confidence_adjust(score, data_confidence)
+    adjustments["data_confidence"] = {**dc_details, "result": score}
+
+    # 5. Portfolio overlap (optional)
+    if portfolio_sectors is not None:
+        score, overlap_details = portfolio_overlap_adjust(score, sector, portfolio_sectors)
+        adjustments["portfolio_overlap"] = {**overlap_details, "result": score}
+
+    # 6. Grade
+    final_grade = grade(score)
+    adjustments["final"] = score
+
+    # 7. Banger detection
+    result_for_banger = dict(result)
+    result_for_banger["consensus_score"] = score  # use adjusted score for banger check
+    banger = banger_check(result_for_banger, dossier)
+
+    # 8. Position sizing
+    confidence = result.get("confidence", "MEDIUM")
+    sizing = position_size(
+        score=score,
+        confidence=confidence,
+        is_banger=banger["is_banger"],
+        cycle_type=cycle_type,
+        cycle_phase=cycle_phase,
+        durability_score=durability_score,
+        data_confidence=data_confidence,
+    )
+
+    return {
+        "adjusted_score":    score,
+        "consensus_grade":   final_grade,
+        "score_adjustments": adjustments,
+        "banger":            banger,
+        "position_guidance": sizing,
+    }
+
+
+def _safe_apply_adjustments(raw_score, result, dossier, portfolio_sectors=None):
+    """Wrapper around apply_adjustments that never raises — degrades gracefully on error."""
+    try:
+        return apply_adjustments(raw_score, result, dossier, portfolio_sectors)
+    except Exception as e:
+        return {
+            "adjusted_score":    raw_score,
+            "consensus_grade":   grade(raw_score),
+            "score_adjustments": {"raw": raw_score, "error": str(e)},
+            "banger":            {"is_banger": False, "conditions_met": [], "conditions_failed": ["pipeline error"], "reason": str(e)},
+            "position_guidance": {"range": "N/A", "basis_pct": 0.0, "reasoning": "scoring pipeline error", "modifiers": []},
+        }

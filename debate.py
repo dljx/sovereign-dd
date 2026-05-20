@@ -1,4 +1,4 @@
-"""Debate orchestrator â€” async parallel rounds, grounded R1, dynamic convergence, synthesis or moderator."""
+"""Debate orchestrator â€" async parallel rounds, grounded R1, dynamic convergence, synthesis or moderator."""
 
 import asyncio
 from statistics import mean
@@ -11,20 +11,23 @@ from agents import (
 )
 from llm import call_gemini_async, extract_json
 from live_events import emit_live
+import scoring
 
 CONVERGENCE_THRESHOLD = 2.5
 MAX_LOOPS = 3
 
 
 def _grade(score: float) -> str:
+    if score >= 9.0: return "CONVICTION BUY"
     if score >= 8.0: return "STRONG BUY"
     if score >= 6.5: return "BUY"
     if score >= 5.0: return "HOLD"
     if score >= 3.5: return "SELL"
-    return "STRONG SELL"
+    if score >= 2.0: return "STRONG SELL"
+    return "AVOID"
 
 
-# â”€â”€ Per-agent async helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€ Per-agent async helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
     """Run grounded research then scored analysis for one agent. Returns (agent, result)."""
@@ -46,7 +49,7 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -
 
 
 async def _r1_emit(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
-    """Wraps _r1_agent â€” emits R1_SCORE live event as soon as this agent completes."""
+    """Wraps _r1_agent â€" emits R1_SCORE live event as soon as this agent completes."""
     pair = await _r1_agent(agent, ticker, dossier, company_name)
     await emit_live(ticker, {
         "type": "R1_SCORE",
@@ -72,7 +75,7 @@ async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: i
 
 
 async def _r2_emit(agent: str, ticker: str, scores: dict, all_r1: list, loop: int, target: str = "") -> tuple[str, dict]:
-    """Wraps _r2_agent â€” emits R2_CHALLENGE live event as soon as this agent completes."""
+    """Wraps _r2_agent â€" emits R2_CHALLENGE live event as soon as this agent completes."""
     pair = await _r2_agent(agent, ticker, scores, all_r1, loop, target)
     await emit_live(ticker, {
         "type": "R2_CHALLENGE",
@@ -106,7 +109,7 @@ async def _r3_emit(
     agent: str, ticker: str, scores: dict,
     r2_results: dict, all_r2: list, loop: int,
 ) -> tuple[str, dict]:
-    """Wraps _r3_agent â€” emits R3_DELTA live event as soon as this agent completes."""
+    """Wraps _r3_agent â€" emits R3_DELTA live event as soon as this agent completes."""
     pair = await _r3_agent(agent, ticker, scores, r2_results, all_r2, loop)
     prev    = scores.get(pair[0], 5.0)
     revised = float(pair[1].get("revised_score", prev))
@@ -121,7 +124,22 @@ async def _r3_emit(
     return pair
 
 
-# â”€â”€ Main async orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â"€â"€ Main async orchestrator â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+
+def _extract_ve_fair_value(transcript: list) -> float | None:
+    """Extract ValuationEngine's fair_value_estimate from transcript R1 output."""
+    for entry in transcript:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("agent") == "ValuationEngine" and str(entry.get("round", "")).startswith("1"):
+            fva = entry.get("fair_value_assessment")
+            if isinstance(fva, dict) and fva.get("fair_value_estimate") is not None:
+                try:
+                    return float(fva["fair_value_estimate"])
+                except (TypeError, ValueError):
+                    pass
+    return None
+
 
 async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int | None = None) -> dict:
     """Run the full debate asynchronously. Returns the final consensus dict."""
@@ -132,11 +150,11 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
     # Signal to frontend that the debate has started
     await emit_live(ticker, {"type": "START"})
 
-    # â”€â”€ ROUND 1 â€” All 5 agents in parallel (each: research -> analysis) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ ROUND 1 â€" All agents in parallel (each: research -> analysis) â"€â"€â"€â"€â"€â"€â"€â"€â"€
     if verbose:
         print("\n+----------------------------------------------+")
         print("|  ROUND 1 -- Grounded Research & Assessment   |")
-        print("|  (5 agents running in parallel)              |")
+        print(f"|  ({len(AGENTS)} agents running in parallel)              |")
         print("+----------------------------------------------+")
 
     r1_pairs = await asyncio.gather(
@@ -162,7 +180,11 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
     scores_r1 = dict(scores)
     all_r1    = list(r1_results.values())
 
-    # â”€â”€ DEBATE LOOPS â€” R2 + R3 in parallel per round â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Collect R1 score breakdowns as fallback
+    r1_breakdowns = {a: r1_results[a].get("score_breakdown") for a in AGENTS}
+    agent_breakdowns = r1_breakdowns  # will be overwritten if loops run
+
+    # â"€â"€ DEBATE LOOPS â€" R2 + R3 in parallel per round â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     loops_run = 0
     r3_results: dict[str, dict] = {}
     prev_spread: float | None = None
@@ -173,20 +195,21 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         if verbose:
             print(f"\n+----------------------------------------------+")
             print(f"|  LOOP {loop} / ROUND 2 -- Cross-Examination         |")
-            print(f"|  (5 agents running in parallel)              |")
+            print(f"|  ({len(AGENTS)} agents running in parallel)              |")
             print(f"+----------------------------------------------+")
 
         _sorted = sorted(AGENTS, key=lambda a: scores[a])
-        _mean = sum(scores[a] for a in AGENTS) / len(AGENTS)
-        _bull_dist = scores[_sorted[4]] - _mean
-        _bear_dist = _mean - scores[_sorted[0]]
-        r2_targets = {
-            _sorted[0]: _sorted[4],
-            _sorted[4]: _sorted[0],
-            _sorted[1]: _sorted[3],
-            _sorted[3]: _sorted[1],
-            _sorted[2]: _sorted[4] if _bull_dist >= _bear_dist else _sorted[0],
-        }
+        n = len(_sorted)
+        r2_targets = {}
+        for i in range(n // 2):
+            r2_targets[_sorted[i]] = _sorted[n - 1 - i]
+            r2_targets[_sorted[n - 1 - i]] = _sorted[i]
+        if n % 2 == 1:
+            mid = _sorted[n // 2]
+            _mean = sum(scores[a] for a in AGENTS) / n
+            _bull_dist = scores[_sorted[-1]] - _mean
+            _bear_dist = _mean - scores[_sorted[0]]
+            r2_targets[mid] = _sorted[-1] if _bull_dist >= _bear_dist else _sorted[0]
 
         r2_pairs = await asyncio.gather(
             *[_r2_emit(a, ticker, scores, all_r1, loop, r2_targets[a]) for a in AGENTS]
@@ -207,7 +230,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         if verbose:
             print(f"\n+----------------------------------------------+")
             print(f"|  LOOP {loop} / ROUND 3 -- Rebuttal & Revision       |")
-            print(f"|  (5 agents running in parallel)              |")
+            print(f"|  ({len(AGENTS)} agents running in parallel)              |")
             print(f"+----------------------------------------------+")
 
         r3_pairs = await asyncio.gather(
@@ -227,6 +250,13 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
                 print(f"    {agent:<14} -> {prev} {arrow} {revised}  (D {delta:+.1f})")
 
         scores     = {a: float(r3_results[a].get("revised_score", scores[a])) for a in AGENTS}
+
+        # Collect per-agent score breakdowns from R3 (overwrite each loop)
+        agent_breakdowns = {
+            a: r3_results[a].get("revised_breakdown") or r3_results[a].get("score_breakdown")
+            for a in AGENTS if a in r3_results
+        }
+
         score_vals = list(scores.values())
         spread     = max(score_vals) - min(score_vals)
 
@@ -259,7 +289,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
 
         prev_spread = spread
 
-    # â”€â”€ CONSENSUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ CONSENSUS â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     if verbose:
         print(f"\n+----------------------------------------------+")
         print(f"|  CONSENSUS                                    |")
@@ -289,6 +319,21 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         text = await call_gemini_async(sys_p, usr_p)
         moderator_result = extract_json(text)
 
+    # â"€â"€ Post-debate scoring pipeline â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    raw_score = moderator_result.get("consensus_score", round(avg, 2))
+    scoring_output = scoring._safe_apply_adjustments(
+        raw_score=raw_score,
+        result=moderator_result,
+        dossier=dossier,
+    )
+    # Merge adjusted values back into moderator_result so the transcript captures them
+    moderator_result["raw_consensus_score"]  = raw_score
+    moderator_result["consensus_score"]      = scoring_output["adjusted_score"]
+    moderator_result["consensus_grade"]      = scoring_output["consensus_grade"]
+    moderator_result["score_adjustments"]    = scoring_output["score_adjustments"]
+    moderator_result["banger"]               = scoring_output["banger"]
+    moderator_result["position_guidance"]    = scoring_output["position_guidance"]
+
     transcript.append(moderator_result)
 
     # Signal consensus grade and completion to the frontend
@@ -303,18 +348,30 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         print(f"  {moderator_result.get('majority_thesis', '')[:120]}...")
 
     return {
-        "ticker":             ticker,
-        "consensus_score":    moderator_result.get("consensus_score", round(avg, 2)),
-        "consensus_grade":    consensus_grade,
-        "confidence":         moderator_result.get("confidence", "MEDIUM"),
-        "majority_thesis":    moderator_result.get("majority_thesis", ""),
-        "dissent":            moderator_result.get("dissent", ""),
-        "key_swing_factor":   moderator_result.get("key_swing_factor", ""),
-        "score_rationale":    moderator_result.get("score_rationale", ""),
-        "agent_r1_scores":    scores_r1,
-        "agent_final_scores": scores,
-        "score_spread":       round(spread, 2),
-        "loops_run":          loops_run,
-        "converged":          spread <= CONVERGENCE_THRESHOLD,
-        "transcript":         transcript,
+        "ticker":               ticker,
+        "raw_consensus_score":  moderator_result.get("raw_consensus_score", round(avg, 2)),
+        "consensus_score":      moderator_result.get("consensus_score", round(avg, 2)),
+        "consensus_grade":      moderator_result.get("consensus_grade", _grade(avg)),
+        "confidence":           moderator_result.get("confidence", "MEDIUM"),
+        "majority_thesis":      moderator_result.get("majority_thesis", ""),
+        "dissent":              moderator_result.get("dissent", ""),
+        "key_swing_factor":     moderator_result.get("key_swing_factor", ""),
+        "score_rationale":      moderator_result.get("score_rationale", ""),
+        "catalyst":             moderator_result.get("catalyst", ""),
+        "asymmetry_ratio":      moderator_result.get("asymmetry_ratio", ""),
+        "moat_composite":       moderator_result.get("moat_composite"),
+        "cycle_position":       moderator_result.get("cycle_position", {}),
+        "fair_value_composite": moderator_result.get("fair_value_composite") or _extract_ve_fair_value(transcript),
+        "entry_assessment":     moderator_result.get("entry_assessment", ""),
+        "data_confidence":      dossier.get("data_quality", {}).get("data_confidence", "HIGH"),
+        "score_adjustments":    moderator_result.get("score_adjustments", {}),
+        "banger":               moderator_result.get("banger", {}),
+        "position_guidance":    moderator_result.get("position_guidance", {}),
+        "agent_r1_scores":      scores_r1,
+        "agent_final_scores":   scores,
+        "score_decomposition":  agent_breakdowns,
+        "score_spread":         round(spread, 2),
+        "loops_run":            loops_run,
+        "converged":            spread <= CONVERGENCE_THRESHOLD,
+        "transcript":           transcript,
     }

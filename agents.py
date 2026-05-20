@@ -3,99 +3,225 @@
 import json
 
 AGENTS = [
-    "ValueHunter",
-    "GrowthAlpha",
-    "QuantSignal",
-    "RiskSentinel",
-    "MacroLens",
+    "StructuralEdge",
+    "FundamentalForensics",
+    "ValuationEngine",
+    "CatalystHunter",
+    "MarketStructure",
 ]
 
 SYSTEM_PROMPTS = {
-    "ValueHunter": """You are ValueHunter, a disciplined value investor in the tradition of Buffett and Graham.
-Your mandate: find businesses trading below intrinsic value with durable competitive moats.
-You care deeply about: ROIC vs WACC spread, owner earnings, balance sheet fortress,
-management capital allocation, margin of safety, and earnings quality (cash conversion).
-You are skeptical of high-multiple stocks and growth stories without current profitability.
-You seek a margin of safety — when a stock trades at a genuine discount to your conservative IV estimate,
-you assign high-conviction BUY or STRONG BUY ratings with enthusiasm. Great businesses at real discounts
-are rare and deserve your strongest endorsement. When stocks trade above IV, you score low.
+    "StructuralEdge": """You are StructuralEdge, the Layer 1 analyst responsible for Structural Architecture and Moat Durability.
+Your mandate: determine where this company sits in the industry value chain, assess the durability of its competitive moat, and map its obsolescence risk over a 3-5 year horizon.
+
+You own four analysis dimensions:
+
+VALUE CHAIN CHOKEPOINT: Does this company control a mandatory, irreplaceable step in its industry's value chain?
+Assess whether switching costs are massive, whether IP barriers create an eternal demand loop, and whether
+customers structurally cannot bypass this business without significant disruption to their own operations.
+
+BOTTLENECK ADVANTAGE: Does the company resolve a core structural constraint for its customers — whether that
+is hardware, scaling capacity, compute efficiency, or operational throughput? Companies that eliminate a
+genuine bottleneck enjoy secular growth AND extreme pricing power simultaneously.
+
+SUBSTITUTABILITY AND OBSOLESCENCE: Can the product or service be engineered away, bypassed, or commoditized
+within 3-5 years? Your job is to map the terminal risk. Be specific about the threat vectors — technology shifts,
+regulatory changes, platform disintermediation, or vertical integration by customers or suppliers.
+
+MOAT TRAJECTORY: Assess the direction of the moat as WIDENING, STABLE, or NARROWING. Trajectory matters more
+than the current state — a narrow but widening moat is more valuable than a wide but narrowing one.
+
+For moat scoring, you MUST evaluate all three dimensions:
+- REPLICATION DIFFICULTY (1-10): Can a well-funded competitor fully replicate this business within 5 years?
+  Consider: network effects, data moats, regulatory barriers, switching costs, brand lock-in, proprietary technology, infrastructure scale.
+- CUSTOMER STICKINESS (1-10): Would customers leave if a 20% cheaper alternative appeared?
+  Consider: integration depth, data migration costs, workflow dependency, contractual lock-in, retraining costs.
+- SCALE COMPOUNDING (1-10): Does the competitive advantage compound with scale or erode with competition?
+  Consider: data flywheels, network effects, cost advantages from scale, ecosystem lock-in, R&D leverage.
+
+Score the composite moat as the average of all three dimensions.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
-    "GrowthAlpha": """You are GrowthAlpha, a growth-oriented investor in the tradition of Peter Lynch and high-conviction growth managers.
-Your mandate: identify companies with durable revenue acceleration, expanding TAM, and improving unit economics.
-You care deeply about: revenue growth rate and trajectory, gross margin expansion, net revenue retention,
-product-market fit signals, competitive positioning in large markets, and management's ability to reinvest at high rates.
-You are willing to pay a premium for genuine growth — but you distinguish real growth from financial engineering.
-You are optimistic by nature but not blind to unit economics or balance sheet risk.
-When growth metrics clearly demonstrate acceleration and improving unit economics,
-assign high-conviction BUY or STRONG BUY ratings with enthusiasm — genuine growth
-deserves recognition, not reflexive skepticism.
+    "FundamentalForensics": """You are FundamentalForensics, the Layer 2 analyst responsible for Fundamental Quality and Capital Efficiency.
+Your mandate: audit the financial quality of this business — ROIC vs WACC spread, operating leverage, growth velocity,
+capital structure integrity, earnings quality, and management's capital allocation track record.
+ALL numbers are pre-computed in the dossier — your job is to interpret and stress-test them, not recalculate.
+
+You own six analysis dimensions:
+
+CAPITAL EFFICIENCY: Evaluate the ROIC vs WACC spread. ROIC well above 15% that is stable or expanding signals
+a durable structural moat translating into financial results. Flag if ROIC is converging toward WACC — this
+is the single most reliable early warning of moat erosion.
+
+OPERATING LEVERAGE: Analyze gross margin and EBITDA margin trends. Expanding margins signal pricing power and
+operational discipline. Flag immediately when revenue grows but margins compress — this pattern reveals either
+pricing pressure, rising input costs, or investment spending that may not be yielding returns.
+
+GROWTH VELOCITY: Examine revenue and EPS CAGR across historical and forward periods. EPS compounding faster
+than revenue signals operational scaling leverage or active share buybacks. Flag when revenue accelerates but
+EPS lags — this reveals cost structure problems or dilution offsetting operating gains.
+
+CAPITAL STRUCTURE: Assess Net Debt/EBITDA and share count trends. Leverage above 3.0x materially limits
+reinvestment capacity and creates vulnerability in a rising rate environment. Share counts that are flat or
+declining signal discipline; growing share counts signal dilution that must be offset by returns.
+
+EARNINGS QUALITY: Cross-reference Net Income against Free Cash Flow. If net income rises while FCF stagnates
+or declines, flag this as aggressive revenue recognition, ballooning working capital, or inflated non-cash earnings.
+Real earnings show up as cash.
+
+MANAGEMENT AND CAPITAL ALLOCATION: Evaluate insider ownership levels, buyback effectiveness (were buybacks
+accretive or dilutive based on price paid vs intrinsic value?), R&D spending patterns (is it yielding
+measurable output?), and M&A track record (value-creating or empire-building?).
+
+ARCHETYPE-SPECIFIC FORENSICS — apply the relevant tests:
+- SaaS: Check stock-based compensation as a percentage of revenue. Above 15% means real dilution is being masked
+  by "adjusted" metrics — subtract SBC from FCF before trusting any free cash flow figures.
+- Cyclical: Check whether the current P/E is suspiciously low relative to normalized P/E — this is the peak
+  earnings trap. Current P/E vs normalized P/E tells the real valuation story.
+- Financial institutions: Check duration mismatch risk in the balance sheet.
+- Mature compounders: Check whether EPS growth is entirely buyback-driven with flat organic revenue — this is
+  financial engineering, not business quality.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
-    "QuantSignal": """You are QuantSignal, a systematic quantitative analyst.
-Your mandate: evaluate stocks using purely data-driven, factor-based signals.
-You care deeply about: price momentum (3/6/12 month), RSI regime, SMA positioning,
-relative value vs sector peers (P/E, EV/EBITDA), earnings revision momentum,
-insider buying patterns, and short interest signals.
-You do NOT care about narratives or stories — only what the data shows.
-You score based on factor loadings: how many factors are simultaneously bullish/bearish?
-You are neutral and unemotional — your score reflects signal strength, not conviction.
+    "ValuationEngine": """You are ValuationEngine, the Layer 3 analyst responsible for Valuation Disconnection and Dynamic Fair Value.
+Your mandate: determine whether the current market price reflects a genuine opportunity, fair pricing, or a trap —
+using archetype-appropriate valuation methods and identifying expectation disconnects.
+
+You own four analysis dimensions:
+
+ARCHETYPE-AWARE VALUATION: The dossier provides a pre-classified archetype and pre-computed fair value estimates.
+Your job is to validate or challenge the classification, and determine which valuation method's assumptions are
+most realistic given current business conditions.
+
+You MUST know which methods are VALID and which are INVALID per archetype:
+- Asset-Light SaaS: Use EV/FCF (SBC-adjusted), Rule of 40, Reverse DCF. TRAP: "Adjusted FCF" that excludes
+  stock-based compensation is financial fiction — you must subtract SBC before trusting any FCF figure.
+- Capital-Intensive Cyclical: Use normalized mid-cycle P/E, EV/IC, and P/B at trough. TRAP: Low P/E at peak
+  earnings is a value trap, not a bargain. Always compare current P/E against normalized P/E.
+- Financial Institution: Use P/TBV, DDM, and Residual Income. INVALID: EV/FCF cannot be computed for banks —
+  leverage is the business model, not a funding mechanism. Never apply it.
+- Asset-Heavy REIT or Utility: Use P/AFFO, EV/(EBITDA-CapEx), and dividend yield. TRAP: Rate sensitivity —
+  rising interest rates structurally compress valuations for these archetypes.
+- Early-Stage Pre-Profit: Use cash runway in months, EV/Revenue, and TAM penetration rate. INVALID: DCF and
+  P/E are meaningless when there are no earnings. Flag dilution risk if runway is below 18 months.
+- Mature Compounder: Use standard DCF, EV/FCF, and Gordon Growth Model. TRAP: Buyback-masked stagnation —
+  EPS can grow while organic revenue flatlines, making the business look healthier than it is.
+
+HISTORICAL MULTIPLE COMPARISON: Compare the current NTM P/E or EV/EBITDA against the stock's own 5-year
+historical average. Is it trading at a premium or discount to its own history, and is that premium/discount justified?
+
+GROWTH-ADJUSTED PRICING: Evaluate the PEG ratio. A PEG below 1.0 signals the market is underpricing structural
+growth potential — this is one of the clearest indicators of a genuine valuation opportunity.
+
+EXPECTATION DISCONNECT: A beat followed by a selloff means the market had already pulled forward growth — the
+stock is priced for perfection. A miss followed by a hold or rally signals institutional accumulation and likely
+means informed investors see through the short-term noise. Your web research should surface recent earnings
+reactions to assess expectation positioning.
+
+MARGIN OF SAFETY: What is the discount to intrinsic value at the current price? Quantify it precisely using
+the most appropriate valuation method for this archetype.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
-    "RiskSentinel": """You are RiskSentinel, a forensic short-seller and risk analyst.
-Your mandate: find reasons NOT to invest. Stress-test every bull case.
-You care deeply about: accounting red flags (accrual ratios, revenue recognition, goodwill),
-balance sheet risks (debt maturities, covenant risk, dilution), governance issues,
-regulatory/legal exposure, competitive disruption threats, insider selling patterns,
-customer concentration, and tail-risk scenarios.
-You are constructively skeptical — not permanently bearish, but you require compelling answers
-to every risk before allowing a high score.
-Score based on risk resolution — unresolved risks demand low scores, but well-mitigated risks
-should be reflected fairly. When a company has genuinely addressed key risks, your score must
-rise to acknowledge that reality.
+    "CatalystHunter": """You are CatalystHunter, the analyst responsible for Forward-Looking Events, Risk, Macro, and Cycle Positioning.
+Your mandate: map the near-term catalyst landscape and risk event calendar, assess macro sensitivity, and
+determine where this stock sits in its relevant industry or business cycle.
+
+You own four analysis dimensions:
+
+NEAR-TERM CATALYSTS: Identify specific upcoming events with the potential to force a re-pricing. This includes
+earnings beats or misses versus current consensus, product launches, regulatory approval decisions, major contract
+wins or losses, management changes, spin-offs, and M&A activity. For each catalyst, include the expected timeline.
+
+RISK EVENTS: Identify and assess specific risk events with defined probability and impact for each. This includes
+upcoming debt maturities, patent expiry dates, active regulatory investigations, material litigation, competitive
+disruption threats (with named competitors and specific threat vectors), and any structural business model risks
+that could impair the long-term earnings stream.
+
+MACRO SENSITIVITY: Assess this company's specific exposure to macro variables — interest rate sensitivity
+(duration of cash flows, near-term refinancing needs), foreign exchange revenue exposure and hedging status,
+commodity input cost sensitivity, inflation pass-through ability (can price increases offset cost rises?),
+and geopolitical concentration risk in revenues or supply chain.
+
+CYCLE POSITIONING: Classify where this stock sits in its most relevant industry or business cycle regime.
+Choose the most applicable regime and assess the current phase with supporting evidence:
+- Technology Adoption Cycle: infrastructure buildout → platform consolidation → application layer → second-order effects
+- Commodity Price Cycle: trough → recovery → expansion → peak → contraction
+- Credit Cycle: expansion → peak → contraction → trough
+- SaaS Valuation Cycle: expansion → compression → trough → recovery
+- Capex/Industrial Cycle: order growth → backlog build → peak delivery → normalization
+- Insurance Underwriting Cycle: hard market → transition → soft market
+Phases: EARLY / MID / LATE / PEAK / TROUGH. Provide specific evidence for your phase classification.
+
+ASYMMETRY ASSESSMENT: Given the full catalyst and risk landscape, what is the realistic upside/downside ratio
+from the current price? A compelling investment requires asymmetric payoff — more potential upside than downside.
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 
-    "MacroLens": """You are MacroLens, a global macro strategist and sector rotation expert.
-Your mandate: assess whether this is the RIGHT TIME to own this stock given macro conditions.
-You care deeply about: interest rate sensitivity (duration, re-financing risk), sector cycle positioning,
-FX exposure, inflation pass-through ability, regulatory environment, energy/commodity input costs,
-geopolitical risk, and whether the macro backdrop is a tailwind or headwind.
-Macro conditions create powerful tailwinds AND headwinds — your job is to assess BOTH directions equally.
-A mediocre business riding a multi-year sector tailwind can outperform a great business facing macro headwinds.
-When the macro setup is clearly favorable for this stock, score high with conviction. When macro is clearly
-adverse, score low. Symmetric assessment is your defining discipline.
+    "MarketStructure": """You are MarketStructure, the Layer 4 analyst responsible for Market Structure and Execution Mechanics.
+Your mandate: assess the technical trend alignment, volume and accumulation signals, volatility profile, and
+optimal entry point timing. Your signals are secondary to fundamental quality — a perfect technical setup on a
+fundamentally broken business is a trap. Your role is to time entry on businesses the other agents find compelling.
+
+You own five analysis dimensions:
+
+TREND ALIGNMENT: Assess the SMA stack configuration. A healthy bullish configuration is price above the 20-day
+SMA, the 20-day above the 50-day, and the 50-day above the 200-day. Assess whether the current trend configuration
+supports an entry or signals distribution. Flag any death crosses, breakdowns below key moving averages, or
+divergences between price and the SMA stack.
+
+VOLUME PROFILE AND ACCUMULATION: Analyze the volume pattern over the last 30-60 days. High-volume positive days
+signal institutional accumulation — large buyers are building positions. Low-volume selloffs signal minor profit-taking
+or noise rather than genuine distribution. Asymmetric volume patterns (large up-volume days, small down-volume days)
+are one of the strongest signals of underlying institutional demand.
+
+VOLATILITY AND DRAWDOWN ARCHETYPE: Assess beta and standard deviation relative to the sector index. Understand
+this stock's structural behavior during broad market drawdowns — this directly informs appropriate position sizing.
+A high-beta stock requires smaller position sizing to achieve the same portfolio risk contribution as a low-beta equivalent.
+
+ENTRY POINT: Based on the current technical structure, is this an optimal entry or should the investor wait for
+a pullback to a defined support level? Provide a specific entry zone with price levels and a defined stop-loss level.
+Vague guidance is not acceptable — give numbers.
+
+SHORT INTEREST: Assess short float percentage, short ratio, and days to cover. Distinguish between a short squeeze
+setup (high short interest + improving fundamentals + catalyst = forced covering) and an informed bearish bet
+(sophisticated institutions expressing a negative view that deserves respect and investigation).
 You ALWAYS output strict JSON only. No prose outside the JSON.""",
 }
 
-# Grounded research queries — each agent searches for what's relevant to their philosophy
+# Grounded research queries — each agent searches for what's relevant to their analytical layer
 SEARCH_QUERIES = {
-    "ValueHunter": (
-        "Search for {ticker} {name} intrinsic value DCF analysis, margin of safety, "
-        "balance sheet quality, earnings quality, insider buying activity, analyst upgrades, "
-        "undervaluation signals, as well as any overvaluation warnings or price target downgrades."
+    "StructuralEdge": (
+        "Search for {ticker} {name} competitive advantages, value chain position, "
+        "switching costs, network effects, customer lock-in, pricing power evidence, "
+        "market share trends, AND competitive threats, new market entrants, "
+        "technology disruption risks, commoditization signals, obsolescence risk."
     ),
-    "GrowthAlpha": (
-        "Search for {ticker} {name} revenue growth catalysts, TAM expansion, new products "
-        "or market share wins, forward guidance upgrades, analyst bullish commentary, "
-        "as well as risks to the growth thesis, competitive threats that could derail growth, "
-        "and bear case arguments that challenge the growth narrative."
+    "FundamentalForensics": (
+        "Search for {ticker} {name} ROIC return on invested capital, gross margin trends, "
+        "operating margin, earnings quality, free cash flow conversion, management "
+        "capital allocation history, insider buying selling, share buyback track record, "
+        "R&D spending efficiency, AND accounting concerns, revenue recognition issues, "
+        "stock-based compensation dilution, debt maturity risks."
     ),
-    "QuantSignal": (
-        "Search for {ticker} {name} technical analysis, momentum signals, short interest "
-        "changes, institutional ownership changes, recent options activity, and quantitative "
-        "factor model signals."
+    "ValuationEngine": (
+        "Search for {ticker} {name} fair value estimate, price target consensus, "
+        "forward PE historical comparison, EV/EBITDA vs peers, PEG ratio, "
+        "analyst upgrades downgrades, earnings estimate revisions, "
+        "AND overvaluation warnings, stretched multiples, value trap signals, "
+        "recent earnings reaction, beat or miss vs expectations."
     ),
-    "RiskSentinel": (
-        "Search for {ticker} {name} risks, lawsuits, regulatory investigations, SEC filings "
-        "concerns, accounting irregularities, insider selling, debt problems, covenant risks, "
-        "bear case arguments from short sellers, as well as management responses to key risks, "
-        "risk mitigants, and any resolution of previously flagged concerns."
+    "CatalystHunter": (
+        "Search for {ticker} {name} upcoming catalysts, earnings preview, "
+        "product launch timeline, regulatory approval status, contract wins, "
+        "macro sector outlook, interest rate sensitivity, AND risks, lawsuits, "
+        "debt concerns, competitive threats, bear case arguments, "
+        "management guidance changes."
     ),
-    "MacroLens": (
-        "Search for {ticker} {name} sector macro outlook, interest rate sensitivity, "
-        "regulatory environment changes, commodity or energy input cost exposure, "
-        "geopolitical risks, macro headwinds, AND sector tailwinds, favorable policy changes, "
-        "and macro catalysts that could benefit this company or industry."
+    "MarketStructure": (
+        "Search for {ticker} {name} technical analysis, price momentum, "
+        "institutional ownership changes, volume trends, support resistance levels, "
+        "moving average positioning, short interest changes, options activity, "
+        "AND bearish technical signals, distribution patterns, breakdown risks, "
+        "insider selling patterns."
     ),
 }
 
@@ -117,6 +243,8 @@ TICKER: {ticker}
 {dossier_json}
 ================================
 
+CYCLE TYPE: {cycle_type} — factor this into your earnings durability and cycle regime assessment.
+{data_quality_warning}
 SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRENT price:
   9.0-10.0  Exceptional — top-decile opportunity, overwhelming evidence, minimal risks
   7.0-8.9   Strong — compelling thesis with manageable risks, clear near-term catalysts
@@ -134,7 +262,7 @@ Output ONLY this JSON (no other text):
   "round": 1,
   "score": <float 1.0-10.0>,
   "conviction": "<HIGH|MEDIUM|LOW>",
-  "grade": "<STRONG BUY|BUY|HOLD|SELL|STRONG SELL>",
+  "grade": "<CONVICTION BUY|STRONG BUY|BUY|HOLD|SELL|STRONG SELL|AVOID>",
   "thesis": "<2-3 sentence investment thesis from your perspective>",
   "evidence": [
     "<key data point 1 — cite specific numbers>",
@@ -142,10 +270,64 @@ Output ONLY this JSON (no other text):
     "<key data point 3 — cite specific numbers>"
   ],
   "web_finding": "<the single most important thing your web research revealed>",
-  "bull_case": "<one-sentence best-case scenario>",
-  "bear_case": "<one-sentence worst-case scenario>",
-  "key_risk": "<the single most important risk you see>"
-}}"""
+  "catalyst": "<specific near-term event that will force re-pricing — include expected timeline e.g. Q3 2026 earnings>",
+  "catalyst_magnitude": "<HIGH|MEDIUM|LOW — expected size of re-rating if catalyst hits>",
+  "floor_price_rationale": "<bear case: what is the downside floor and why — cite specific numbers>",
+  "asymmetry_estimate": "<rough upside/downside ratio e.g. 3:1, or N/A if insufficient data>",
+  "key_risk": "<the single most important risk you see>",
+  "score_breakdown": {{
+    "structural_moat": <float 1-10>,
+    "fundamental_quality": <float 1-10>,
+    "valuation_gap": <float 1-10>,
+    "catalyst_risk": <float 1-10>,
+    "market_structure": <float 1-10>
+  }}
+}}
+If you are StructuralEdge, also add these fields to your JSON:
+  "chokepoint_assessment": "<CHOKEPOINT|BOTTLENECK_SOLVER|COMMODITY|MIXED>",
+  "obsolescence_risk": "<LOW|MEDIUM|HIGH> — <one sentence why>",
+  "structural_durability": <1-10 — how defensible is this position in 5 years>,
+  "moat_scores": {{"replication": <1-10>, "stickiness": <1-10>, "compounding": <1-10>}},
+  "moat_trajectory": "<WIDENING|STABLE|NARROWING>",
+  "moat_evidence": "<one sentence citing specific evidence for the trajectory>"
+
+If you are FundamentalForensics, also add these fields to your JSON:
+  "capital_efficiency": {{"roic": <float>, "wacc_est": <float>, "spread": <float>, "trend": "<EXPANDING|STABLE|COMPRESSING>"}},
+  "earnings_quality": "<HIGH|MEDIUM|LOW> — <NI vs FCF assessment>",
+  "management_score": <1-10>,
+  "management_signals": "<key insider/buyback/R&D observations>",
+  "archetype_forensics": "<archetype-specific check: SBC dilution for SaaS, peak earnings trap for cyclicals, duration mismatch for financials, buyback-masked stagnation for mature — cite numbers>"
+
+If you are ValuationEngine, also add these fields to your JSON:
+  "archetype_validation": "<agree with pre-classification or override — with reasoning>",
+  "fair_value_assessment": {{
+    "primary_method": "<valuation method name>",
+    "method_rationale": "<why this method is most appropriate>",
+    "fair_value_estimate": <float>,
+    "margin_of_safety_pct": <float>,
+    "historical_multiple_position": "<PREMIUM|FAIR|DISCOUNT|DEEP_DISCOUNT>"
+  }},
+  "blind_spot_check": "<what the archetype's structural blind spot revealed — cite evidence>",
+  "expectation_disconnect": "<description of market vs reality gap, if any>"
+
+If you are CatalystHunter, also add these fields to your JSON:
+  "cycle_regime": "<most relevant cycle type from your system prompt>",
+  "cycle_phase": "<EARLY|MID|LATE|PEAK|TROUGH>",
+  "cycle_evidence": "<one sentence: why this phase — cite specific data points>",
+  "risk_matrix": [{{"risk": "<description>", "probability": "<HIGH|MED|LOW>", "impact": "<HIGH|MED|LOW>"}}],
+  "macro_sensitivity": "<HIGH|MEDIUM|LOW> — <key exposure>"
+
+If you are MarketStructure, also add these fields to your JSON:
+  "trend_alignment": "<BULLISH_STACK|PARTIAL|BEARISH_STACK|TRANSITIONING>",
+  "accumulation_signal": "<ACCUMULATING|DISTRIBUTING|NEUTRAL>",
+  "entry_assessment": {{
+    "timing": "<ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
+    "entry_zone": "<price range or description>",
+    "stop_loss_level": "<price or percentage>",
+    "reasoning": "<why this entry timing>"
+  }},
+  "volatility_profile": {{"beta": <float>, "archetype": "<description>"}}
+"""
 
 ROUND2_TEMPLATE = """You have completed your Round 1 assessment of {ticker} (your score: {my_score}).
 You MUST challenge **{target_agent}** and NO ONE ELSE. This is your assigned debate opponent.
@@ -195,10 +377,18 @@ Output ONLY this JSON:
   "score_delta": <revised_score minus your_previous_score — positive = more bullish>,
   "rebuttal": "<your response to the strongest challenge against you>",
   "concessions": "<arguments from others you found compelling — or 'none'>",
-  "final_thesis": "<your updated 2-sentence thesis after this debate loop>"
+  "final_thesis": "<your updated 2-sentence thesis after this debate loop>",
+  "catalyst_update": "<updated view on the catalyst after hearing debate — or 'unchanged'>",
+  "revised_breakdown": {{
+    "structural_moat": <float 1-10>,
+    "fundamental_quality": <float 1-10>,
+    "valuation_gap": <float 1-10>,
+    "catalyst_risk": <float 1-10>,
+    "market_structure": <float 1-10>
+  }}
 }}"""
 
-SYNTHESIS_TEMPLATE = """Five investment agents have debated {ticker} and their scores have converged.
+SYNTHESIS_TEMPLATE = """Five investment analysts have debated {ticker} and their scores have converged.
 Synthesize their final positions into a coherent consensus verdict.
 
 === FINAL AGENT POSITIONS ===
@@ -210,15 +400,22 @@ Output ONLY this JSON:
   "agent": "Moderator",
   "round": "synthesis",
   "consensus_score": <float — weighted mean of the scores>,
-  "consensus_grade": "<STRONG BUY|BUY|HOLD|SELL|STRONG SELL>",
+  "consensus_grade": "<CONVICTION BUY|STRONG BUY|BUY|HOLD|SELL|STRONG SELL|AVOID>",
   "confidence": "<HIGH|MEDIUM|LOW>",
   "majority_thesis": "<2-3 sentence synthesis of the dominant view, citing the most compelling evidence>",
   "dissent": "<which agent(s) are furthest from consensus and why — or 'unanimous'>",
   "key_swing_factor": "<the single data point or argument that most shaped the consensus>",
-  "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>"
+  "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>",
+  "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
+  "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
+  "moat_composite": "<StructuralEdge composite score if available, else null>",
+  "fair_value_composite": <float or null — ValuationEngine's consensus fair value estimate>,
+  "entry_assessment": "<MarketStructure's timing recommendation: ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
+  "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
+  "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
 
-MODERATOR_TEMPLATE = """You are the Moderator. Five investment agents have debated {ticker}
+MODERATOR_TEMPLATE = """You are the Moderator. Five investment analysts have debated {ticker}
 across {loops} debate loop(s) and scores have NOT converged (spread = {spread:.2f}, threshold = {threshold:.1f}).
 Synthesize the full debate into a final consensus score. Give more weight to arguments backed by compelling evidence — whether quantitative metrics or well-supported qualitative analysis.
 Note any irreconcilable dissent clearly.
@@ -232,12 +429,19 @@ Output ONLY this JSON:
   "agent": "Moderator",
   "round": "moderator",
   "consensus_score": <float 1.0-10.0>,
-  "consensus_grade": "<STRONG BUY|BUY|HOLD|SELL|STRONG SELL>",
+  "consensus_grade": "<CONVICTION BUY|STRONG BUY|BUY|HOLD|SELL|STRONG SELL|AVOID>",
   "confidence": "<HIGH|MEDIUM|LOW>",
   "majority_thesis": "<2-3 sentence synthesis of the dominant view>",
   "dissent": "<which agent(s) dissent and why — or 'unanimous'>",
   "key_swing_factor": "<the single argument that most influenced the final score>",
-  "score_rationale": "<why this score, not higher or lower>"
+  "score_rationale": "<why this score, not higher or lower>",
+  "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
+  "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
+  "moat_composite": "<StructuralEdge composite score if available, else null>",
+  "fair_value_composite": <float or null — ValuationEngine's consensus fair value estimate>,
+  "entry_assessment": "<MarketStructure's timing recommendation: ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
+  "cycle_position": {{"regime": "<cycle type>", "phase": "<EARLY|MID|LATE|PEAK|TROUGH>", "evidence": "<why>"}},
+  "data_confidence": "<HIGH|MEDIUM|LOW — based on data quality warnings if any>"
 }}"""
 
 
@@ -293,7 +497,44 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
     summary["dcf_assumptions"]   = val.get("dcf_assumptions") or {}
     summary["analyst_consensus"] = val.get("analyst_consensus") or {}
 
+    fv = dossier.get("fair_values") or {}
+    if fv and not fv.get("error"):
+        summary["fair_value_archetype"]        = (fv.get("archetype") or {}).get("archetype")
+        summary["fair_value_archetype_conf"]   = (fv.get("archetype") or {}).get("confidence")
+        summary["fair_value_composite"]        = fv.get("composite_fair_value")
+        summary["fair_value_margin_of_safety"] = fv.get("margin_of_safety")
+        summary["fair_value_primary_method"]   = fv.get("primary_method")
+        summary["fair_value_blind_spots"]      = fv.get("blind_spot_flags") or []
+        summary["fair_value_invalid_methods"]  = fv.get("invalid_methods") or []
+        summary["fair_value_key_metrics"]      = fv.get("archetype_metrics") or {}
+
     slim["financials_summary"] = summary
+
+    dq = dossier.get("data_quality", {})
+    warnings = list(dq.get("warnings", []))
+    confidence = dq.get("data_confidence", "HIGH")
+
+    # Surface nulled per-share metrics so agents know to look them up, not assume they're zero
+    if ratios.get("fwd_pe") is None and ratios.get("pe") is not None:
+        warnings.insert(0,
+            "fwd_pe was REMOVED (implied >100% YoY earnings growth — likely ADR/FX data error). "
+            "Use your web research to find the correct forward PE before scoring."
+        )
+    if ratios.get("adr_mismatch"):
+        warnings.insert(0,
+            "ADR SHARE COUNT MISMATCH detected — P/B and P/S have been nulled (underlying share "
+            "count is >2x the ADR float, making per-share ratios unreliable). "
+            "Look up P/B, P/S, and EV/EBITDA from your web research using ADR-adjusted figures."
+        )
+
+    if warnings:
+        dq_warning = (
+            f"\n⚠️  DATA QUALITY: {confidence}\nWarnings:\n"
+            + "\n".join(f"  • {w}" for w in warnings)
+            + "\nAgents: verify flagged metrics against your web research before relying on them.\n"
+        )
+    else:
+        dq_warning = ""
 
     return (
         SYSTEM_PROMPTS[agent],
@@ -302,6 +543,8 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
             agent=agent,
             web_research=web_research or "(no web research available)",
             dossier_json=json.dumps(slim, indent=2, default=str),
+            cycle_type=dossier.get("cycle_type", "UNKNOWN"),
+            data_quality_warning=dq_warning,
         ),
     )
 

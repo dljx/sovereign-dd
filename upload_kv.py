@@ -91,7 +91,7 @@ def collect_scout_results(scout_dir: Path) -> list:
     Only dd:scouts (the accumulated BUY list) is written via the payload 'scouts' field.
     """
     if not scout_dir.exists():
-        return [], []
+        return []
 
     cutoff = time.time() - SCOUT_UPLOAD_WINDOW_SECS
     discoveries = []
@@ -115,13 +115,71 @@ def collect_scout_results(scout_dir: Path) -> list:
 
         if score >= BUY_THRESHOLD:
             discoveries.append({
-                "ticker":      ticker,
-                "score":       round(score, 2),
-                "grade":       grade,
-                "conf":        result.get("confidence", ""),
-                "thesis":      result.get("majority_thesis", "")[:200],
-                "key_swing":   result.get("key_swing_factor", "")[:150],
-                "analyzed_at": result.get("built_at", ""),
+                "ticker":           ticker,
+                "score":            round(score, 2),
+                "grade":            grade,
+                "conf":             result.get("confidence", ""),
+                "thesis":           result.get("majority_thesis", "")[:200],
+                "key_swing":        result.get("key_swing_factor", "")[:150],
+                "analyzed_at":      result.get("built_at", ""),
+                "catalyst":         result.get("catalyst", ""),
+                "asymmetry_ratio":  result.get("asymmetry_ratio", ""),
+                "banger":           result.get("banger", {}),
+                "position_guidance": result.get("position_guidance", {}),
+                "cycle_position":   result.get("cycle_position", {}),
+            })
+
+    return discoveries
+
+
+GEMS_UPLOAD_WINDOW_SECS = 26 * 3600  # gems runs once/day — look back 26h
+
+
+def collect_gems_results(gems_dir: Path) -> list:
+    """Collect BUY-signal gems files written in the last 26h.
+
+    Same dedup-by-ticker logic as collect_scout_results — keep newest file per ticker.
+    Returns a list of discovery dicts for the 'gems' field in the upload payload.
+    """
+    if not gems_dir.exists():
+        return []
+
+    cutoff = time.time() - GEMS_UPLOAD_WINDOW_SECS
+
+    # Deduplicate by ticker — keep only the newest file per ticker
+    latest: dict[str, Path] = {}
+    for path in gems_dir.glob("*.json"):
+        if path.stat().st_mtime < cutoff:
+            continue
+        ticker = path.stem.split("_")[0].upper()
+        if ticker not in latest or path.stat().st_mtime > latest[ticker].stat().st_mtime:
+            latest[ticker] = path
+
+    discoveries = []
+    for ticker, path in sorted(latest.items()):
+        data = load_json(path)
+        if not data:
+            continue
+        result = data.get("result", {})
+        score  = result.get("consensus_score", 0)
+        grade  = result.get("consensus_grade", "?")
+
+        if score >= BUY_THRESHOLD:
+            discoveries.append({
+                "ticker":            ticker,
+                "score":             round(score, 2),
+                "grade":             grade,
+                "conf":              result.get("confidence", ""),
+                "thesis":            result.get("majority_thesis", "")[:200],
+                "key_swing":         result.get("key_swing_factor", "")[:150],
+                "analyzed_at":       result.get("built_at", ""),
+                "catalyst":          result.get("catalyst", ""),
+                "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
+                "banger":            result.get("banger", {}),
+                "position_guidance": result.get("position_guidance", {}),
+                "cycle_position":    result.get("cycle_position", {}),
+                "fair_value_composite": result.get("fair_value_composite"),
+                "entry_assessment":  result.get("entry_assessment", ""),
             })
 
     return discoveries
@@ -143,7 +201,12 @@ def main():
     discoveries = collect_scout_results(scout_dir)
     print(f"  {len(discoveries)} BUY signal(s)")
 
-    if not portfolio_results and not index and not discoveries:
+    gems_dir = output_dir / "gems"
+    print("[upload] Collecting gems results (last 26h)...")
+    gems_discoveries = collect_gems_results(gems_dir)
+    print(f"  {len(gems_discoveries)} gems BUY signal(s)")
+
+    if not portfolio_results and not index and not discoveries and not gems_discoveries:
         print("[upload] Nothing to upload.")
         return
 
@@ -151,12 +214,13 @@ def main():
         "results": portfolio_results,
         "index":   index,
         "scouts":  discoveries if discoveries else None,
+        "gems":    gems_discoveries if gems_discoveries else None,
     }
 
     payload = _sanitize(payload)
 
     url = f"{UPLOAD_URL}/api/dd/upload"
-    print(f"\n[upload] POSTing {len(portfolio_results)} portfolio key(s) + {len(discoveries)} scout BUY(s) to {url}...")
+    print(f"\n[upload] POSTing {len(portfolio_results)} portfolio key(s) + {len(discoveries)} scout + {len(gems_discoveries)} gems BUY(s) to {url}...")
 
     try:
         r = requests.post(url, headers=HEADERS, json=payload, timeout=60)
