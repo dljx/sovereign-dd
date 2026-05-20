@@ -126,8 +126,9 @@ def classify_archetype(dossier: dict) -> dict:
     income1  = _get_income(dossier, 1)
     cf0      = _get_cashflow(dossier, 0)
 
-    sector   = _safe(profile.get("sector"), "")
-    industry = _safe(profile.get("industry"), "")
+    sector    = _safe(profile.get("sector"), "")
+    yf_sector = _safe(profile.get("yf_sector"), "")   # GICS sector from yfinance
+    industry  = _safe(profile.get("industry"), "")
 
     net_income    = _safe(income0.get("net_income"))
     fcf           = _safe(cf0.get("free_cash_flow")) or _safe(ratios.get("fcf"))
@@ -178,7 +179,7 @@ def classify_archetype(dossier: dict) -> dict:
     # 2. FINANCIAL_INSTITUTION
     # ─────────────────────────────────────────────────────────────────────────
     _FINANCIAL_INDUSTRIES = ("Bank", "Insurance", "Asset Management", "Capital Markets", "Mortgage")
-    is_financial_sector   = (sector == "Financial Services")
+    is_financial_sector   = (sector == "Financial Services") or (yf_sector == "Financial Services")
     is_financial_industry = any(kw in industry for kw in _FINANCIAL_INDUSTRIES)
 
     if is_financial_sector or is_financial_industry:
@@ -197,7 +198,7 @@ def classify_archetype(dossier: dict) -> dict:
     # 3. ASSET_HEAVY_INFRASTRUCTURE
     # ─────────────────────────────────────────────────────────────────────────
     _INFRA_INDUSTRIES = ("REIT", "Utility", "Utilities", "Telecom")
-    is_realestate_sector  = (sector == "Real Estate")
+    is_realestate_sector  = (sector == "Real Estate") or (yf_sector == "Real Estate")
     is_infra_industry     = any(kw in industry for kw in _INFRA_INDUSTRIES)
 
     if is_realestate_sector or is_infra_industry:
@@ -217,7 +218,10 @@ def classify_archetype(dossier: dict) -> dict:
     # ─────────────────────────────────────────────────────────────────────────
     _GROWTH_SECTORS = ("Technology", "Communication Services")
     high_gross_margin  = (gross_margin is not None and gross_margin > 0.60)
-    growth_sector      = (sector in _GROWTH_SECTORS)
+    # Check both Finnhub industry AND yfinance GICS sector — Finnhub uses non-standard names
+    # (e.g. "Semiconductors" for NVDA, "Internet Content & Information" for META) that don't
+    # match the GICS strings used here; yf_sector carries the canonical classification.
+    growth_sector      = (sector in _GROWTH_SECTORS) or (yf_sector in _GROWTH_SECTORS)
     strong_rev_growth  = (revenue_growth_yoy is not None and revenue_growth_yoy > 0.10)
 
     if high_gross_margin and growth_sector and strong_rev_growth:
@@ -270,7 +274,8 @@ def classify_archetype(dossier: dict) -> dict:
             "confidence": "MEDIUM",
             "reasoning": (
                 f"Asset-light growth (relaxed): gross_margin={gross_margin:.1%}, "
-                f"sector={sector!r}, revenue_growth_yoy={revenue_growth_yoy:.1%}."
+                f"sector={sector!r}" + (f"/yf={yf_sector!r}" if yf_sector and yf_sector != sector else "")
+                + f", revenue_growth_yoy={revenue_growth_yoy:.1%}."
             ),
             "secondary_archetype": ARCHETYPE_MATURE,
         }
@@ -330,6 +335,17 @@ def compute_fair_values(dossier: dict) -> dict:
     secondary_raw = result.get("secondary") or []
     composite     = _safe(result.get("composite"))
     price         = _get_price(dossier)
+
+    # Sanity check: if composite FV is more than 5× the current price or less than
+    # 4% of it, it almost certainly reflects a currency mismatch (e.g. NTD financials
+    # from yfinance for foreign ADRs mixed with a USD price) or a unit scaling error.
+    # Null it out — debate agents derive the correct value via web research.
+    # Note: FVs well below price (e.g. PLTR at 10% of market) are valid conservative
+    # estimates and are kept; only gross overstatements are discarded.
+    if composite is not None and price is not None and price > 0:
+        _ratio = composite / price
+        if _ratio > 5.0 or _ratio < 0.04:
+            composite = None
 
     margin_of_safety = None
     if composite is not None and price is not None and composite != 0:

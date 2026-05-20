@@ -567,6 +567,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     dossier["profile"] = {
         "name":          profile_raw.get("name") or yf_fin.get("company_name") or ticker,
         "sector":        sector,
+        "yf_sector":     yf_fin.get("sector", ""),   # GICS sector from yfinance (used for archetype classification)
         "industry":      yf_fin.get("industry", ""),
         "exchange":      profile_raw.get("exchange", ""),
         "market_cap_bn": round((profile_raw.get("marketCapitalization") or (yf_fin.get("market_cap") or 0) / 1e6 or 0) / 1000, 2),
@@ -629,12 +630,13 @@ async def build(ticker: str, verbose: bool = True) -> dict:
                       f"yfinance/FMP {_pe_forward_raw}x ({divergence:.0%} divergence)")
     else:
         # Fallback: yfinance/FMP forward PE with sanity check.
-        # If implied YoY earnings growth > 100%, it's almost certainly a data error
-        # (common for ADRs where yfinance mixes underlying-share EPS with ADR price).
+        # Null fwd_pe only for extreme implied growth (>250%) — genuine data/currency errors.
+        # High-growth stocks (NVDA, TSLA, PLTR) legitimately show 100-200% implied EPS
+        # growth between trailing and forward PE; do not discard these as errors.
         _fwd_pe_clean = _pe_forward_raw
         if _pe_trailing and _pe_forward_raw and _pe_trailing > 0 and _pe_forward_raw > 0:
             _implied_growth = _pe_trailing / _pe_forward_raw - 1
-            if _implied_growth > 1.0:
+            if _implied_growth > 2.5:
                 _fwd_pe_clean = None
                 if verbose:
                     print(f"  [dossier] {ticker}: forward PE ({_pe_forward_raw:.1f}x) vs trailing "
