@@ -260,7 +260,7 @@ def classify_archetype(dossier: dict) -> dict:
     # 5. CAPITAL_INTENSIVE_CYCLICAL
     # ─────────────────────────────────────────────────────────────────────────
     _CYCLICAL_SECTORS = ("Energy", "Basic Materials", "Industrials")
-    is_cyclical_sector    = (sector in _CYCLICAL_SECTORS)
+    is_cyclical_sector    = (sector in _CYCLICAL_SECTORS) or (yf_sector in _CYCLICAL_SECTORS)
     is_capex_heavy        = (capex_intensity is not None and capex_intensity > 0.12)
 
     if is_cyclical_sector or is_capex_heavy:
