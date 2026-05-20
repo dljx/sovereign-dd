@@ -74,13 +74,17 @@ async def _run_batch(tickers: list[str], save: bool = False):
     simultaneous requests than we have keys to serve them.
     """
     from llm import _keys as _api_keys
-    tickers = [t.upper() for t in tickers]
-    n_keys  = len(_api_keys)
-    sem     = asyncio.Semaphore(n_keys)
+    tickers   = [t.upper() for t in tickers]
+    # Cap at 4 concurrent debates regardless of key count — each debate fires
+    # 5 agent calls simultaneously, so 4 debates = up to 20 in-flight API calls
+    # across 9 keys ≈ 2–3 calls/key/burst, well under the 15 RPM per-key limit.
+    n_keys    = len(_api_keys)
+    max_concurrent = min(4, n_keys)
+    sem       = asyncio.Semaphore(max_concurrent)
 
     console.rule(
         f"[bold blue]Sovereign DD — Batch ({len(tickers)} tickers, "
-        f"≤{n_keys} concurrent)[/bold blue]"
+        f"≤{max_concurrent} concurrent)[/bold blue]"
     )
 
     async def _one(ticker: str):

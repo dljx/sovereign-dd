@@ -33,16 +33,21 @@ _cooldown_lock = threading.Lock()
 def _is_daily_exhausted(err_str: str) -> bool:
     """True when the error is daily-quota (RPD) exhaustion, not an RPM spike.
 
-    RPD errors contain the specific daily metric name in the response body.
-    RPM throttles say RATE_LIMIT_EXCEEDED or reference per-minute limits.
-    "per day" alone is NOT a reliable signal — RPM error bodies sometimes
-    include phrasing like "N requests per day per minute" which would cause
-    a live key to be incorrectly marked offline until midnight.
+    Google uses the SAME quota_metric name for both RPM and RPD limits:
+      quota_metric: generate_content_free_tier_requests
+    The only reliable differentiator is the quota_limit field:
+      RPM → ...per_minute_per_project_per_base_model  (contains "per_minute")
+      RPD → ...per_day_per_project_per_base_model     (contains "per_day")
+
+    So we MUST check for "per_minute" first and short-circuit to False —
+    any check on "free_tier_requests" alone will mis-fire on RPM errors.
     """
+    if "per_minute" in err_str or "per-minute" in err_str:
+        return False   # RPM throttle — temporary, key recovers within 60s
     return (
-        "free_tier_requests"      in err_str   # generate_content_free_tier_requests metric
+        "per_day"             in err_str   # quota_limit field for RPD limit
         or "generaterequestsperday" in err_str  # GenerateRequestsPerDayPerProjectPerModel
-        or "daily quota"          in err_str   # explicit human-readable daily limit message
+        or "daily quota"      in err_str   # human-readable fallback
     )
 
 
@@ -264,8 +269,10 @@ async def call_gemini_async(
                         # _pick_key() will skip this key for the rest of the day.
                         _exhaust_key(key)
                     else:
-                        # RPM spike — short cooldown, then try next available key.
-                        _cool_key(key, _jittered(min(2 ** (attempt + 1), 30)))
+                        # RPM spike — cool for a full 60s window + jitter so the
+                        # key is guaranteed clear before we retry it.  Other keys
+                        # are tried immediately via _pick_key() rotation.
+                        _cool_key(key, _jittered(65))
                 else:
                     server_err_wait = _jittered(min(2 ** (attempt + 1), 10))
 
