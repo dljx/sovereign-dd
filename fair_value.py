@@ -355,25 +355,24 @@ def compute_fair_values(dossier: dict) -> dict:
     composite     = _safe(result.get("composite"))
     price         = _get_price(dossier)
 
-    # ADR null: for stocks where yfinance mixes underlying-share count with ADR-level
-    # price (adr_mismatch=True), financial statement data may be in the local currency.
-    # All per-share calculations are unreliable — null the pre-computed FV and let agents
-    # derive value from web research rather than anchoring on a currency-bugged number.
-    _ratios = dossier.get("financials", {}).get("ratios_ttm", {})
-    if _ratios.get("adr_mismatch"):
-        composite = None
-
-    # Backstop sanity check: if composite FV exceeds 5× current price or is below 4%,
-    # it almost certainly reflects a currency or unit mismatch that slipped past the ADR
-    # detection. Null it — agents will derive the correct value via web research.
+    # Backstop sanity check: composite FV > 5× price or < 4% of price likely reflects
+    # a currency or unit error. With FX conversion now active, genuine hits are rare
+    # (deep-value microcaps, early-stage, etc.) so preserve the value but flag it.
+    _backstop_flags = result.get("blind_spots") or []
     if composite is not None and price is not None and price > 0:
         _ratio = composite / price
         if _ratio > 5.0 or _ratio < 0.04:
-            composite = None
+            _backstop_flags = list(_backstop_flags) + [
+                f"composite_fv_extreme_ratio:{_ratio:.1f}x — verify for currency/unit errors"
+            ]
 
+    primary_fv = _safe(primary.get("fair_value"))
+    # Compute margin of safety from composite if available, otherwise fall back to
+    # primary alone — better than returning None when composite is unavailable.
     margin_of_safety = None
-    if composite is not None and price is not None and composite != 0:
-        margin_of_safety = (composite - price) / composite
+    _mos_base = composite if composite is not None else primary_fv
+    if _mos_base is not None and price is not None and _mos_base != 0:
+        margin_of_safety = (_mos_base - price) / _mos_base
 
     secondary_methods = [
         {"method": s.get("method"), "fair_value": _safe(s.get("fair_value"))}
@@ -384,12 +383,12 @@ def compute_fair_values(dossier: dict) -> dict:
     return {
         "archetype": archetype_info,
         "primary_method": primary.get("method"),
-        "primary_fair_value": _safe(primary.get("fair_value")),
+        "primary_fair_value": primary_fv,
         "secondary_methods": secondary_methods,
         "composite_fair_value": composite,
         "margin_of_safety": margin_of_safety,
         "archetype_metrics": result.get("key_metrics") or {},
-        "blind_spot_flags": result.get("blind_spots") or [],
+        "blind_spot_flags": _backstop_flags,
         "invalid_methods": result.get("invalid") or [],
     }
 
@@ -408,7 +407,10 @@ def _value_asset_light(dossier: dict) -> dict:
     shares_out  = _safe(ratios.get("shares_out"))
     revenue_ttm = _safe(ratios.get("revenue_ttm"))
     gross_margin= _norm_margin(ratios.get("gross_margin"))
-    fcf         = _safe(ratios.get("fcf")) or _safe(cf0.get("free_cash_flow"))
+    # Prefer cashflow statement FCF so FCF and SBC are from the same reporting period.
+    # ratios_ttm FCF is yfinance TTM and may be depressed by a recent CapEx ramp while
+    # cashflow SBC is from the latest annual — mixing them distorts sbc_adjusted_fcf.
+    fcf         = _safe(cf0.get("free_cash_flow")) or _safe(ratios.get("fcf"))
     sbc         = _safe(cf0.get("stock_based_compensation"))
     total_debt  = _safe(balance.get("total_debt"), 0)
     cash        = _safe(balance.get("cash"), 0)
@@ -439,6 +441,12 @@ def _value_asset_light(dossier: dict) -> dict:
     fcf_margin_pct = (sbc_adjusted_fcf_margin * 100) if sbc_adjusted_fcf_margin is not None else None
     if rev_growth_pct is not None and fcf_margin_pct is not None:
         rule_of_40 = rev_growth_pct + fcf_margin_pct
+    elif rev_growth_pct is not None:
+        # Only revenue growth known — estimate FCF margin as 0 (conservative partial credit)
+        rule_of_40 = rev_growth_pct
+    elif fcf_margin_pct is not None:
+        # Only FCF margin known — estimate revenue growth as 0 (conservative partial credit)
+        rule_of_40 = fcf_margin_pct
 
     # R&D yield: latest gross_profit_growth / prior year R&D spend
     rd_yield = None
@@ -657,6 +665,8 @@ def _value_cyclical(dossier: dict) -> dict:
     blind_spots = ["BOOK_TO_BILL_NOT_COMPUTED"]
     if peak_earnings_trap:
         blind_spots.append("PEAK_EARNINGS_TRAP")
+    if len(net_incomes) == 1:
+        blind_spots.append("SINGLE_YEAR_NORMALIZATION — only 1 earnings year; mid-cycle P/E may reflect peak or trough")
 
     return {
         "primary": primary,
@@ -768,10 +778,20 @@ def _value_infrastructure(dossier: dict) -> dict:
     operating_cf = _safe(cf0.get("operating_cf"))
     capex        = _safe(cf0.get("capex"))
 
-    # AFFO estimate: operating_cf - maintenance capex (20% of total capex)
+    # AFFO estimate: operating_cf - maintenance capex.
+    # Maintenance fraction varies by sub-type: telecoms/cable spend most capex on
+    # ongoing network maintenance; REITs spend far less (tenants handle maintenance).
     affo_estimate = None
     if operating_cf is not None:
-        maintenance_capex = (abs(capex) * 0.2) if capex is not None else 0
+        if "Telecom" in industry or "Telecom Services" in industry or "Cable" in industry:
+            maintenance_ratio = 0.60
+        elif "Utility" in industry or "Utilities" in industry:
+            maintenance_ratio = 0.45
+        elif "REIT" in industry:
+            maintenance_ratio = 0.20
+        else:
+            maintenance_ratio = 0.25
+        maintenance_capex = (abs(capex) * maintenance_ratio) if capex is not None else 0
         affo_estimate = operating_cf - maintenance_capex
 
     affo_per_share = None

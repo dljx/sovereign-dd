@@ -91,9 +91,9 @@ def validate_dossier(dossier: dict) -> dict:
     if country and country.upper() not in ("US", "USA", "UNITED STATES", ""):
         if adr_mismatch:
             warnings.append(
-                f"FOREIGN STOCK / ADR ({country}, exchange: {exchange}) — confirmed share count "
-                f"mismatch (underlying shares >> ADR float). P/B and P/S have been nulled. "
-                f"Forward PE was nulled if growth implied >100%. Use web research for correct multiples."
+                f"FOREIGN STOCK / ADR ({country}, exchange: {exchange}) — financial statements converted "
+                f"to USD where currency differs; P/B and P/S nulled. "
+                f"Forward PE was nulled if growth implied >100%. Verify all multiples independently."
             )
         else:
             warnings.append(

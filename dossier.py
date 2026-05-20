@@ -238,17 +238,22 @@ def _yf_financials(ticker: str) -> dict:
             return round(v, n) if v is not None else None
 
         # For ADRs / foreign stocks, yfinance mixes underlying share counts with ADR-level price.
-        # sharesOutstanding = underlying foreign shares (not ADR units), so per-share math breaks.
-        # Detection uses two independent signals:
-        #   1. quoteType == "ADR" — explicit yfinance flag (catches TSM, BABA, etc.)
-        #   2. sharesOutstanding / floatShares > 2 — implicit ratio heuristic (catches unlabelled ADRs)
-        # Either signal is sufficient; both must be absent to treat as a normal domestic stock.
+        # Detection uses three independent signals:
+        #   1. quoteType == "ADR" — explicit yfinance flag
+        #   2. sharesOutstanding / floatShares > 2 — implicit ratio heuristic
+        #   3. financialCurrency != currency — financials in foreign currency while price is USD
+        #      (catches NYSE-listed foreign companies like TSM that yfinance labels as EQUITY)
         shares_out = info.get("sharesOutstanding") or 0
         float_shares = info.get("floatShares") or 0
+        _fin_currency = info.get("financialCurrency") or "USD"
+        _price_currency = info.get("currency") or "USD"
         _is_adr = info.get("quoteType", "").upper() == "ADR"
         _is_share_ratio_mismatch = float_shares > 0 and shares_out > 0 and shares_out / float_shares > 2
-        _is_adr_mismatch = _is_adr or _is_share_ratio_mismatch
-        _safe_shares = float_shares if _is_adr_mismatch else shares_out
+        _is_fx_mismatch = _price_currency == "USD" and _fin_currency != "USD"
+        _is_adr_mismatch = _is_adr or _is_share_ratio_mismatch or _is_fx_mismatch
+        # Only use floatShares when the ratio heuristic fires — for fx-mismatch ADRs (TSM),
+        # sharesOutstanding is already in ADR units and pairs correctly with the USD ADR price.
+        _safe_shares = float_shares if _is_share_ratio_mismatch else shares_out
 
         # P/B and P/S from yfinance are computed as price / (metric / sharesOutstanding).
         # For ADRs this produces wrong values; null them out and let agents use web research.
@@ -362,7 +367,8 @@ def _yf_financials(ticker: str) -> dict:
                 "market_cap": info.get("marketCap"),
                 "fwd_revenue_growth": info.get("revenueGrowth"),
                 "fwd_earnings_growth": info.get("earningsGrowth"),
-                "previous_close": info.get("previousClose")}
+                "previous_close": info.get("previousClose"),
+                "financials_currency": _fin_currency if _is_fx_mismatch else None}
     except Exception as e:
         return {"error": str(e), "ratios": {}, "analyst": {},
                 "income": [], "balance": [], "cashflow": [], "industry": "", "sector": ""}
@@ -485,6 +491,56 @@ def _compute_change_pct(technicals: dict, yf_fin: dict) -> float | None:
     if price is not None and prev_close is not None and prev_close > 0:
         return round((price - prev_close) / prev_close * 100, 4)
     return None
+
+
+def _apply_fx_conversion(yf_fin: dict, currency: str, verbose: bool = False) -> float | None:
+    """Convert non-USD financial statement values to USD using live FX from yfinance.
+
+    Returns the rate used (USD per 1 unit of local currency, e.g. ~0.031 for TWD),
+    or None if the rate could not be fetched.
+    """
+    try:
+        fx_ticker = yf.Ticker(f"{currency}USD=X")
+        fx_rate = 0.0
+        # fast_info is not a dict — use history for reliable rate fetch
+        hist = fx_ticker.history(period="1d")
+        if not hist.empty:
+            fx_rate = float(hist["Close"].iloc[-1])
+        if fx_rate <= 0:
+            # Fallback: info dict
+            info_price = fx_ticker.info.get("regularMarketPrice") or 0
+            fx_rate = float(info_price)
+        if fx_rate <= 0:
+            return None
+    except Exception:
+        return None
+
+    if verbose:
+        print(f"  [dossier] FX {currency}→USD: {fx_rate:.6f}  (converting all financial statements)")
+
+    def _conv_stmt(entries: list) -> list:
+        out = []
+        for entry in entries:
+            converted = {}
+            for k, v in entry.items():
+                converted[k] = v * fx_rate if (k != "date" and isinstance(v, (int, float))) else v
+            out.append(converted)
+        return out
+
+    for key in ("income", "balance", "cashflow"):
+        if yf_fin.get(key):
+            yf_fin[key] = _conv_stmt(yf_fin[key])
+
+    # Convert absolute-dollar fields in ratios TTM; leave ratios/percentages untouched
+    ratios = yf_fin.get("ratios", {})
+    for field in ("fcf", "revenue_ttm", "ebitda"):
+        if ratios.get(field) is not None:
+            ratios[field] = ratios[field] * fx_rate
+    # Recompute fcf_per_share from the now-USD fcf and ADR share count
+    if ratios.get("fcf") is not None and ratios.get("shares_out"):
+        ratios["fcf_per_share"] = round(ratios["fcf"] / ratios["shares_out"], 4)
+
+    return fx_rate
 
 
 def _fetch_peer(peer_ticker: str) -> dict | None:
@@ -612,9 +668,25 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         if verbose:
             print(f"  [dossier] {ticker}: ADR flag forced True (cleaner)")
     if _meta.get("financials_currency") and _meta.get("financials_currency") != "USD":
-        yf_fin["financials_currency"] = _meta["financials_currency"]
+        currency = _meta["financials_currency"]
+        yf_fin["financials_currency"] = currency
         if verbose:
-            print(f"  [dossier] {ticker}: financials_currency={_meta['financials_currency']} (cleaner)")
+            print(f"  [dossier] {ticker}: financials_currency={currency} (cleaner)")
+        _fx_rate = _apply_fx_conversion(yf_fin, currency, verbose=verbose)
+        if _fx_rate:
+            yf_fin["fx_rate_to_usd"] = _fx_rate
+        elif verbose:
+            print(f"  [dossier] {ticker}: FX rate unavailable for {currency} — financial statements remain in local currency")
+    elif yf_fin.get("financials_currency"):
+        # yfinance-native FX detection (no cleaner required — covers single-ticker runs)
+        currency = yf_fin["financials_currency"]
+        if verbose:
+            print(f"  [dossier] {ticker}: financials_currency={currency} (yfinance — applying FX conversion)")
+        _fx_rate = _apply_fx_conversion(yf_fin, currency, verbose=verbose)
+        if _fx_rate:
+            yf_fin["fx_rate_to_usd"] = _fx_rate
+        elif verbose:
+            print(f"  [dossier] {ticker}: FX rate unavailable for {currency} — financial statements remain in local currency")
 
     # ── Profile ───────────────────────────────────────────────────────────────
     sector = profile_raw.get("finnhubIndustry") or yf_fin.get("sector") or "Unknown"
@@ -624,12 +696,23 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         "yf_sector":            yf_fin.get("sector", ""),   # GICS sector (used for archetype classification)
         "industry":             yf_fin.get("industry", ""),
         "exchange":             profile_raw.get("exchange", ""),
-        "market_cap_bn":        round((profile_raw.get("marketCapitalization") or (yf_fin.get("market_cap") or 0) / 1e6 or 0) / 1000, 2),
+        # For ADR stocks, Finnhub/yfinance return the local-exchange market cap in the
+        # local currency. Compute from USD price × ADR shares instead (always USD-correct).
+        "market_cap_bn":        round(
+            (quote_raw.get("c")
+             or (technicals.get("price") if isinstance(technicals, dict) else None)
+             or yf_fin.get("previous_close") or 0)
+            * (yf_fin.get("ratios", {}).get("shares_out") or 0) / 1e9
+            if yf_fin.get("ratios", {}).get("adr_mismatch")
+            else (profile_raw.get("marketCapitalization") or (yf_fin.get("market_cap") or 0) / 1e6 or 0) / 1000,
+            2,
+        ),
         "ipo_date":             profile_raw.get("ipo", ""),
         "employees":            profile_raw.get("employeeTotal", ""),
         "country":              profile_raw.get("country", ""),
         "website":              profile_raw.get("weburl", ""),
-        "financials_currency":  yf_fin.get("financials_currency", "USD"),
+        "financials_currency":  yf_fin.get("financials_currency") or "USD",
+        "fx_rate_to_usd":       yf_fin.get("fx_rate_to_usd"),   # non-None only for converted ADRs
     }
     dossier["cycle_type"] = _cycle_type(sector)
 
@@ -735,7 +818,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     yf_analyst = yf_fin.get("analyst", {})
     fmp_dcf_price = None
     fmp_targets: list = []
-    if not yf_analyst.get("target_mean"):
+    _few_analysts = (yf_analyst.get("num_analysts") or 0) < 3
+    if not yf_analyst.get("target_mean") or _few_analysts:
         dcf_raw = _fmp(f"/discounted-cash-flow/{ticker}")
         fmp_dcf_price = (dcf_raw[0].get("dcf") if isinstance(dcf_raw, list) and dcf_raw else
                          dcf_raw.get("dcf")     if isinstance(dcf_raw, dict) else None)
@@ -743,17 +827,21 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         fmp_targets = fmp_targets_raw[:5] if isinstance(fmp_targets_raw, list) else []
 
     fcf_val = yf_r.get("fcf")
-    if not fcf_val:
+    if fcf_val is None:
         cf_list = yf_fin.get("cashflow", [])
-        if cf_list and cf_list[0].get("free_cash_flow"):
+        if cf_list and cf_list[0].get("free_cash_flow") is not None:
             fcf_val = cf_list[0]["free_cash_flow"]
     shares_out = yf_r.get("shares_out")
+    # Prefer GICS sector from yfinance over Finnhub's non-standard industry strings
+    # (e.g. Finnhub returns "Semiconductors" for NVDA, not the GICS "Technology" that
+    # SECTOR_GROWTH_CAP keys on — yf_fin["sector"] was already overridden by cleaner if needed)
+    gics_sector = yf_fin.get("sector") or sector
     computed_dcf, dcf_assumptions = _dynamic_dcf(
         fcf_val,
         income=dossier["financials"].get("income", []),
         beta=yf_r.get("beta"),
         treasury_10y=macro.get("treasury_10y"),
-        sector=sector,
+        sector=gics_sector,
         shares_out=shares_out,
         fwd_revenue_growth=yf_fin.get("fwd_revenue_growth"),
         fwd_earnings_growth=yf_fin.get("fwd_earnings_growth"),

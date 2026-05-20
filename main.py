@@ -74,6 +74,7 @@ async def _run_batch(tickers: list[str], save: bool = False):
     simultaneous requests than we have keys to serve them.
     """
     from llm import _keys as _api_keys
+    from cleaner import clean_ticker_batch
     tickers   = [t.upper() for t in tickers]
     # Cap at 4 concurrent debates regardless of key count — each debate fires
     # 5 agent calls simultaneously, so 4 debates = up to 20 in-flight API calls
@@ -87,10 +88,14 @@ async def _run_batch(tickers: list[str], save: bool = False):
         f"≤{max_concurrent} concurrent)[/bold blue]"
     )
 
+    batch_meta = await clean_ticker_batch(tickers)
+    if batch_meta:
+        console.print(f"[dim]Cleaner resolved metadata for: {', '.join(batch_meta.keys())}[/dim]")
+
     async def _one(ticker: str):
         async with sem:
             try:
-                dossier = await build_dossier(ticker, verbose=False)
+                dossier = await build_dossier(ticker, verbose=False, meta=batch_meta.get(ticker, {}))
                 result  = await run_debate(ticker, dossier, verbose=False)
                 render(result, dossier)
                 if save:

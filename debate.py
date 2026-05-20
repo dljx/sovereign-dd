@@ -141,6 +141,22 @@ def _extract_ve_fair_value(transcript: list) -> float | None:
     return None
 
 
+def _sanitize_fv(fv: float | None, price: float | None) -> float | None:
+    """Reject a fair value that looks like a ratio/multiple rather than a dollar price.
+
+    The synthesis LLM occasionally outputs a P/E or P/TBV ratio when it should output
+    a dollar price (e.g. 2.15 for JPM instead of $200). Discard values that are less
+    than 5% or more than 2000% of the current stock price.
+    """
+    if fv is None or fv <= 0:
+        return None
+    if price and price > 0:
+        ratio = fv / price
+        if ratio < 0.05 or ratio > 20.0:
+            return None
+    return fv
+
+
 async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int | None = None) -> dict:
     """Run the full debate asynchronously. Returns the final consensus dict."""
     transcript: list[dict] = []
@@ -347,6 +363,13 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         print(f"\n  CONSENSUS: {cs:.2f} / 10  [{consensus_grade}]  confidence={conf}")
         print(f"  {moderator_result.get('majority_thesis', '')[:120]}...")
 
+    _price = (dossier.get("quote") or {}).get("price")
+    _dossier_fv = (dossier.get("fair_values") or {}).get("composite_fair_value")
+    _llm_fv = _sanitize_fv(
+        moderator_result.get("fair_value_composite") or _extract_ve_fair_value(transcript),
+        _price,
+    )
+
     return {
         "ticker":               ticker,
         "raw_consensus_score":  moderator_result.get("raw_consensus_score", round(avg, 2)),
@@ -361,7 +384,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "asymmetry_ratio":      moderator_result.get("asymmetry_ratio", ""),
         "moat_composite":       moderator_result.get("moat_composite"),
         "cycle_position":       moderator_result.get("cycle_position", {}),
-        "fair_value_composite": moderator_result.get("fair_value_composite") or _extract_ve_fair_value(transcript),
+        "fair_value_composite": _llm_fv or _dossier_fv,
         "entry_assessment":     moderator_result.get("entry_assessment", ""),
         "data_confidence":      dossier.get("data_quality", {}).get("data_confidence", "HIGH"),
         "score_adjustments":    moderator_result.get("score_adjustments", {}),
