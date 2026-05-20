@@ -12,6 +12,25 @@ ARCHETYPE_INFRASTRUCTURE = "ASSET_HEAVY_INFRASTRUCTURE"
 ARCHETYPE_EARLY_STAGE    = "EARLY_STAGE"
 ARCHETYPE_MATURE         = "MATURE_COMPOUNDER"
 
+# EV/FCF target multiple for mature compounders, indexed by GICS sector.
+# High-quality compounder sectors (Technology, Healthcare) command premium multiples;
+# capital-heavy or regulated sectors (Energy, Utilities) trade at lower FCF yields.
+# Adjusted upward vs DCF terminal multiples to reflect quality premium.
+_MATURE_FCF_MULTIPLE: dict[str, float] = {
+    "Technology": 28,
+    "Communication Services": 22,
+    "Healthcare": 22,
+    "Consumer Cyclical": 20,
+    "Consumer Defensive": 20,
+    "Industrials": 18,
+    "Energy": 12,
+    "Utilities": 14,
+    "Financials": 14,
+    "Real Estate": 16,
+    "Basic Materials": 14,
+}
+_DEFAULT_MATURE_FCF_MULTIPLE = 20
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -336,12 +355,17 @@ def compute_fair_values(dossier: dict) -> dict:
     composite     = _safe(result.get("composite"))
     price         = _get_price(dossier)
 
-    # Sanity check: if composite FV is more than 5× the current price or less than
-    # 4% of it, it almost certainly reflects a currency mismatch (e.g. NTD financials
-    # from yfinance for foreign ADRs mixed with a USD price) or a unit scaling error.
-    # Null it out — debate agents derive the correct value via web research.
-    # Note: FVs well below price (e.g. PLTR at 10% of market) are valid conservative
-    # estimates and are kept; only gross overstatements are discarded.
+    # ADR null: for stocks where yfinance mixes underlying-share count with ADR-level
+    # price (adr_mismatch=True), financial statement data may be in the local currency.
+    # All per-share calculations are unreliable — null the pre-computed FV and let agents
+    # derive value from web research rather than anchoring on a currency-bugged number.
+    _ratios = dossier.get("financials", {}).get("ratios_ttm", {})
+    if _ratios.get("adr_mismatch"):
+        composite = None
+
+    # Backstop sanity check: if composite FV exceeds 5× current price or is below 4%,
+    # it almost certainly reflects a currency or unit mismatch that slipped past the ADR
+    # detection. Null it — agents will derive the correct value via web research.
     if composite is not None and price is not None and price > 0:
         _ratio = composite / price
         if _ratio > 5.0 or _ratio < 0.04:
@@ -434,18 +458,20 @@ def _value_asset_light(dossier: dict) -> dict:
         target_multiple = 12
 
     primary_fv = None
+    net_debt_al = (total_debt or 0) - (cash or 0)
     primary_assumptions = {
         "method": "EV/FCF (SBC-adjusted)",
         "target_multiple": target_multiple,
         "rule_of_40": rule_of_40,
         "sbc_adjusted_fcf": sbc_adjusted_fcf,
+        "net_debt": net_debt_al,
     }
     if sbc_adjusted_fcf is not None and shares_out is not None and shares_out > 0:
-        market_cap = (price * shares_out) if price is not None else None
-        ev = None
-        if market_cap is not None:
-            ev = market_cap + (total_debt or 0) - (cash or 0)
-        primary_fv = (sbc_adjusted_fcf * target_multiple) / shares_out
+        # FCF × multiple gives enterprise value; subtract net debt to get equity value.
+        # A negative net_debt (net cash position) correctly inflates the equity value.
+        equity_value = sbc_adjusted_fcf * target_multiple - net_debt_al
+        if equity_value > 0:
+            primary_fv = equity_value / shares_out
 
     primary = {
         "method": "EV/FCF (SBC-adjusted)",
@@ -736,6 +762,7 @@ def _value_infrastructure(dossier: dict) -> dict:
     ev_ebitda   = _safe(ratios.get("ev_ebitda"))
     ebitda      = _safe(ratios.get("ebitda"))
     total_debt  = _safe(balance.get("total_debt"), 0)
+    cash        = _safe(balance.get("cash"), 0)
     industry    = _safe(profile.get("industry"), "")
 
     operating_cf = _safe(cf0.get("operating_cf"))
@@ -792,13 +819,16 @@ def _value_infrastructure(dossier: dict) -> dict:
 
     # ── Secondary: EV/(EBITDA - CapEx) ───────────────────────────────────────
     secondary_fv = None
-    secondary_assumptions: dict = {"ev_ebitda": ev_ebitda, "ebitda": ebitda, "capex": capex}
+    net_debt_infra = (total_debt or 0) - (cash or 0)
+    secondary_assumptions: dict = {"ev_ebitda": ev_ebitda, "ebitda": ebitda, "capex": capex, "net_debt": net_debt_infra}
     if ebitda is not None and capex is not None and shares_out is not None and shares_out > 0:
         ebitda_minus_capex = ebitda - abs(capex)
         if ebitda_minus_capex > 0:
-            # Use ev_ebitda-derived multiple as proxy for target
+            # EV = EBITDA-CapEx × multiple; subtract net debt to arrive at equity value.
             target_ev_multiple = target_affo_multiple  # analogous sizing
-            secondary_fv = ebitda_minus_capex * target_ev_multiple / shares_out
+            equity_value = ebitda_minus_capex * target_ev_multiple - net_debt_infra
+            if equity_value > 0:
+                secondary_fv = equity_value / shares_out
             secondary_assumptions["ebitda_minus_capex"] = ebitda_minus_capex
 
     secondary = [{
@@ -952,10 +982,12 @@ def _value_mature_compounder(dossier: dict) -> dict:
     ratios   = _get_ratios(dossier)
     balance  = _get_balance(dossier, 0)
     cf0      = _get_cashflow(dossier, 0)
+    profile  = _get_profile(dossier)
     valuation= dossier.get("valuation") or {}
 
     shares_out  = _safe(ratios.get("shares_out"))
     roic        = _safe(ratios.get("roic"))
+    sector      = _safe(profile.get("sector"), "") or _safe(profile.get("yf_sector"), "")
     fcf         = _safe(ratios.get("fcf")) or _safe(cf0.get("free_cash_flow"))
 
     # Latest net income from income[0]
@@ -998,20 +1030,28 @@ def _value_mature_compounder(dossier: dict) -> dict:
     }
 
     # ── Secondary: EV/FCF yield ───────────────────────────────────────────────
-    target_fcf_yield   = 0.04  # 4%
-    ev_fcf_multiple    = 25
+    # Sector-based FCF multiple — Technology/Healthcare command premium multiples;
+    # Energy/Utilities/Financials trade at lower FCF yields.
+    ev_fcf_multiple = _MATURE_FCF_MULTIPLE.get(sector, _DEFAULT_MATURE_FCF_MULTIPLE)
+    total_debt_mc   = _safe(balance.get("total_debt"), 0)
+    cash_mc         = _safe(balance.get("cash"), 0)
+    net_debt_mc     = (total_debt_mc or 0) - (cash_mc or 0)
 
     secondary_fv = None
     if fcf is not None and shares_out is not None and shares_out > 0:
-        secondary_fv = (fcf * ev_fcf_multiple) / shares_out
+        # FCF × multiple = enterprise value; subtract net debt for equity value per share.
+        equity_value_mc = fcf * ev_fcf_multiple - net_debt_mc
+        if equity_value_mc > 0:
+            secondary_fv = equity_value_mc / shares_out
 
     secondary = [{
-        "method": "EV/FCF (25x)",
+        "method": f"EV/FCF ({ev_fcf_multiple}x, {sector or 'default'})",
         "fair_value": secondary_fv,
         "assumptions": {
             "fcf": fcf,
             "ev_fcf_multiple": ev_fcf_multiple,
-            "target_fcf_yield": target_fcf_yield,
+            "sector": sector,
+            "net_debt": net_debt_mc,
         },
     }]
 

@@ -238,12 +238,16 @@ def _yf_financials(ticker: str) -> dict:
             return round(v, n) if v is not None else None
 
         # For ADRs / foreign stocks, yfinance mixes underlying share counts with ADR-level price.
-        # sharesOutstanding = underlying Japanese/foreign shares (not ADR units).
-        # floatShares ≈ ADR-equivalent tradeable shares. Use floatShares for per-share math
-        # when it's substantially smaller than sharesOutstanding (ratio > 2 = ADR structure likely).
+        # sharesOutstanding = underlying foreign shares (not ADR units), so per-share math breaks.
+        # Detection uses two independent signals:
+        #   1. quoteType == "ADR" — explicit yfinance flag (catches TSM, BABA, etc.)
+        #   2. sharesOutstanding / floatShares > 2 — implicit ratio heuristic (catches unlabelled ADRs)
+        # Either signal is sufficient; both must be absent to treat as a normal domestic stock.
         shares_out = info.get("sharesOutstanding") or 0
         float_shares = info.get("floatShares") or 0
-        _is_adr_mismatch = float_shares > 0 and shares_out > 0 and shares_out / float_shares > 2
+        _is_adr = info.get("quoteType", "").upper() == "ADR"
+        _is_share_ratio_mismatch = float_shares > 0 and shares_out > 0 and shares_out / float_shares > 2
+        _is_adr_mismatch = _is_adr or _is_share_ratio_mismatch
         _safe_shares = float_shares if _is_adr_mismatch else shares_out
 
         # P/B and P/S from yfinance are computed as price / (metric / sharesOutstanding).
@@ -371,6 +375,25 @@ SECTOR_TERMINAL = {
     "Real Estate": 14, "Basic Materials": 12,
 }
 
+# Maximum blended growth rate allowed in DCF by GICS sector.
+# High-growth sectors (Tech, Comms) legitimately sustain 35-40% near-term growth;
+# capping them at 25% systematically undervalues compounders like NVDA or META.
+# Defensive and capital-constrained sectors get tighter caps.
+SECTOR_GROWTH_CAP = {
+    "Technology": 0.40,
+    "Communication Services": 0.35,
+    "Healthcare": 0.30,
+    "Consumer Cyclical": 0.25,
+    "Industrials": 0.20,
+    "Energy": 0.20,
+    "Financials": 0.15,
+    "Utilities": 0.10,
+    "Consumer Defensive": 0.15,
+    "Real Estate": 0.15,
+    "Basic Materials": 0.15,
+}
+_DEFAULT_GROWTH_CAP = 0.25
+
 
 def _dynamic_dcf(
     fcf: float | None,
@@ -400,14 +423,18 @@ def _dynamic_dcf(
 
         fwd_growth = fwd_revenue_growth if fwd_revenue_growth is not None else fwd_earnings_growth
 
+        # Use sector-specific growth cap so high-growth sectors (Technology, Communication Services)
+        # are not artificially suppressed by a one-size-fits-all 25% ceiling.
+        growth_cap = SECTOR_GROWTH_CAP.get(sector, _DEFAULT_GROWTH_CAP)
+
         if hist_cagr is not None and fwd_growth is not None:
-            growth = max(0.02, min(hist_cagr * 0.5 + fwd_growth * 0.5, 0.25))
+            growth = max(0.02, min(hist_cagr * 0.5 + fwd_growth * 0.5, growth_cap))
             growth_method = "blended"
         elif fwd_growth is not None:
-            growth = max(0.02, min(float(fwd_growth), 0.25))
+            growth = max(0.02, min(float(fwd_growth), growth_cap))
             growth_method = "forward"
         elif hist_cagr is not None:
-            growth = max(0.02, min(float(hist_cagr), 0.25))
+            growth = max(0.02, min(float(hist_cagr), growth_cap))
             growth_method = "historical"
         else:
             growth = 0.08
@@ -630,18 +657,21 @@ async def build(ticker: str, verbose: bool = True) -> dict:
                       f"yfinance/FMP {_pe_forward_raw}x ({divergence:.0%} divergence)")
     else:
         # Fallback: yfinance/FMP forward PE with sanity check.
-        # Null fwd_pe only for extreme implied growth (>250%) — genuine data/currency errors.
-        # High-growth stocks (NVDA, TSLA, PLTR) legitimately show 100-200% implied EPS
-        # growth between trailing and forward PE; do not discard these as errors.
+        # For ADR stocks (where yfinance PE data may mix local-currency EPS with USD
+        # price), apply a strict 100% implied-growth threshold — mismatch is currency.
+        # For domestic stocks, never null: high-growth names legitimately show 100-200%
+        # implied EPS improvement between trailing and forward PE (NVDA, TSLA, PLTR).
+        _is_adr = yf_r.get("adr_mismatch", False)
+        _threshold = 1.0 if _is_adr else float("inf")
         _fwd_pe_clean = _pe_forward_raw
         if _pe_trailing and _pe_forward_raw and _pe_trailing > 0 and _pe_forward_raw > 0:
             _implied_growth = _pe_trailing / _pe_forward_raw - 1
-            if _implied_growth > 2.5:
+            if _implied_growth > _threshold:
                 _fwd_pe_clean = None
                 if verbose:
                     print(f"  [dossier] {ticker}: forward PE ({_pe_forward_raw:.1f}x) vs trailing "
                           f"({_pe_trailing:.1f}x) implies {_implied_growth:.0%} YoY growth — "
-                          f"likely data error (ADR/FX mismatch?), nulling fwd_pe")
+                          f"likely ADR/FX mismatch, nulling fwd_pe")
 
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
