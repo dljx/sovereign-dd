@@ -165,7 +165,7 @@ def call_gemini(
             config_kwargs: dict = dict(
                 system_instruction=system,
                 temperature=temperature,
-                max_output_tokens=8192,
+                max_output_tokens=32768,
                 thinking_config=types.ThinkingConfig(thinking_level="high"),
             )
             if grounding:
@@ -330,6 +330,7 @@ async def call_gemini_with_tools_async(
         system_instruction=system,
         tools=[tools],
         temperature=temperature,
+        max_output_tokens=32768,
         thinking_config=_types.ThinkingConfig(thinking_level="high"),
     )
 
