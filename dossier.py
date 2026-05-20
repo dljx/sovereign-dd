@@ -550,8 +550,15 @@ async def _get_macro() -> dict:
 
 # â"€â"€ Main async builder â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-async def build(ticker: str, verbose: bool = True) -> dict:
-    """Build the full data dossier for a ticker. Async â€" all sources fetched in parallel."""
+async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> dict:
+    """Build the full data dossier for a ticker. Async — all sources fetched in parallel.
+
+    meta — optional per-ticker override dict from cleaner.clean_ticker_batch().
+           Keys: canonical_sector, is_adr, financials_currency.
+           Applied after raw data is fetched but before any assembly, so all
+           downstream logic (archetype classification, ADR nulling, etc.) sees
+           corrected values without knowing about the override layer.
+    """
     ticker = ticker.upper()
     if verbose:
         print(f"\n[dossier] Building dossier for {ticker} (parallel fetch)...")
@@ -589,19 +596,40 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         _fetch_and_emit(ticker, _get_macro(), "macro"),
     )
 
-    # â"€â"€ Profile â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # ── Metadata overrides (from cleaner.clean_ticker_batch) ─────────────────
+    # Applied here — after raw data arrives but before any assembly — so all
+    # downstream logic sees corrected values transparently.
+    _meta = meta or {}
+    if _meta.get("canonical_sector"):
+        # Override both yf_fin["sector"] (used for yf_sector / archetype) and
+        # profile_raw's industry field so the profile section picks it up.
+        yf_fin["sector"] = _meta["canonical_sector"]
+        if verbose:
+            print(f"  [dossier] {ticker}: sector overridden to {_meta['canonical_sector']!r} (cleaner)")
+    if _meta.get("is_adr"):
+        # Force ADR flag regardless of what yfinance quoteType or share-ratio heuristic found
+        yf_fin.setdefault("ratios", {})["adr_mismatch"] = True
+        if verbose:
+            print(f"  [dossier] {ticker}: ADR flag forced True (cleaner)")
+    if _meta.get("financials_currency") and _meta.get("financials_currency") != "USD":
+        yf_fin["financials_currency"] = _meta["financials_currency"]
+        if verbose:
+            print(f"  [dossier] {ticker}: financials_currency={_meta['financials_currency']} (cleaner)")
+
+    # ── Profile ───────────────────────────────────────────────────────────────
     sector = profile_raw.get("finnhubIndustry") or yf_fin.get("sector") or "Unknown"
     dossier["profile"] = {
-        "name":          profile_raw.get("name") or yf_fin.get("company_name") or ticker,
-        "sector":        sector,
-        "yf_sector":     yf_fin.get("sector", ""),   # GICS sector from yfinance (used for archetype classification)
-        "industry":      yf_fin.get("industry", ""),
-        "exchange":      profile_raw.get("exchange", ""),
-        "market_cap_bn": round((profile_raw.get("marketCapitalization") or (yf_fin.get("market_cap") or 0) / 1e6 or 0) / 1000, 2),
-        "ipo_date":      profile_raw.get("ipo", ""),
-        "employees":     profile_raw.get("employeeTotal", ""),
-        "country":       profile_raw.get("country", ""),
-        "website":       profile_raw.get("weburl", ""),
+        "name":                 profile_raw.get("name") or yf_fin.get("company_name") or ticker,
+        "sector":               sector,
+        "yf_sector":            yf_fin.get("sector", ""),   # GICS sector (used for archetype classification)
+        "industry":             yf_fin.get("industry", ""),
+        "exchange":             profile_raw.get("exchange", ""),
+        "market_cap_bn":        round((profile_raw.get("marketCapitalization") or (yf_fin.get("market_cap") or 0) / 1e6 or 0) / 1000, 2),
+        "ipo_date":             profile_raw.get("ipo", ""),
+        "employees":            profile_raw.get("employeeTotal", ""),
+        "country":              profile_raw.get("country", ""),
+        "website":              profile_raw.get("weburl", ""),
+        "financials_currency":  yf_fin.get("financials_currency", "USD"),
     }
     dossier["cycle_type"] = _cycle_type(sector)
 

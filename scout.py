@@ -435,6 +435,12 @@ async def run_scout(
 
     picks = picks[:max_tickers]
 
+    # Phase 2b — metadata cleaner: one grounded call for the whole batch.
+    # Resolves canonical GICS sector, ADR status, and financials currency before
+    # the debates run so the dossier builder has clean inputs for every ticker.
+    from cleaner import clean_ticker_batch
+    batch_meta = await clean_ticker_batch([p["ticker"] for p in picks])
+
     if verbose:
         print(f"\n+----------------------------------------------+")
         print(f"|  SOVEREIGN SCOUT — running debates           |")
@@ -460,7 +466,8 @@ async def run_scout(
                     if rationale:
                         print(f"          Gemma rationale: {rationale[:100]}")
 
-                dossier = await build_dossier(ticker, verbose=False)
+                dossier = await build_dossier(ticker, verbose=False,
+                                              meta=batch_meta.get(ticker, {}))
                 result  = await run_debate(ticker, dossier, verbose=False, max_loops=SCOUT_MAX_LOOPS)
 
                 score = result.get("consensus_score", 0)
