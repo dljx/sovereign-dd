@@ -1087,6 +1087,8 @@ def _value_mature_compounder(dossier: dict) -> dict:
 
     # ── Blind spots ───────────────────────────────────────────────────────────
     blind_spots = ["SHARE_COUNT_HISTORY_NOT_AVAILABLE"]
+    if roic is not None and roic < 0:
+        blind_spots.append("NEGATIVE_ROIC — value destruction; MATURE_COMPOUNDER archetype may not apply")
     if organic_growth is not None and roic is not None:
         if organic_growth < 0.03 and roic > 0.15:
             blind_spots.append("FINANCIAL_ENGINEERING")

@@ -146,13 +146,14 @@ def _sanitize_fv(fv: float | None, price: float | None) -> float | None:
 
     The synthesis LLM occasionally outputs a P/E or P/TBV ratio when it should output
     a dollar price (e.g. 2.15 for JPM instead of $200). Discard values that are less
-    than 5% or more than 2000% of the current stock price.
+    than 1% or more than 2000% of the current stock price.
+    Lower bound 1% (not 5%) to avoid discarding legitimate distressed/turnaround FVs.
     """
     if fv is None or fv <= 0:
         return None
     if price and price > 0:
         ratio = fv / price
-        if ratio < 0.05 or ratio > 20.0:
+        if ratio < 0.01 or ratio > 20.0:
             return None
     return fv
 

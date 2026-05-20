@@ -49,8 +49,10 @@ def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> 
 # ── Single ticker ─────────────────────────────────────────────────────────────
 
 async def _run_single(ticker: str, save: bool = False):
+    from cleaner import clean_ticker_batch
     console.rule(f"[bold blue]Sovereign DD — {ticker}[/bold blue]")
-    dossier = await build_dossier(ticker, verbose=True)
+    meta_map = await clean_ticker_batch([ticker])
+    dossier = await build_dossier(ticker, verbose=True, meta=meta_map.get(ticker, {}))
     result  = await run_debate(ticker, dossier, verbose=True)
     console.rule("[bold]FINAL REPORT[/bold]")
     render(result, dossier)
@@ -121,11 +123,16 @@ async def _run_batch(tickers: list[str], save: bool = False):
 # ── Portfolio mode — all tickers in parallel (max 3 concurrent) ───────────────
 
 async def _run_portfolio(save: bool = False, notify: bool = False):
+    from cleaner import clean_ticker_batch
     tickers = _portfolio_tickers()
     console.rule(
         f"[bold blue]Sovereign DD — Portfolio scan "
         f"({len(tickers)} tickers, 3 concurrent)[/bold blue]"
     )
+
+    portfolio_meta = await clean_ticker_batch(tickers)
+    if portfolio_meta:
+        console.print(f"[dim]Cleaner resolved metadata for: {', '.join(portfolio_meta.keys())}[/dim]")
 
     sem = asyncio.Semaphore(3)
 
@@ -133,7 +140,7 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
         async with sem:
             try:
                 console.rule(f"[blue]{ticker}[/blue]")
-                dossier = await build_dossier(ticker, verbose=True)
+                dossier = await build_dossier(ticker, verbose=True, meta=portfolio_meta.get(ticker, {}))
                 result  = await run_debate(ticker, dossier, verbose=True)
                 console.rule(f"[bold]{ticker} FINAL REPORT[/bold]")
                 render(result, dossier)

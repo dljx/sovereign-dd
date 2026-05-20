@@ -420,6 +420,7 @@ def _dynamic_dcf(
     shares_out: int | None,
     fwd_revenue_growth: float | None = None,
     fwd_earnings_growth: float | None = None,
+    net_debt: float | None = None,
 ) -> tuple[float | None, dict]:
     """Dynamic DCF using blended growth (historical CAGR + forward analyst estimates),
     CAPM discount rate, and sector-mapped terminal multiple.
@@ -474,9 +475,12 @@ def _dynamic_dcf(
         terminal_val = cf * terminal_mult / (1 + discount) ** years
         total_pv = pv + terminal_val
 
-        iv = (round(total_pv / shares_out, 2)
+        equity_value = total_pv - (net_debt or 0)
+        if equity_value <= 0:
+            return None, {"note": "negative_equity_value", "total_pv": round(total_pv, 0), "net_debt": round(net_debt or 0, 0)}
+        iv = (round(equity_value / shares_out, 2)
               if shares_out and shares_out > 0
-              else round(total_pv, 0))
+              else round(equity_value, 0))
 
         assumptions = {
             "growth_rate_pct":    round(growth * 100, 1),
@@ -834,6 +838,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     # (e.g. Finnhub returns "Semiconductors" for NVDA, not the GICS "Technology" that
     # SECTOR_GROWTH_CAP keys on — yf_fin["sector"] was already overridden by cleaner if needed)
     gics_sector = yf_fin.get("sector") or sector
+    _balance = dossier["financials"].get("balance") or []
+    _b0 = _balance[0] if _balance else {}
+    _net_debt = (_b0.get("total_debt") or 0) - (_b0.get("cash") or 0)
     computed_dcf, dcf_assumptions = _dynamic_dcf(
         fcf_val,
         income=dossier["financials"].get("income", []),
@@ -843,6 +850,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         shares_out=shares_out,
         fwd_revenue_growth=yf_fin.get("fwd_revenue_growth"),
         fwd_earnings_growth=yf_fin.get("fwd_earnings_growth"),
+        net_debt=_net_debt,
     )
 
     dossier["valuation"] = {
