@@ -1,4 +1,10 @@
-"""Shared live-event emitter — used by both debate.py and dossier.py."""
+"""Shared live-event emitter — used by both debate.py and dossier.py.
+
+Batching strategy: accumulate events in memory per ticker and flush to KV
+as a full replacement every FLUSH_EVERY events (or immediately on DONE).
+This changes ~35 individual read+write KV pairs per run into ~7 write-only
+operations, cutting live-event KV usage by ~5x on both reads and writes.
+"""
 
 import asyncio
 import os
@@ -9,8 +15,14 @@ import requests
 _LIVE_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
 _LIVE_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
 
+FLUSH_EVERY = 5  # write to KV every N events
 
-def _post_live(url: str, payload: dict, headers: dict) -> None:
+# In-memory buffer: ticker → [events].  Accumulated for the lifetime of the
+# process (single GitHub Actions run), so memory growth is bounded.
+_buffer: dict[str, list] = {}
+
+
+def _post_batch(url: str, payload: dict, headers: dict) -> None:
     """Sync POST — runs in a background thread. Failures silently swallowed."""
     try:
         requests.post(url, json=payload, headers=headers, timeout=8)
@@ -19,14 +31,33 @@ def _post_live(url: str, payload: dict, headers: dict) -> None:
 
 
 async def emit_live(ticker: str, event: dict) -> None:
-    """Fire-and-forget: POST a single live event to sovereign-eye KV.
-    Schedules the request on the thread pool without awaiting it so it
-    never blocks the debate pipeline even under high concurrency."""
+    """Buffer event and flush to sovereign-eye KV when batch threshold is reached.
+
+    The KV endpoint now accepts a full event list (replaces the stored array)
+    so each flush is 1 KV write with no preceding read, vs the previous design
+    of 1 read + 1 write per single event.
+
+    DONE events always trigger an immediate flush regardless of batch size.
+    """
     if not _LIVE_SECRET:
         return
     event["ts"] = time.time()
-    payload = {"ticker": ticker, "event": event}
-    headers = {"Authorization": f"Bearer {_LIVE_SECRET}", "Content-Type": "application/json"}
-    asyncio.ensure_future(
-        asyncio.to_thread(_post_live, f"{_LIVE_URL}/api/dd/live", payload, headers)
-    )
+
+    buf = _buffer.setdefault(ticker, [])
+    buf.append({**event, "_idx": len(buf)})
+
+    is_done = event.get("type") == "DONE"
+    if is_done or len(buf) % FLUSH_EVERY == 0:
+        snapshot = buf.copy()
+        headers = {
+            "Authorization": f"Bearer {_LIVE_SECRET}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "ticker": ticker,
+            "events": snapshot,
+            "done": is_done,
+        }
+        asyncio.ensure_future(
+            asyncio.to_thread(_post_batch, f"{_LIVE_URL}/api/dd/live", payload, headers)
+        )
