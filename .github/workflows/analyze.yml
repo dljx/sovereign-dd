@@ -31,6 +31,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore scout history
+        id: restore-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/scout_history.json
+            output/scout_notified.json
+          key: scout-history-${{ github.run_id }}
+          restore-keys: scout-history-
+
+      - name: Restore scout history from KV (cache-miss fallback)
+        if: steps.restore-cache.outputs.cache-hit != 'true'
+        env:
+          SOVEREIGN_EYE_URL: https://master.sovereign-eye.pages.dev
+          DD_UPLOAD_SECRET:  ${{ secrets.DD_UPLOAD_SECRET }}
+        run: python download_history.py
+
       - name: Run analysis
         env:
           GEMINI_API_KEYS:          ${{ secrets.GEMINI_API_KEYS }}
@@ -55,6 +72,15 @@ jobs:
             echo "=== Single ticker: $TICKER ==="
             python main.py "$TICKER" --save
           fi
+
+      - name: Save scout history
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            output/scout_history.json
+            output/scout_notified.json
+          key: scout-history-${{ github.run_id }}
 
       - name: Upload results to Sovereign Eye
         env:
