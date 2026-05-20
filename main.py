@@ -60,6 +60,55 @@ async def _run_single(ticker: str, save: bool = False):
     return result, dossier
 
 
+# ── Batch mode — multiple tickers, shared key pool, bounded concurrency ───────
+
+async def _run_batch(tickers: list[str], save: bool = False):
+    """Run multiple tickers concurrently within a single process.
+
+    All asyncio tasks share the same llm.py key-rotation state
+    (_key_cooldowns, _key_daily_exhausted, _api_semaphore), so the load
+    balancer can actually coordinate across concurrent requests instead of
+    each ticker independently stampeding the same keys.
+
+    Concurrency is capped at the number of API keys so we never send more
+    simultaneous requests than we have keys to serve them.
+    """
+    from llm import _keys as _api_keys
+    tickers = [t.upper() for t in tickers]
+    n_keys  = len(_api_keys)
+    sem     = asyncio.Semaphore(n_keys)
+
+    console.rule(
+        f"[bold blue]Sovereign DD — Batch ({len(tickers)} tickers, "
+        f"≤{n_keys} concurrent)[/bold blue]"
+    )
+
+    async def _one(ticker: str):
+        async with sem:
+            try:
+                dossier = await build_dossier(ticker, verbose=False)
+                result  = await run_debate(ticker, dossier, verbose=False)
+                render(result, dossier)
+                if save:
+                    out_path = _save_result(ticker, result, dossier)
+                    console.print(f"[dim]{ticker}: saved to {out_path}[/dim]")
+                return ticker, result, dossier
+            except Exception as exc:
+                console.print(f"[red]{ticker}: failed — {exc}[/red]")
+                return ticker, None, None
+
+    results = await asyncio.gather(*[_one(t) for t in tickers])
+
+    console.rule("[bold]Batch complete[/bold]")
+    for ticker, result, _ in results:
+        if result:
+            score = result.get("consensus_score", "?")
+            grade = result.get("consensus_grade", "?")
+            console.print(f"  {ticker:<6}  score={score}  grade={grade}")
+        else:
+            console.print(f"  [red]{ticker:<6}  FAILED[/red]")
+
+
 # ── Portfolio mode — all tickers in parallel (max 3 concurrent) ───────────────
 
 async def _run_portfolio(save: bool = False, notify: bool = False):
@@ -206,12 +255,15 @@ async def _main():
         await _run_scout(save=save, notify=notify)
     elif gems_mode:
         await _run_gems(save=save, notify=notify)
-    elif positional:
+    elif len(positional) == 1:
         await _run_single(positional[0].upper(), save=save)
+    elif len(positional) > 1:
+        await _run_batch(positional, save=save)
     else:
         console.print(
             "[red]Usage:[/red]\n"
             "  python main.py TICKER [--save]\n"
+            "  python main.py TICKER1 TICKER2 ... [--save]  # concurrent batch, shared key pool\n"
             "  python main.py --portfolio [--save] [--notify]\n"
             "  python main.py --scout [--save] [--notify]\n"
             "  python main.py --gems [--save] [--notify]\n"

@@ -31,15 +31,18 @@ _cooldown_lock = threading.Lock()
 
 
 def _is_daily_exhausted(err_str: str) -> bool:
-    """True when the error is daily-quota exhaustion, not just an RPM spike.
+    """True when the error is daily-quota (RPD) exhaustion, not an RPM spike.
 
-    Google's RPD error contains the daily metric name in the response body.
-    RPM throttles do not — they say RATE_LIMIT_EXCEEDED or per-minute quota.
+    RPD errors contain the specific daily metric name in the response body.
+    RPM throttles say RATE_LIMIT_EXCEEDED or reference per-minute limits.
+    "per day" alone is NOT a reliable signal — RPM error bodies sometimes
+    include phrasing like "N requests per day per minute" which would cause
+    a live key to be incorrectly marked offline until midnight.
     """
     return (
-        "free_tier_requests" in err_str          # generate_content_free_tier_requests metric
-        or "generaterequestsperday" in err_str    # GenerateRequestsPerDayPerProjectPerModel
-        or "per day" in err_str                   # human-readable daily quota message
+        "free_tier_requests"      in err_str   # generate_content_free_tier_requests metric
+        or "generaterequestsperday" in err_str  # GenerateRequestsPerDayPerProjectPerModel
+        or "daily quota"          in err_str   # explicit human-readable daily limit message
     )
 
 
