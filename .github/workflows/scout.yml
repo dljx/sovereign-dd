@@ -3,9 +3,8 @@ name: Sovereign Scout (continuous)
 on:
   schedule:
     # Every 4 hours. With 48h dedup there is no value running more frequently —
-    # the candidate pool doesn't change meaningfully in under 4 hours and
-    # back-to-back 15-min runs were exhausting the daily RPD quota by midday.
-    # 6 runs/day × 12 debates × ~37 calls = ~2,664 RPD (35% of 7,500 budget).
+    # the candidate pool doesn't change meaningfully in under 4 hours.
+    # 6 runs/day × 30 debates × ~25 calls = ~4,500 RPD (33% of 13,500 budget).
     - cron: "0 */4 * * *"
   workflow_dispatch: {}
 
@@ -15,7 +14,7 @@ concurrency:
 
 jobs:
   scout:
-    name: Run scout
+    name: Run scout + gems
     runs-on: ubuntu-latest
 
     steps:
@@ -38,6 +37,7 @@ jobs:
           path: |
             output/scout_history.json
             output/scout_notified.json
+            output/gems_history.json
           # Restore the most recent history cache from any previous run
           key: scout-history-${{ github.run_id }}
           restore-keys: scout-history-
@@ -49,7 +49,7 @@ jobs:
           DD_UPLOAD_SECRET:  ${{ secrets.DD_UPLOAD_SECRET }}
         run: python download_history.py
 
-      - name: Run scout
+      - name: Run scout + gems
         env:
           GEMINI_API_KEYS:          ${{ secrets.GEMINI_API_KEYS }}
           FINNHUB_API_KEY:          ${{ secrets.FINNHUB_API_KEY }}
@@ -62,9 +62,11 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
-          SCOUT_DEBATE_COUNT: "12"
+          SCOUT_DEBATE_COUNT: "24"
           SCOUT_COOLDOWN_HOURS: "48"
-        run: python main.py --scout --save --notify
+          GEMS_DEBATE_COUNT: "6"
+          GEMS_COOLDOWN_HOURS: "72"
+        run: python main.py --scout --gems --save --notify
 
       - name: Save scout history
         uses: actions/cache/save@v4
@@ -73,6 +75,7 @@ jobs:
           path: |
             output/scout_history.json
             output/scout_notified.json
+            output/gems_history.json
           key: scout-history-${{ github.run_id }}
 
       - name: Upload results to Sovereign Eye
