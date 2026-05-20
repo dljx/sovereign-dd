@@ -257,6 +257,25 @@ def classify_archetype(dossier: dict) -> dict:
         }
 
     # ─────────────────────────────────────────────────────────────────────────
+    # 5b. ASSET_LIGHT_GROWTH — relaxed pass (MEDIUM confidence)
+    # Catches hybrid tech companies (e.g. hardware+services) that miss the strict
+    # 60% margin / 10% growth thresholds but are clearly not cyclicals or mature.
+    # ─────────────────────────────────────────────────────────────────────────
+    moderate_gross_margin = (gross_margin is not None and gross_margin > 0.40)
+    positive_rev_growth   = (revenue_growth_yoy is not None and revenue_growth_yoy > 0)
+
+    if moderate_gross_margin and growth_sector and positive_rev_growth:
+        return {
+            "archetype": ARCHETYPE_ASSET_LIGHT,
+            "confidence": "MEDIUM",
+            "reasoning": (
+                f"Asset-light growth (relaxed): gross_margin={gross_margin:.1%}, "
+                f"sector={sector!r}, revenue_growth_yoy={revenue_growth_yoy:.1%}."
+            ),
+            "secondary_archetype": ARCHETYPE_MATURE,
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
     # 6. MATURE_COMPOUNDER (default)
     # ─────────────────────────────────────────────────────────────────────────
     # Determine if we fell through due to missing data or genuine fit
@@ -775,8 +794,12 @@ def _value_infrastructure(dossier: dict) -> dict:
     # ── Composite ─────────────────────────────────────────────────────────────
     if primary_fv is not None and secondary_fv is not None:
         composite = primary_fv * 0.70 + secondary_fv * 0.30
-    else:
+    elif primary_fv is not None:
         composite = primary_fv
+    elif secondary_fv is not None:
+        composite = secondary_fv
+    else:
+        composite = None
 
     return {
         "primary": primary,

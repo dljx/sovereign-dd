@@ -337,7 +337,8 @@ def _yf_financials(ticker: str) -> dict:
                     _cf = lambda key, c=col: int(cf.loc[key, c]) if key in cf.index and str(cf.loc[key, c]) != "nan" else None
                     op = _cf("Operating Cash Flow") or _cf("Cash Flow From Continuing Operating Activities")
                     capex = _cf("Capital Expenditure")
-                    fcf_val = (op + capex) if op and capex else None
+                    fcf_val = ((op + capex) if op is not None and capex is not None
+                               else (op if op is not None else None))
                     sbc = _cf("Stock Based Compensation")
                     cashflow.append({
                         "date": str(col.date()),
@@ -354,7 +355,10 @@ def _yf_financials(ticker: str) -> dict:
                 "industry": info.get("industry", ""),
                 "sector": info.get("sector", ""),
                 "company_name": info.get("longName") or info.get("shortName", ""),
-                "market_cap": info.get("marketCap")}
+                "market_cap": info.get("marketCap"),
+                "fwd_revenue_growth": info.get("revenueGrowth"),
+                "fwd_earnings_growth": info.get("earningsGrowth"),
+                "previous_close": info.get("previousClose")}
     except Exception as e:
         return {"error": str(e), "ratios": {}, "analyst": {},
                 "income": [], "balance": [], "cashflow": [], "industry": "", "sector": ""}
@@ -375,24 +379,42 @@ def _dynamic_dcf(
     treasury_10y: float | None,
     sector: str,
     shares_out: int | None,
+    fwd_revenue_growth: float | None = None,
+    fwd_earnings_growth: float | None = None,
 ) -> tuple[float | None, dict]:
-    """Dynamic DCF using revenue CAGR, CAPM discount rate, and sector-mapped terminal multiple.
+    """Dynamic DCF using blended growth (historical CAGR + forward analyst estimates),
+    CAPM discount rate, and sector-mapped terminal multiple.
     Returns (iv_per_share, assumptions_dict).
     """
     if not fcf or fcf <= 0:
         return None, {}
     try:
-        # Growth rate: revenue CAGR from income history, clamped to 2-25%
+        # Growth rate: blend historical revenue CAGR with forward analyst estimates
         revenues = [yr.get("revenue") for yr in income if yr.get("revenue")]
+        hist_cagr = None
         if len(revenues) >= 2:
-            cagr = (revenues[0] / revenues[-1]) ** (1 / (len(revenues) - 1)) - 1
-            growth = max(0.02, min(float(cagr), 0.25))
+            hist_cagr = (revenues[0] / revenues[-1]) ** (1 / (len(revenues) - 1)) - 1
             rev_years = len(revenues)
         else:
-            growth = 0.08
             rev_years = 0
 
-        # Discount rate: CAPM (risk-free + beta Ã— ERP), clamped to 7-20%
+        fwd_growth = fwd_revenue_growth if fwd_revenue_growth is not None else fwd_earnings_growth
+
+        if hist_cagr is not None and fwd_growth is not None:
+            growth = max(0.02, min(hist_cagr * 0.5 + fwd_growth * 0.5, 0.25))
+            growth_method = "blended"
+        elif fwd_growth is not None:
+            growth = max(0.02, min(float(fwd_growth), 0.25))
+            growth_method = "forward"
+        elif hist_cagr is not None:
+            growth = max(0.02, min(float(hist_cagr), 0.25))
+            growth_method = "historical"
+        else:
+            growth = 0.08
+            growth_method = "default"
+            rev_years = 0
+
+        # Discount rate: CAPM (risk-free + beta x ERP), clamped to 7-20%
         risk_free = (treasury_10y or 4.3) / 100
         beta_val = max(beta, 0.5) if beta and beta > 0 else 1.0
         discount = max(0.07, min(risk_free + beta_val * 0.055, 0.20))
@@ -415,15 +437,27 @@ def _dynamic_dcf(
 
         assumptions = {
             "growth_rate_pct":    round(growth * 100, 1),
+            "growth_method":      growth_method,
+            "hist_cagr_pct":      round(hist_cagr * 100, 1) if hist_cagr is not None else None,
+            "fwd_growth_pct":     round(fwd_growth * 100, 1) if fwd_growth is not None else None,
             "discount_rate_pct":  round(discount * 100, 1),
             "terminal_multiple":  terminal_mult,
             "years":              years,
-            "method":             "revenue CAGR + CAPM",
+            "method":             "blended growth CAGR + CAPM",
             "revenue_years_used": rev_years,
         }
         return iv, assumptions
     except Exception:
         return None, {}
+
+
+def _compute_change_pct(technicals: dict, yf_fin: dict) -> float | None:
+    """Compute daily % change from yfinance when Finnhub quote is unavailable."""
+    price = technicals.get("price") if isinstance(technicals, dict) else None
+    prev_close = yf_fin.get("previous_close")
+    if price is not None and prev_close is not None and prev_close > 0:
+        return round((price - prev_close) / prev_close * 100, 4)
+    return None
 
 
 def _fetch_peer(peer_ticker: str) -> dict | None:
@@ -547,11 +581,11 @@ async def build(ticker: str, verbose: bool = True) -> dict:
     dossier["quote"] = {
         "price":      quote_raw.get("c") or (technicals.get("price") if isinstance(technicals, dict) else None),
         "change":     quote_raw.get("d"),
-        "change_pct": quote_raw.get("dp"),
+        "change_pct": quote_raw.get("dp") or _compute_change_pct(technicals, yf_fin),
         "high":       quote_raw.get("h"),
         "low":        quote_raw.get("l"),
         "open":       quote_raw.get("o"),
-        "prev_close": quote_raw.get("pc"),
+        "prev_close": quote_raw.get("pc") or yf_fin.get("previous_close"),
     }
 
     # â"€â"€ Technicals â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
@@ -631,6 +665,7 @@ async def build(ticker: str, verbose: bool = True) -> dict:
             "beta":          yf_r.get("beta"),
             "short_pct":     yf_r.get("short_pct"),
             "adr_mismatch":  yf_r.get("adr_mismatch", False),
+            "shares_out":    yf_r.get("shares_out"),
         },
     }
     # Store raw FMP ratios for cross-validation in validator.py
@@ -660,6 +695,8 @@ async def build(ticker: str, verbose: bool = True) -> dict:
         treasury_10y=macro.get("treasury_10y"),
         sector=sector,
         shares_out=shares_out,
+        fwd_revenue_growth=yf_fin.get("fwd_revenue_growth"),
+        fwd_earnings_growth=yf_fin.get("fwd_earnings_growth"),
     )
 
     dossier["valuation"] = {
