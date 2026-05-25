@@ -167,7 +167,7 @@ _SCREENS: list[dict] = [
         "filters_list": [
             {
                 "Forward P/E": "Under 30",
-                "EPS growththis quarter": "Over 15%",
+                "EPS growthqtr over qtr": "Over 15%",
                 "Gross Margin": "Over 50%",
                 "Country": "USA",
             },
@@ -177,9 +177,9 @@ _SCREENS: list[dict] = [
         "name": "ai_hypergrowth_momentum",
         "filters_list": [
             {
-                "EPS growththis quarter": "Over 25%",
+                "EPS growthqtr over qtr": "Over 25%",
                 "Gross Margin": "Over 60%",
-                "Sales growththis quarter": "Over 20%",
+                "Sales growthqtr over qtr": "Over 20%",
                 "Country": "USA",
             },
         ],

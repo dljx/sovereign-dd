@@ -203,22 +203,6 @@ def score_moat_proxy(fundament: dict) -> float:
         elif recom <= 2.5:
             pts += 1.0
 
-    # Forward PEG (Fwd P/E ÷ EPS next Y%) — replaces weak fwd_pe < pe signal.
-    # Skip for hypergrowth names (EPS next Y >= 50%) — PEG is unreliable when
-    # analysts systematically underestimate hypergrowth earnings.
-    eps_next_y = _pct(fundament.get("EPS next Y"))
-    fwd_peg_mv = None
-    if fwd_pe is not None and eps_next_y is not None and eps_next_y > 0:
-        fwd_peg_mv = fwd_pe / eps_next_y
-    is_hypergrowth = eps_next_y is not None and eps_next_y >= 50
-
-    if not is_hypergrowth:
-        if fwd_peg_mv is not None and fwd_peg_mv < 1.0:
-            pts += 2.0  # market underpricing growth — moat indicator
-        elif fwd_peg_mv is None and pe is not None and fwd_pe is not None and pe > 0 and fwd_pe > 0:
-            if fwd_pe < pe:
-                pts += 1.0  # fallback: at minimum earnings are expected to grow
-
     return _clamp(pts, 1.0, 10.0)
 
 

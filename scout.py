@@ -523,14 +523,11 @@ async def run_scout(
 
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 out_path = out_dir / f"{ticker}_{ts}.json"
-                _ratios_for_save = dossier.get("ratios_ttm", {})
-                _sector_for_save = dossier.get("sector", "")
-                _meta_for_save = {
-                    "path":            "B" if (_ratios_for_save.get("fwd_revenue_growth") or 0) >= 0.50 else "A",
-                    "matched_filters": _compute_matched_filters(_ratios_for_save, _sector_for_save),
-                }
+                _ratios  = dossier.get("ratios_ttm", {})
+                _path    = "B" if (_ratios.get("fwd_revenue_growth") or 0) >= 0.50 else "A"
+                _matched = _compute_matched_filters(_ratios, dossier.get("sector", ""))
                 with open(out_path, "w", encoding="utf-8") as f:
-                    json.dump({"result": result, "dossier": dossier, "meta": _meta_for_save}, f, indent=2, default=str)
+                    json.dump({"result": result, "dossier": dossier, "meta": {"path": _path, "matched_filters": _matched}}, f, indent=2, default=str)
 
                 if verbose:
                     print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]"
@@ -561,8 +558,8 @@ async def run_scout(
                         "banger":           result.get("banger", {}),
                         "position_guidance": result.get("position_guidance", {}),
                         "cycle_position":   result.get("cycle_position", {}),
-                        "path":             "B" if (dossier.get("ratios_ttm", {}).get("fwd_revenue_growth") or 0) >= 0.50 else "A",
-                        "matched_filters":  _compute_matched_filters(dossier.get("ratios_ttm", {}), dossier.get("sector", "")),
+                        "path":             _path,
+                        "matched_filters":  _matched,
                         "scout_lens":       lens,
                         "gemma_rationale":  rationale,
                         "analyzed_at":      ts,

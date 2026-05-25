@@ -173,11 +173,12 @@ async def _triage_with_tools(
             key=lambda c: scores.get(c["ticker"], {}).get("composite", 0),
             reverse=True,
         )
-        return [
+        valid = [
             {"ticker": c["ticker"], "pillar_rationale": "top composite score (LLM fallback)", "conviction": "MEDIUM"}
-            for c in sorted_cands[:debate_count]
+            for c in sorted_cands
             if c["ticker"] not in recently_analyzed
         ]
+        return valid[:debate_count]
 
     try:
         parsed = extract_json(text)
@@ -196,11 +197,12 @@ async def _triage_with_tools(
         print(f"  [gems] Triage parse error: {e}\n  Raw: {text[:300]}")
         # Fallback: pick top-N by composite score
         sorted_cands = sorted(candidates, key=lambda c: scores.get(c["ticker"], {}).get("composite", 0), reverse=True)
-        return [
+        valid = [
             {"ticker": c["ticker"], "pillar_rationale": "top composite score", "conviction": "MEDIUM"}
-            for c in sorted_cands[:debate_count]
+            for c in sorted_cands
             if c["ticker"] not in recently_analyzed
         ]
+        return valid[:debate_count]
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
