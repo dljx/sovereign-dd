@@ -940,12 +940,22 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     # yfinance info dict (earningsGrowth/revenueGrowth can lag 6-12 months).
     _fmp_est  = fmp_estimates_raw if isinstance(fmp_estimates_raw, dict) else {}
     _yf_est   = yf_fin.get("estimates", {})
-    _fwd_earnings_growth = (_fmp_est.get("fwd_eps_growth")
-                            or _yf_est.get("fwd_eps_growth")
-                            or yf_fin.get("fwd_earnings_growth"))
-    _fwd_revenue_growth  = (_fmp_est.get("fwd_rev_growth")
-                            or _yf_est.get("fwd_rev_growth")
-                            or yf_fin.get("fwd_revenue_growth"))
+    def _first_not_none(*vals):
+        for v in vals:
+            if v is not None:
+                return v
+        return None
+
+    _fwd_earnings_growth = _first_not_none(
+        _fmp_est.get("fwd_eps_growth"),
+        _yf_est.get("fwd_eps_growth"),
+        yf_fin.get("fwd_earnings_growth"),
+    )
+    _fwd_revenue_growth = _first_not_none(
+        _fmp_est.get("fwd_rev_growth"),
+        _yf_est.get("fwd_rev_growth"),
+        yf_fin.get("fwd_revenue_growth"),
+    )
     _eps_revision_momentum = _yf_est.get("eps_revision_momentum")  # yfinance eps_trend, no FMP equivalent on free tier
 
     # WACC — computed from existing data, zero new API calls.
@@ -953,7 +963,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     _wacc = None
     _beta_w = yf_r.get("beta")
     _rf_w   = (macro.get("treasury_10y") or 0) / 100
-    _de_w   = yf_r.get("debt_equity") or 0
+    # yfinance returns debtToEquity as a percentage (e.g. 30.27 = 30.27% = 0.30x ratio)
+    _de_w   = (yf_r.get("debt_equity") or 0) / 100
     if _beta_w is not None and _rf_w > 0 and 0 < _beta_w < 5:
         _ke = _rf_w + _beta_w * 0.055
         _dv = _de_w / (1 + _de_w) if _de_w > 0 else 0.0
