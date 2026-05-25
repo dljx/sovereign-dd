@@ -433,18 +433,21 @@ def _yf_financials(ticker: str) -> dict:
         estimates: dict = {}
         try:
             ee = t.earnings_estimate
-            if ee is not None and not ee.empty and "+1y" in ee.index:
-                row = ee.loc["+1y"]
-                if "growth" in ee.columns and row["growth"] is not None:
+            if ee is not None and not ee.empty:
+                def _ee_val(idx, col):
                     try:
-                        estimates["fwd_eps_growth"] = float(row["growth"])
+                        return float(ee.loc[idx, col]) if idx in ee.index and col in ee.columns and ee.loc[idx, col] is not None else None
                     except (TypeError, ValueError):
-                        pass
-                if "avg" in ee.columns and row["avg"] is not None:
-                    try:
-                        estimates["fwd_eps_ntm"] = float(row["avg"])
-                    except (TypeError, ValueError):
-                        pass
+                        return None
+
+                estimates["fwd_eps_growth"]          = _ee_val("+1y", "growth")
+                estimates["fwd_eps_ntm"]             = _ee_val("+1y", "avg")
+                estimates["est_eps_current_q"]       = _ee_val("0q",  "avg")
+                estimates["est_eps_current_q_growth"] = _ee_val("0q", "growth")
+                estimates["est_eps_next_q"]          = _ee_val("+1q", "avg")
+                estimates["est_eps_next_q_growth"]   = _ee_val("+1q", "growth")
+                # Strip None values so _first_not_none chains work cleanly
+                estimates = {k: v for k, v in estimates.items() if v is not None}
         except Exception:
             pass
         try:
@@ -1003,11 +1006,15 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "rule_of_40":              _r40,
             "implied_ntm_growth":      _implied_ntm_growth,
             "eps_acceleration":        _safe_sub(_fwd_earnings_growth, _implied_ntm_growth),
-            "eps_revision_momentum":   _eps_revision_momentum,
-            "wacc":                    _wacc,
-            "fwd_eps_ntm":             _fmp_est.get("fwd_eps_ntm"),
-            "fwd_rev_ntm":             _fmp_est.get("fwd_rev_ntm"),
-            "num_analysts_eps":        _fmp_est.get("num_analysts_eps"),
+            "eps_revision_momentum":    _eps_revision_momentum,
+            "wacc":                     _wacc,
+            "fwd_eps_ntm":              _fmp_est.get("fwd_eps_ntm"),
+            "fwd_rev_ntm":              _fmp_est.get("fwd_rev_ntm"),
+            "num_analysts_eps":         _fmp_est.get("num_analysts_eps"),
+            "est_eps_current_q":        _yf_est.get("est_eps_current_q"),
+            "est_eps_current_q_growth": _yf_est.get("est_eps_current_q_growth"),
+            "est_eps_next_q":           _yf_est.get("est_eps_next_q"),
+            "est_eps_next_q_growth":    _yf_est.get("est_eps_next_q_growth"),
         },
     }
 
