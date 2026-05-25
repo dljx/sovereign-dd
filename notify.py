@@ -69,13 +69,19 @@ def alert_buy_signal(d: dict) -> bool:
     pos       = d.get("position_guidance", {})
     cycle_pos = d.get("cycle_position", {})
 
-    lens_tag  = f" · <code>{lens}</code>" if lens else ""
+    filters   = d.get("matched_filters", [])
+    path      = d.get("path", "")
+
+    lens_tag   = f" · <code>{lens}</code>" if lens else ""
+    path_tag   = f" [PATH {path}]" if path else ""
     banger_tag = "\n🔥 <b>BANGER</b> — " + banger.get("reason","")[:150] if isinstance(banger, dict) and banger.get("is_banger") else ""
-    penalty = score_rat or dissent
+    penalty    = score_rat or dissent
+    filter_line = f"<b>Filters met:</b> {' · '.join(filters)}\n" if filters else ""
 
     msg = (
-        f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{lens_tag}\n"
+        f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
+        + filter_line
         + (f"<b>Gemma flagged:</b> <i>{rationale[:180]}</i>\n" if rationale else "")
         + (f"\n<b>Catalyst:</b> <i>{catalyst[:200]}</i>\n" if catalyst else "")
         + (f"<b>Asymmetry:</b> {asymmetry}\n" if asymmetry else "")

@@ -114,6 +114,7 @@ def collect_scout_results(scout_dir: Path) -> list:
         grade  = result.get("consensus_grade", "?")
 
         if score >= BUY_THRESHOLD:
+            meta = data.get("meta", {})
             discoveries.append({
                 "ticker":           ticker,
                 "score":            round(score, 2),
@@ -127,6 +128,8 @@ def collect_scout_results(scout_dir: Path) -> list:
                 "banger":           result.get("banger", {}),
                 "position_guidance": result.get("position_guidance", {}),
                 "cycle_position":   result.get("cycle_position", {}),
+                "matched_filters":  meta.get("matched_filters", []),
+                "path":             meta.get("path", "A"),
             })
 
     return discoveries

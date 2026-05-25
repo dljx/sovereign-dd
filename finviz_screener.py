@@ -166,9 +166,20 @@ _SCREENS: list[dict] = [
         "name": "growth_at_reasonable_price",
         "filters_list": [
             {
-                "Forward P/E": "Under 25",
-                "EPS growthpast 5 years": "Over 15%",
-                "Return on Equity": "Over +15%",
+                "Forward P/E": "Under 30",
+                "EPS growththis quarter": "Over 15%",
+                "Gross Margin": "Over 50%",
+                "Country": "USA",
+            },
+        ],
+    },
+    {
+        "name": "ai_hypergrowth_momentum",
+        "filters_list": [
+            {
+                "EPS growththis quarter": "Over 25%",
+                "Gross Margin": "Over 60%",
+                "Sales growththis quarter": "Over 20%",
                 "Country": "USA",
             },
         ],

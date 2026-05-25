@@ -280,20 +280,68 @@ async def _run_all_screeners(portfolio: set[str], exclude: set[str] | None = Non
 
 # ── Gemma triage ───────────────────────────────────────────────────────────────
 
+def _compute_matched_filters(ratios: dict, sector: str = "") -> list[str]:
+    matched = []
+    fwd_rev_growth = ratios.get("fwd_revenue_growth") or 0
+    gross_margin   = ratios.get("gross_margin") or 0
+
+    if fwd_rev_growth >= 0.50:
+        matched.append(f"Rev {fwd_rev_growth*100:.0f}%")
+        if gross_margin >= 0.60:
+            matched.append(f"GM {gross_margin*100:.0f}%")
+        if (ratios.get("eps_acceleration") or 0) > 0:
+            matched.append("EPS↑")
+        if any(s in (sector or "") for s in ["Technology", "Software", "Semiconductor", "Communication"]):
+            matched.append("AI/Tech")
+    else:
+        fwd_peg = ratios.get("fwd_peg")
+        if fwd_peg and fwd_peg < 1.5:
+            matched.append(f"Fwd PEG {fwd_peg:.1f}")
+        rule40 = ratios.get("rule_of_40") or 0
+        if rule40 >= 40:
+            matched.append(f"R40={rule40:.0f}")
+        if gross_margin > 0.50:
+            matched.append(f"GM {gross_margin*100:.0f}%")
+        fcf_yield = ratios.get("fcf_yield") or 0
+        if fcf_yield > 0.05:
+            matched.append(f"FCF {fcf_yield*100:.1f}%")
+
+    roic = ratios.get("roic") or 0
+    if roic > 0.15:
+        matched.append(f"ROIC {roic*100:.0f}%")
+
+    return matched
+
+
 TRIAGE_SYSTEM = """You are a senior equity analyst with deep experience across all market caps and sectors.
-You have access to live market data via Google Search. Your job is to identify the 6 most
+You have access to live market data via Google Search. Your job is to identify the most
 compelling investment opportunities from a pre-screened candidate list.
 
-Prioritise stocks with:
-- Clear near-term catalysts (earnings, product launches, regulatory approvals, contract wins)
-- Improving fundamentals that the market may not have fully priced in
-- Unusual valuation discounts relative to quality
-- Strong insider buying or institutional accumulation signals
-- Sector tailwinds aligned with current macro environment
-- Small/mid-cap names with asymmetric upside that institutional coverage has missed
+CANDIDATE SELECTION — apply the appropriate path based on revenue growth rate:
 
-Bias toward less-covered names where genuine alpha exists. Avoid defaulting to household names
-unless they have a specific, timely catalyst."""
+PATH B — HYPERGROWTH CANDIDATES (revenue growth >= 50%):
+  Do NOT use forward PEG to evaluate these — it understates quality for fast growers.
+  Prioritize when at least 2 of the following 3 fundamental conditions are met:
+  - Revenue Q/Q acceleration (this quarter faster than last quarter)
+  - Gross margin >= 60% and stable or expanding
+  - EPS estimates trending UP vs prior quarter (positive revision momentum)
+  Sector bonus (not required): AI infrastructure, cloud, custom silicon, datacenter, cybersecurity — structural tailwind adds conviction.
+  A high absolute multiple (30-60x forward earnings) does NOT disqualify a hypergrowth name.
+
+PATH A — STANDARD GROWTH CANDIDATES (revenue growth < 50%):
+  Forward PEG IS a valid screening signal here.
+  Prioritize when:
+  - Forward PEG < 1.5: market underpricing NTM growth
+  - Rule of 40 >= 40 AND gross margin > 50%: execution quality
+  - FCF yield > 5% with stable or growing revenue: capital-efficient compounder
+  Also consider: clear near-term catalysts, insider buying, sector tailwinds, small/mid-cap asymmetric upside.
+
+DEPRIORITIZE across all paths:
+  - Revenue growth declining for 2+ consecutive quarters with no explained catalyst
+  - Heavy net insider selling (>$10M in 90 days) not attributable to planned 10b5-1 sales
+  - Earnings estimates being cut while stock is near 52-week high (distribution phase)
+
+Bias toward less-covered names where genuine alpha exists. Spread picks across at least 3 different lenses."""
 
 
 def _build_triage_prompt(candidates: list[dict], portfolio: set[str], debate_count: int = 12) -> str:
@@ -475,8 +523,14 @@ async def run_scout(
 
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 out_path = out_dir / f"{ticker}_{ts}.json"
+                _ratios_for_save = dossier.get("ratios_ttm", {})
+                _sector_for_save = dossier.get("sector", "")
+                _meta_for_save = {
+                    "path":            "B" if (_ratios_for_save.get("fwd_revenue_growth") or 0) >= 0.50 else "A",
+                    "matched_filters": _compute_matched_filters(_ratios_for_save, _sector_for_save),
+                }
                 with open(out_path, "w", encoding="utf-8") as f:
-                    json.dump({"result": result, "dossier": dossier}, f, indent=2, default=str)
+                    json.dump({"result": result, "dossier": dossier, "meta": _meta_for_save}, f, indent=2, default=str)
 
                 if verbose:
                     print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]"
@@ -507,6 +561,8 @@ async def run_scout(
                         "banger":           result.get("banger", {}),
                         "position_guidance": result.get("position_guidance", {}),
                         "cycle_position":   result.get("cycle_position", {}),
+                        "path":             "B" if (dossier.get("ratios_ttm", {}).get("fwd_revenue_growth") or 0) >= 0.50 else "A",
+                        "matched_filters":  _compute_matched_filters(dossier.get("ratios_ttm", {}), dossier.get("sector", "")),
                         "scout_lens":       lens,
                         "gemma_rationale":  rationale,
                         "analyzed_at":      ts,

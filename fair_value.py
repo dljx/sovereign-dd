@@ -457,6 +457,21 @@ def _value_asset_light(dossier: dict) -> dict:
         gross_profit_growth = gp0 - gp1
         rd_yield = gross_profit_growth / rd1
 
+    # ── Hypergrowth override (fwd revenue growth >50% + gross margin >60%) ───
+    # Uses EV/NTM Revenue multiples calibrated to 2024-2026 AI cycle comps.
+    # Negative FCF companies use 100% NTM Revenue; positive FCF blends 70/30.
+    fwd_rev_growth = _safe(ratios.get("fwd_revenue_growth"))
+    hypergrowth_fv = None
+    hypergrowth_active = False
+    if fwd_rev_growth is not None and fwd_rev_growth > 0.50 and gross_margin is not None and gross_margin > 0.60:
+        hypergrowth_active = True
+        ntm_multiple = 40 if fwd_rev_growth > 1.0 else 25
+        if revenue_ttm is not None and revenue_ttm > 0 and shares_out is not None and shares_out > 0:
+            ntm_rev = revenue_ttm * (1 + fwd_rev_growth)
+            net_debt_hg = (total_debt or 0) - (cash or 0)
+            ev_ntm = ntm_multiple * ntm_rev
+            hypergrowth_fv = (ev_ntm - net_debt_hg) / shares_out
+
     # ── Primary: EV/FCF (SBC-adjusted) ───────────────────────────────────────
     if rule_of_40 is not None and rule_of_40 >= 40:
         target_multiple = 25
@@ -510,7 +525,16 @@ def _value_asset_light(dossier: dict) -> dict:
     }]
 
     # ── Composite ─────────────────────────────────────────────────────────────
-    if primary_fv is not None and secondary_fv is not None:
+    if hypergrowth_active and hypergrowth_fv is not None:
+        # Hypergrowth: NTM Revenue method dominates.
+        # If FCF is negative or unavailable, use 100% NTM Revenue (FCF multiple is misleading).
+        # If FCF is positive, blend 70% NTM Revenue + 30% FCF-based primary.
+        fcf_positive = sbc_adjusted_fcf is not None and sbc_adjusted_fcf > 0
+        if fcf_positive and primary_fv is not None:
+            composite = hypergrowth_fv * 0.70 + primary_fv * 0.30
+        else:
+            composite = hypergrowth_fv
+    elif primary_fv is not None and secondary_fv is not None:
         composite = primary_fv * 0.60 + secondary_fv * 0.40
     elif primary_fv is not None:
         composite = primary_fv
@@ -536,6 +560,9 @@ def _value_asset_light(dossier: dict) -> dict:
             "rd_yield": rd_yield,
             "revenue_growth_yoy": revenue_growth_yoy,
             "gross_margin": gross_margin,
+            "hypergrowth_active": hypergrowth_active,
+            "hypergrowth_fv": hypergrowth_fv,
+            "fwd_rev_growth": fwd_rev_growth,
         },
         "blind_spots": blind_spots,
         "invalid": ["STANDARD_DCF_UNRELIABLE", "EV_FCF_BEFORE_SBC_MISLEADING"],

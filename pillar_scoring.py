@@ -203,10 +203,21 @@ def score_moat_proxy(fundament: dict) -> float:
         elif recom <= 2.5:
             pts += 1.0
 
-    # Forward P/E < P/E → earnings expected to grow
-    if pe is not None and fwd_pe is not None and pe > 0 and fwd_pe > 0:
-        if fwd_pe < pe:
-            pts += 2.0
+    # Forward PEG (Fwd P/E ÷ EPS next Y%) — replaces weak fwd_pe < pe signal.
+    # Skip for hypergrowth names (EPS next Y >= 50%) — PEG is unreliable when
+    # analysts systematically underestimate hypergrowth earnings.
+    eps_next_y = _pct(fundament.get("EPS next Y"))
+    fwd_peg_mv = None
+    if fwd_pe is not None and eps_next_y is not None and eps_next_y > 0:
+        fwd_peg_mv = fwd_pe / eps_next_y
+    is_hypergrowth = eps_next_y is not None and eps_next_y >= 50
+
+    if not is_hypergrowth:
+        if fwd_peg_mv is not None and fwd_peg_mv < 1.0:
+            pts += 2.0  # market underpricing growth — moat indicator
+        elif fwd_peg_mv is None and pe is not None and fwd_pe is not None and pe > 0 and fwd_pe > 0:
+            if fwd_pe < pe:
+                pts += 1.0  # fallback: at minimum earnings are expected to grow
 
     return _clamp(pts, 1.0, 10.0)
 
@@ -264,6 +275,24 @@ def score_temporal(fundament: dict) -> float:
             pts += 1.5
 
     score = max(1.0, (pts / 9) * 10)
+
+    # Forward PEG adjustment — applied after base score to avoid distorting normalization.
+    # Skipped for hypergrowth names (EPS next Y >= 50%) where PEG is unreliable.
+    eps_next_y_t = _pct(fundament.get("EPS next Y"))
+    fwd_pe_t = _float(fundament.get("Forward P/E"))
+    fwd_peg_t = None
+    if fwd_pe_t is not None and eps_next_y_t is not None and eps_next_y_t > 0:
+        fwd_peg_t = fwd_pe_t / eps_next_y_t
+    is_hypergrowth_t = eps_next_y_t is not None and eps_next_y_t >= 50
+
+    if fwd_peg_t is not None and not is_hypergrowth_t:
+        if fwd_peg_t < 1.0:
+            score += 1.5   # market underpricing NTM growth
+        elif fwd_peg_t < 2.0:
+            score += 0.75  # fairly valued on growth
+        elif fwd_peg_t > 3.0 and (eps_5y is None or eps_5y < 20):
+            score -= 1.0   # expensive and low historical growth
+
     return _clamp(score, 1.0, 10.0)
 
 

@@ -110,8 +110,37 @@ You MUST know which methods are VALID and which are INVALID per archetype:
 HISTORICAL MULTIPLE COMPARISON: Compare the current NTM P/E or EV/EBITDA against the stock's own 5-year
 historical average. Is it trading at a premium or discount to its own history, and is that premium/discount justified?
 
-GROWTH-ADJUSTED PRICING: Evaluate the PEG ratio. A PEG below 1.0 signals the market is underpricing structural
-growth potential — this is one of the clearest indicators of a genuine valuation opportunity.
+GROWTH-ADJUSTED PRICING — select path based on fwd_revenue_growth from the dossier ratios_ttm:
+
+PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
+  Use Forward PEG (Fwd P/E ÷ NTM EPS growth rate %) as the primary valuation signal.
+  Thresholds calibrated for the 2024-2026 rate environment:
+  - Forward PEG < 1.0: market underpricing growth — positive signal
+  - Forward PEG 1.0–2.0: fairly valued on growth — neutral
+  - Forward PEG 2.0–3.0: premium requires strong catalyst justification
+  - Forward PEG > 3.0: unjustified premium — negative signal
+  Secondary: FCF Yield > 5% supports valuation. Rule of 40 >= 40 justifies a premium multiple.
+  Always deduct SBC from FCF before computing EV/FCF — inflated SBC is masked value destruction.
+
+PATH B — HYPERGROWTH (fwd_revenue_growth >= 50%):
+  Do NOT score on forward PEG. Analyst EPS estimates systematically underestimate hypergrowth
+  companies (e.g. NVDA 2023-2025), making forward PEG appear misleadingly expensive. Instead use:
+  1. EPS acceleration: if eps_acceleration > 0, analysts expect earnings to accelerate — positive signal
+  2. Rule of 40: revenue_growth% + operating_margin% — target >= 40 for quality
+  3. EV/NTM Revenue vs sector comps: benchmark against comparable AI/infrastructure names
+  4. Gross margin trajectory: expanding GM signals pricing power, contracting GM signals commoditization
+  A hypergrowth stock trading at 30-60x NTM Revenue is NOT automatically overvalued.
+  Evaluate sustainability of the growth rate, not the multiple in isolation.
+
+EPS ACCELERATION SIGNAL (applies to both paths):
+  The dossier provides eps_acceleration = fwd_earnings_growth minus implied NTM growth from raw EPS.
+  Positive = analysts raising consensus above the implied EPS baseline → adds conviction to any bull thesis.
+  - eps_acceleration > 0.15: strong positive signal
+  - eps_acceleration 0.0–0.15: estimates stable or improving — neutral
+  - eps_acceleration < 0.0: analysts cutting consensus below implied baseline — red flag, downgrade conviction
+  CYCLICAL EXCEPTION: For energy, materials, mining, shipping, chemicals, and basic industrials,
+  negative eps_acceleration at cycle trough (depressed margins, low utilization) is a contrarian
+  BUY indicator, not a red flag. Contextualize within the commodity/demand cycle position.
 
 EXPECTATION DISCONNECT: A beat followed by a selloff means the market had already pulled forward growth — the
 stock is priced for perfection. A miss followed by a hold or rally signals institutional accumulation and likely
@@ -204,8 +233,8 @@ SEARCH_QUERIES = {
     ),
     "ValuationEngine": (
         'Search for "{name}" (stock ticker: {ticker}) fair value estimate, price target consensus, '
-        "forward PE historical comparison, EV/EBITDA vs peers, PEG ratio, "
-        "analyst upgrades downgrades, earnings estimate revisions, "
+        "forward PE historical comparison, EV/EBITDA vs peers, forward PEG ratio, NTM earnings growth rate, "
+        "analyst estimate revisions upward or downward, EV/NTM Revenue vs peer comps, "
         "AND overvaluation warnings, stretched multiples, value trap signals, "
         "recent earnings reaction, beat or miss vs expectations."
     ),

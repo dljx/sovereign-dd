@@ -135,6 +135,20 @@ def _safe_float(val) -> float | None:
         return None
 
 
+def _safe_div(a, b) -> float | None:
+    try:
+        return round(a / b, 4) if a is not None and b is not None and b != 0 else None
+    except (TypeError, ZeroDivisionError):
+        return None
+
+
+def _safe_sub(a, b) -> float | None:
+    try:
+        return round(a - b, 4) if a is not None and b is not None else None
+    except TypeError:
+        return None
+
+
 def _av(function: str, params: dict = None) -> dict:
     global _av_idx, _av_last_call
     if not _av_keys:
@@ -273,6 +287,9 @@ def _yf_financials(ticker: str) -> dict:
             "shares_out":    _safe_shares,
             "short_pct":     _pct(info.get("shortPercentOfFloat")),
             "adr_mismatch":  _is_adr_mismatch,  # flag for downstream consumers
+            "op_margin":     _pct(info.get("operatingMargins")),
+            "trailing_eps":  info.get("trailingEps"),
+            "forward_eps":   info.get("forwardEps"),
         }
 
         analyst = {
@@ -795,6 +812,25 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
                           f"({_pe_trailing:.1f}x) implies {_implied_growth:.0%} YoY growth — "
                           f"likely ADR/FX mismatch, nulling fwd_pe")
 
+    # Pre-compute growth/valuation derived metrics for ratios_ttm
+    _income_list = yf_fin.get("income", [])
+    _ttm_rev_growth_pct = None
+    if len(_income_list) >= 2:
+        _ri0 = _income_list[0].get("revenue")
+        _ri1 = _income_list[1].get("revenue")
+        if _ri0 and _ri1 and _ri1 != 0:
+            _ttm_rev_growth_pct = round((_ri0 - _ri1) / abs(_ri1) * 100, 2)
+    _op_margin_pct = yf_r.get("op_margin")  # already percentage from _pct()
+    _r40 = round(_ttm_rev_growth_pct + _op_margin_pct, 2) if (
+        _ttm_rev_growth_pct is not None and _op_margin_pct is not None
+    ) else None
+
+    _trailing_eps = yf_r.get("trailing_eps") or 0
+    _forward_eps  = yf_r.get("forward_eps") or 0
+    _implied_ntm_growth = _safe_div(_forward_eps - _trailing_eps, abs(_trailing_eps)) if _trailing_eps else None
+    _fwd_earnings_growth = yf_fin.get("fwd_earnings_growth")
+    _fwd_revenue_growth  = yf_fin.get("fwd_revenue_growth")
+
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
         "balance":  yf_fin.get("balance")  or fmp_balance,
@@ -820,6 +856,14 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "short_pct":     yf_r.get("short_pct"),
             "adr_mismatch":  yf_r.get("adr_mismatch", False),
             "shares_out":    yf_r.get("shares_out"),
+            # Growth & valuation metrics (Changes 1 + 7)
+            "fwd_revenue_growth":  _fwd_revenue_growth,
+            "fwd_earnings_growth": _fwd_earnings_growth,
+            "fwd_peg":             _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
+            "fcf_yield":           _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
+            "rule_of_40":          _r40,
+            "implied_ntm_growth":  _implied_ntm_growth,
+            "eps_acceleration":    _safe_sub(_fwd_earnings_growth, _implied_ntm_growth),
         },
     }
 
