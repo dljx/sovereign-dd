@@ -365,6 +365,48 @@ def _yf_financials(ticker: str) -> dict:
         except Exception:
             pass
 
+        # Fresh NTM consensus from Yahoo analyst estimates — more current than info dict.
+        # info['earningsGrowth'] / info['revenueGrowth'] can lag 6-12 months; these
+        # attributes parse the live analyst consensus page and update daily/weekly.
+        estimates: dict = {}
+        try:
+            ee = t.earnings_estimate
+            if ee is not None and not ee.empty and "+1y" in ee.index:
+                row = ee.loc["+1y"]
+                if "growth" in ee.columns and row["growth"] is not None:
+                    try:
+                        estimates["fwd_eps_growth"] = float(row["growth"])
+                    except (TypeError, ValueError):
+                        pass
+                if "avg" in ee.columns and row["avg"] is not None:
+                    try:
+                        estimates["fwd_eps_ntm"] = float(row["avg"])
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+        try:
+            re_est = t.revenue_estimate
+            if re_est is not None and not re_est.empty and "+1y" in re_est.index:
+                row = re_est.loc["+1y"]
+                if "growth" in re_est.columns and row["growth"] is not None:
+                    try:
+                        estimates["fwd_rev_growth"] = float(row["growth"])
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+        try:
+            et = t.eps_trend
+            if et is not None and not et.empty and "+1y" in et.index:
+                row = et.loc["+1y"]
+                cur = float(row["current"]) if "current" in et.columns and row["current"] is not None else None
+                ago30 = float(row["30daysAgo"]) if "30daysAgo" in et.columns and row["30daysAgo"] is not None else None
+                if cur is not None and ago30 is not None and ago30 != 0:
+                    estimates["eps_revision_momentum"] = round((cur - ago30) / abs(ago30), 4)
+        except Exception:
+            pass
+
         return {"ratios": ratios, "analyst": analyst,
                 "income": income, "balance": balance, "cashflow": cashflow,
                 "industry": info.get("industry", ""),
@@ -374,7 +416,8 @@ def _yf_financials(ticker: str) -> dict:
                 "fwd_revenue_growth": info.get("revenueGrowth"),
                 "fwd_earnings_growth": info.get("earningsGrowth"),
                 "previous_close": info.get("previousClose"),
-                "financials_currency": _fin_currency if _is_fx_mismatch else None}
+                "financials_currency": _fin_currency if _is_fx_mismatch else None,
+                "estimates": estimates}
     except Exception as e:
         return {"error": str(e), "ratios": {}, "analyst": {},
                 "income": [], "balance": [], "cashflow": [], "industry": "", "sector": ""}
@@ -828,8 +871,23 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     _trailing_eps = yf_r.get("trailing_eps") or 0
     _forward_eps  = yf_r.get("forward_eps") or 0
     _implied_ntm_growth = _safe_div(_forward_eps - _trailing_eps, abs(_trailing_eps)) if _trailing_eps else None
-    _fwd_earnings_growth = yf_fin.get("fwd_earnings_growth")
-    _fwd_revenue_growth  = yf_fin.get("fwd_revenue_growth")
+    # Prefer fresh Yahoo consensus estimates over stale info dict (earningsGrowth/revenueGrowth
+    # can lag 6-12 months; t.earnings_estimate / t.revenue_estimate update daily).
+    _estimates = yf_fin.get("estimates", {})
+    _fwd_earnings_growth = _estimates.get("fwd_eps_growth") or yf_fin.get("fwd_earnings_growth")
+    _fwd_revenue_growth  = _estimates.get("fwd_rev_growth") or yf_fin.get("fwd_revenue_growth")
+    _eps_revision_momentum = _estimates.get("eps_revision_momentum")
+
+    # WACC — computed from existing data, zero new API calls.
+    # Ke = risk_free + beta × 5.5% ERP (Damodaran US). Kd = 5% pre-tax (investment-grade default).
+    _wacc = None
+    _beta_w = yf_r.get("beta")
+    _rf_w   = (macro.get("treasury_10y") or 0) / 100
+    _de_w   = yf_r.get("debt_equity") or 0
+    if _beta_w is not None and _rf_w > 0 and 0 < _beta_w < 5:
+        _ke = _rf_w + _beta_w * 0.055
+        _dv = _de_w / (1 + _de_w) if _de_w > 0 else 0.0
+        _wacc = round((1 - _dv) * _ke + _dv * 0.05 * 0.79, 4)
 
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
@@ -856,14 +914,16 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "short_pct":     yf_r.get("short_pct"),
             "adr_mismatch":  yf_r.get("adr_mismatch", False),
             "shares_out":    yf_r.get("shares_out"),
-            # Growth & valuation metrics (Changes 1 + 7)
-            "fwd_revenue_growth":  _fwd_revenue_growth,
-            "fwd_earnings_growth": _fwd_earnings_growth,
-            "fwd_peg":             _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
-            "fcf_yield":           _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
-            "rule_of_40":          _r40,
-            "implied_ntm_growth":  _implied_ntm_growth,
-            "eps_acceleration":    _safe_sub(_fwd_earnings_growth, _implied_ntm_growth),
+            # Growth & valuation metrics
+            "fwd_revenue_growth":      _fwd_revenue_growth,
+            "fwd_earnings_growth":     _fwd_earnings_growth,
+            "fwd_peg":                 _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
+            "fcf_yield":               _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
+            "rule_of_40":              _r40,
+            "implied_ntm_growth":      _implied_ntm_growth,
+            "eps_acceleration":        _safe_sub(_fwd_earnings_growth, _implied_ntm_growth),
+            "eps_revision_momentum":   _eps_revision_momentum,
+            "wacc":                    _wacc,
         },
     }
 
@@ -949,15 +1009,17 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
                 return True
         return False
 
-    # Significant transactions: value > $100K
+    # Significant transactions: value > $100K (uses transactionPrice from Finnhub)
     def _tx_value(t: dict) -> float:
-        shares = t.get("share", 0) or 0
-        price  = t.get("price") or 0
-        return abs(shares * price)
+        shares = abs(t.get("change", 0) or t.get("share", 0) or 0)
+        price  = t.get("transactionPrice") or 0
+        return shares * price
 
     significant_buys  = [t for t in buys  if _tx_value(t) >= 100_000]
     significant_sells = [t for t in sells if _tx_value(t) >= 100_000]
     buyer_names = list({t.get("name", "") for t in buys if t.get("name")})
+    total_buy_usd  = round(sum(_tx_value(t) for t in buys))
+    total_sell_usd = round(sum(_tx_value(t) for t in sells))
 
     dossier["insiders"] = {
         "buy_count":        len(buys),
@@ -967,6 +1029,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         "significant_buys": len(significant_buys),
         "significant_sells": len(significant_sells),
         "buyer_roles":      buyer_names[:5],
+        "total_buy_usd":    total_buy_usd,
+        "total_sell_usd":   total_sell_usd,
+        "net_insider_usd":  total_buy_usd - total_sell_usd,
         "recent":           txns[:10],
     }
 
