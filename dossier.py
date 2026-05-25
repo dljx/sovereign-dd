@@ -16,7 +16,8 @@ from live_events import emit_live
 load_dotenv()
 
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
-FRED_KEY = os.getenv("FRED_API_KEY", "")
+FRED_KEY    = os.getenv("FRED_API_KEY", "")
+FMP_KEY     = os.getenv("FMP_API_KEY", "")
 _av_keys = [k.strip() for k in os.getenv("ALPHA_VANTAGE_API_KEYS", os.getenv("ALPHA_VANTAGE_API_KEY", "")).split(",") if k.strip()]
 
 FH = "https://finnhub.io/api/v1"
@@ -25,6 +26,10 @@ _av_idx = 0
 _av_lock = threading.Lock()      # serialize AV key rotation + rate-limit enforcement
 _av_last_call: float = 0.0       # timestamp of most recent AV request
 _AV_MIN_INTERVAL = 12.0          # seconds between calls (5 RPM limit = 1 per 12s)
+
+_fmp_lock = threading.Lock()     # FMP rate-limit: 10 RPM free tier
+_fmp_last_call: float = 0.0
+_FMP_MIN_INTERVAL = 6.0          # seconds between calls (10 RPM = 1 per 6s)
 
 
 # ── Cycle type classification ──────────────────────────────────────────────────
@@ -167,6 +172,63 @@ def _av(function: str, params: dict = None) -> dict:
         return r.json() if r.ok else {}
     except requests.exceptions.RequestException as e:
         print(f"  [dossier] AlphaVantage {function} failed: {e}")
+        return {}
+
+
+def _fmp_estimates(ticker: str) -> dict:
+    """Fetch annual analyst consensus from FMP stable API (250 req/day free tier).
+
+    Returns NTM EPS avg, NTM revenue avg, computed forward growth rates,
+    and analyst count. Uses the two closest future fiscal years to compute growth.
+    Falls back to {} on any error or missing key.
+    """
+    global _fmp_last_call
+    if not FMP_KEY:
+        return {}
+    with _fmp_lock:
+        wait = _FMP_MIN_INTERVAL - (time.time() - _fmp_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _fmp_last_call = time.time()
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        r = requests.get(
+            "https://financialmodelingprep.com/stable/analyst-estimates",
+            params={"symbol": ticker, "period": "annual", "apikey": FMP_KEY},
+            timeout=10,
+        )
+        if not r.ok:
+            return {}
+        data = r.json()
+        if not isinstance(data, list) or not data:
+            return {}
+        data.sort(key=lambda x: x.get("date", ""))
+        future = [e for e in data if e.get("date", "") >= today]
+        if not future:
+            return {}
+        ntm = future[0]
+        ntm_idx = data.index(ntm)
+        if ntm_idx == 0:
+            return {}
+        prior = data[ntm_idx - 1]
+        ntm_rev   = ntm.get("revenueAvg")
+        prior_rev = prior.get("revenueAvg")
+        ntm_eps   = ntm.get("epsAvg")
+        prior_eps = prior.get("epsAvg")
+        result: dict = {
+            "fwd_eps_ntm":        ntm_eps,
+            "fwd_rev_ntm":        ntm_rev,
+            "num_analysts_eps":   ntm.get("numAnalystsEps"),
+            "num_analysts_rev":   ntm.get("numAnalystsRevenue"),
+            "ntm_date":           ntm.get("date"),
+        }
+        if ntm_rev and prior_rev and prior_rev > 0:
+            result["fwd_rev_growth"] = round((ntm_rev - prior_rev) / prior_rev, 4)
+        if ntm_eps and prior_eps and prior_eps != 0:
+            result["fwd_eps_growth"] = round((ntm_eps - prior_eps) / abs(prior_eps), 4)
+        return result
+    except Exception as e:
+        print(f"  [dossier] FMP estimates {ticker} failed: {e}")
         return {}
 
 
@@ -719,6 +781,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         insider_sent_raw,
         usa_spending_raw,
         earnings_cal_raw,
+        fmp_estimates_raw,
     ) = await asyncio.gather(
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/profile2", {"symbol": ticker}), "profile"),
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/quote", {"symbol": ticker}), "quote"),
@@ -734,6 +797,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/insider-sentiment", {"symbol": ticker, "from": since_yr, "to": to_date}), "insider_sentiment"),
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/usa-spending", {"symbol": ticker, "from": since, "to": to_date}), "usa_spending"),
         _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/calendar/earnings", {"symbol": ticker, "from": to_date, "to": fwd_30}), "earnings_cal"),
+        _fetch_and_emit(ticker, asyncio.to_thread(_fmp_estimates, ticker), "fmp_estimates"),
     )
 
     # ── Metadata overrides (from cleaner.clean_ticker_batch) ─────────────────
@@ -871,12 +935,18 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     _trailing_eps = yf_r.get("trailing_eps") or 0
     _forward_eps  = yf_r.get("forward_eps") or 0
     _implied_ntm_growth = _safe_div(_forward_eps - _trailing_eps, abs(_trailing_eps)) if _trailing_eps else None
-    # Prefer fresh Yahoo consensus estimates over stale info dict (earningsGrowth/revenueGrowth
-    # can lag 6-12 months; t.earnings_estimate / t.revenue_estimate update daily).
-    _estimates = yf_fin.get("estimates", {})
-    _fwd_earnings_growth = _estimates.get("fwd_eps_growth") or yf_fin.get("fwd_earnings_growth")
-    _fwd_revenue_growth  = _estimates.get("fwd_rev_growth") or yf_fin.get("fwd_revenue_growth")
-    _eps_revision_momentum = _estimates.get("eps_revision_momentum")
+    # Forward growth: FMP analyst consensus (live, 250 req/day free) is the primary source.
+    # Falls back to yfinance t.earnings_estimate (daily Yahoo consensus), then to stale
+    # yfinance info dict (earningsGrowth/revenueGrowth can lag 6-12 months).
+    _fmp_est  = fmp_estimates_raw if isinstance(fmp_estimates_raw, dict) else {}
+    _yf_est   = yf_fin.get("estimates", {})
+    _fwd_earnings_growth = (_fmp_est.get("fwd_eps_growth")
+                            or _yf_est.get("fwd_eps_growth")
+                            or yf_fin.get("fwd_earnings_growth"))
+    _fwd_revenue_growth  = (_fmp_est.get("fwd_rev_growth")
+                            or _yf_est.get("fwd_rev_growth")
+                            or yf_fin.get("fwd_revenue_growth"))
+    _eps_revision_momentum = _yf_est.get("eps_revision_momentum")  # yfinance eps_trend, no FMP equivalent on free tier
 
     # WACC — computed from existing data, zero new API calls.
     # Ke = risk_free + beta × 5.5% ERP (Damodaran US). Kd = 5% pre-tax (investment-grade default).
@@ -924,6 +994,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "eps_acceleration":        _safe_sub(_fwd_earnings_growth, _implied_ntm_growth),
             "eps_revision_momentum":   _eps_revision_momentum,
             "wacc":                    _wacc,
+            "fwd_eps_ntm":             _fmp_est.get("fwd_eps_ntm"),
+            "fwd_rev_ntm":             _fmp_est.get("fwd_rev_ntm"),
+            "num_analysts_eps":        _fmp_est.get("num_analysts_eps"),
         },
     }
 
