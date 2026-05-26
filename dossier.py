@@ -11,6 +11,7 @@ import requests
 import yfinance as yf
 from dotenv import load_dotenv
 
+from cache import cached
 from live_events import emit_live
 
 load_dotenv()
@@ -786,21 +787,21 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         earnings_cal_raw,
         fmp_estimates_raw,
     ) = await asyncio.gather(
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/profile2", {"symbol": ticker}), "profile"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/quote", {"symbol": ticker}), "quote"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_technicals, ticker), "technicals"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_yf_financials, ticker), "financials"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_av, "EARNINGS", {"symbol": ticker}), "earnings"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_av, "OVERVIEW", {"symbol": ticker}), "av_overview"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/insider-transactions", {"symbol": ticker, "from": since}), "insiders"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/company-news", {"symbol": ticker, "from": from_date, "to": to_date}), "news"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_latest_filing, ticker), "sec_filing"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:profile:{ticker}",       72,  _fh, "/stock/profile2", {"symbol": ticker}), "profile"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:quote:{ticker}",          1,  _fh, "/quote", {"symbol": ticker}), "quote"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:tech:{ticker}",           1,  _technicals, ticker), "technicals"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:{ticker}",           12,  _yf_financials, ticker), "financials"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:EARNINGS:{ticker}",      24,  _av, "EARNINGS", {"symbol": ticker}), "earnings"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:OVERVIEW:{ticker}",      24,  _av, "OVERVIEW", {"symbol": ticker}), "av_overview"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:insiders:{ticker}",      12,  _fh, "/stock/insider-transactions", {"symbol": ticker, "from": since}), "insiders"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:news:{ticker}",           2,  _fh, "/company-news", {"symbol": ticker, "from": from_date, "to": to_date}), "news"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"sec:filing:{ticker}",       48,  _latest_filing, ticker), "sec_filing"),
         _fetch_and_emit(ticker, _get_macro(), "macro"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/recommendation", {"symbol": ticker}), "rec_trends"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/insider-sentiment", {"symbol": ticker, "from": since_yr, "to": to_date}), "insider_sentiment"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/stock/usa-spending", {"symbol": ticker, "from": since, "to": to_date}), "usa_spending"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fh, "/calendar/earnings", {"symbol": ticker, "from": to_date, "to": fwd_30}), "earnings_cal"),
-        _fetch_and_emit(ticker, asyncio.to_thread(_fmp_estimates, ticker), "fmp_estimates"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:rec:{ticker}",           12,  _fh, "/stock/recommendation", {"symbol": ticker}), "rec_trends"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:insider_sent:{ticker}",  12,  _fh, "/stock/insider-sentiment", {"symbol": ticker, "from": since_yr, "to": to_date}), "insider_sentiment"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:usa_spending:{ticker}",  24,  _fh, "/stock/usa-spending", {"symbol": ticker, "from": since, "to": to_date}), "usa_spending"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:earnings_cal:{ticker}",   6,  _fh, "/calendar/earnings", {"symbol": ticker, "from": to_date, "to": fwd_30}), "earnings_cal"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fmp:estimates:{ticker}",     6,  _fmp_estimates, ticker), "fmp_estimates"),
     )
 
     # ── Metadata overrides (from cleaner.clean_ticker_batch) ─────────────────
