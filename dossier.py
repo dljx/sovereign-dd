@@ -225,7 +225,7 @@ def _fmp_estimates(ticker: str) -> dict:
         }
         if ntm_rev and prior_rev and prior_rev > 0:
             result["fwd_rev_growth"] = round((ntm_rev - prior_rev) / prior_rev, 4)
-        if ntm_eps and prior_eps and prior_eps != 0:
+        if ntm_eps is not None and prior_eps and prior_eps != 0:
             result["fwd_eps_growth"] = round((ntm_eps - prior_eps) / abs(prior_eps), 4)
         return result
     except Exception as e:
@@ -1044,8 +1044,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         treasury_10y=macro.get("treasury_10y"),
         sector=gics_sector,
         shares_out=shares_out,
-        fwd_revenue_growth=yf_fin.get("fwd_revenue_growth"),
-        fwd_earnings_growth=yf_fin.get("fwd_earnings_growth"),
+        fwd_revenue_growth=_fwd_revenue_growth,
+        fwd_earnings_growth=_fwd_earnings_growth,
         net_debt=_net_debt,
     )
 

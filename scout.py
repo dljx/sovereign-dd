@@ -287,8 +287,8 @@ def _compute_matched_filters(ratios: dict, sector: str = "") -> list[str]:
 
     if fwd_rev_growth >= 0.50:
         matched.append(f"Rev {fwd_rev_growth*100:.0f}%")
-        if gross_margin >= 0.60:
-            matched.append(f"GM {gross_margin*100:.0f}%")
+        if gross_margin >= 60:
+            matched.append(f"GM {gross_margin:.0f}%")
         if (ratios.get("eps_acceleration") or 0) > 0:
             matched.append("EPS↑")
         if any(s in (sector or "") for s in ["Technology", "Software", "Semiconductor", "Communication"]):
@@ -300,15 +300,15 @@ def _compute_matched_filters(ratios: dict, sector: str = "") -> list[str]:
         rule40 = ratios.get("rule_of_40") or 0
         if rule40 >= 40:
             matched.append(f"R40={rule40:.0f}")
-        if gross_margin > 0.50:
-            matched.append(f"GM {gross_margin*100:.0f}%")
+        if gross_margin > 50:
+            matched.append(f"GM {gross_margin:.0f}%")
         fcf_yield = ratios.get("fcf_yield") or 0
         if fcf_yield > 0.05:
             matched.append(f"FCF {fcf_yield*100:.1f}%")
 
     roic = ratios.get("roic") or 0
-    if roic > 0.15:
-        matched.append(f"ROIC {roic*100:.0f}%")
+    if roic > 15:
+        matched.append(f"ROIC {roic:.0f}%")
 
     return matched
 
@@ -523,9 +523,9 @@ async def run_scout(
 
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 out_path = out_dir / f"{ticker}_{ts}.json"
-                _ratios  = dossier.get("ratios_ttm", {})
+                _ratios  = dossier.get("financials", {}).get("ratios_ttm", {})
                 _path    = "B" if (_ratios.get("fwd_revenue_growth") or 0) >= 0.50 else "A"
-                _matched = _compute_matched_filters(_ratios, dossier.get("sector", ""))
+                _matched = _compute_matched_filters(_ratios, dossier.get("profile", {}).get("sector", ""))
                 with open(out_path, "w", encoding="utf-8") as f:
                     json.dump({"result": result, "dossier": dossier, "meta": {"path": _path, "matched_filters": _matched}}, f, indent=2, default=str)
 
