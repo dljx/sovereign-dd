@@ -27,8 +27,11 @@ GRADE_EMOJI = {
 CONF_EMOJI = {"HIGH": "⭐⭐⭐", "MEDIUM": "⭐⭐", "LOW": "⭐"}
 
 
+_TG_MAX = 4096
+
+
 def _send(message: str, topic_id: str = "") -> bool:
-    """Send a message to the Telegram bot, optionally in a specific topic thread."""
+    """Send a single message to the Telegram bot (caller must ensure len ≤ 4096)."""
     if not BOT_TOKEN or not CHAT_ID:
         print("  [notify] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping")
         return False
@@ -53,6 +56,31 @@ def _send(message: str, topic_id: str = "") -> bool:
     except Exception as e:
         print(f"  [notify] Telegram request failed: {e}")
         return False
+
+
+def _split_send(message: str, topic_id: str = "") -> bool:
+    """Send message, splitting into ≤4096-char chunks at newline boundaries."""
+    if len(message) <= _TG_MAX:
+        return _send(message, topic_id)
+
+    parts: list[str] = []
+    remaining = message
+    while remaining:
+        if len(remaining) <= _TG_MAX:
+            parts.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, _TG_MAX)
+        if split_at <= 0:
+            split_at = _TG_MAX
+        parts.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+
+    ok = True
+    for i, part in enumerate(parts):
+        if i > 0:
+            part = "↩ <i>(continued)</i>\n" + part
+        ok = _send(part, topic_id) and ok
+    return ok
 
 
 def alert_buy_signal(d: dict) -> bool:
@@ -82,18 +110,18 @@ def alert_buy_signal(d: dict) -> bool:
         f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
         + filter_line
-        + (f"<b>Gemma flagged:</b> <i>{rationale[:180]}</i>\n" if rationale else "")
-        + (f"\n<b>Catalyst:</b> <i>{catalyst[:200]}</i>\n" if catalyst else "")
+        + (f"<b>Gemma flagged:</b> <i>{rationale[:350]}</i>\n" if rationale else "")
+        + (f"\n<b>Catalyst:</b> <i>{catalyst[:400]}</i>\n" if catalyst else "")
         + (f"<b>Asymmetry:</b> {asymmetry}\n" if asymmetry else "")
         + (f"<b>Cycle:</b> {cycle_pos.get('regime','')} — {cycle_pos.get('phase','')}\n" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
-        + f"\n<b>Bull case:</b> <i>{d['thesis'][:300]}</i>\n\n"
-        + (f"<b>Why not higher:</b> <i>{penalty[:250]}</i>\n\n" if penalty else "")
-        + f"<b>Key factor:</b> {d.get('key_swing_factor', '—')[:150]}\n"
-        + (f"<b>Position:</b> {pos.get('range','?')} ({pos.get('reasoning','')[:100]})\n" if isinstance(pos, dict) and pos.get("range") else "")
+        + f"\n<b>Bull case:</b> <i>{d['thesis'][:600]}</i>\n\n"
+        + (f"<b>Why not higher:</b> <i>{penalty[:450]}</i>\n\n" if penalty else "")
+        + f"<b>Key factor:</b> {d.get('key_swing_factor', '—')[:300]}\n"
+        + (f"<b>Position:</b> {pos.get('range','?')} ({pos.get('reasoning','')[:200]})\n" if isinstance(pos, dict) and pos.get("range") else "")
         + banger_tag
         + f"\n⏰ {d['analyzed_at']}"
     )
-    return _send(msg, TOPIC_TRADE_ALERTS)
+    return _split_send(msg, TOPIC_TRADE_ALERTS)
 
 
 def alert_dd_result(result: dict) -> bool:
@@ -115,21 +143,21 @@ def alert_dd_result(result: dict) -> bool:
         agent_lines.append(f"  {agent:<14} {s1:.1f} {arrow} {sf:.1f}")
 
     agents_block = "\n".join(agent_lines)
-    thesis = result.get("majority_thesis", "")[:350]
+    thesis = result.get("majority_thesis", "")[:700]
 
     catalyst = result.get("catalyst", "")
     banger = result.get("banger", {})
-    banger_line = f"\n🔥 <b>BANGER</b> — {banger.get('reason','')[:120]}" if isinstance(banger, dict) and banger.get("is_banger") else ""
+    banger_line = f"\n🔥 <b>BANGER</b> — {banger.get('reason','')[:250]}" if isinstance(banger, dict) and banger.get("is_banger") else ""
 
     msg = (
         f"{emoji} <b>SOVEREIGN DD — {ticker}</b>\n"
         f"<b>Score:</b> {score:.2f}/10 · {grade} · {cconf}\n\n"
         f"<pre>{agents_block}</pre>\n\n"
-        + (f"<b>Catalyst:</b> <i>{catalyst[:200]}</i>\n\n" if catalyst else "")
+        + (f"<b>Catalyst:</b> <i>{catalyst[:400]}</i>\n\n" if catalyst else "")
         + f"<i>{thesis}</i>"
         + banger_line
     )
-    return _send(msg, TOPIC_DEEP_DIVES)
+    return _split_send(msg, TOPIC_DEEP_DIVES)
 
 
 def alert_portfolio_summary(results: list[dict]) -> bool:
@@ -142,7 +170,7 @@ def alert_portfolio_summary(results: list[dict]) -> bool:
         grade = r.get("grade", "?")
         lines.append(f"{emoji} <b>{r['ticker']:<6}</b>  {score:.1f}/10  {grade}")
     lines.append("\n🕐 Analysis complete — check Deep Dives for full reports")
-    return _send("\n".join(lines), TOPIC_SCAN_RESULTS)
+    return _split_send("\n".join(lines), TOPIC_SCAN_RESULTS)
 
 
 def alert_scout_summary(discoveries: list[dict]) -> bool:
@@ -156,7 +184,7 @@ def alert_scout_summary(discoveries: list[dict]) -> bool:
             lines.append(f"{emoji} <b>{d['ticker']}</b>  {d['score']:.1f}/10")
         lines.append("\nFull reports sent to Deep Dives ↑")
         msg = "\n".join(lines)
-    return _send(msg, TOPIC_SCAN_RESULTS)
+    return _split_send(msg, TOPIC_SCAN_RESULTS)
 
 
 def alert_gems_signal(d: dict, pillar_scores: dict | None = None) -> bool:
@@ -199,17 +227,17 @@ def alert_gems_signal(d: dict, pillar_scores: dict | None = None) -> bool:
         f"{emoji} <b>GEMS SIGNAL — {ticker}</b> · <code>gems</code>\n"
         f"<b>Score:</b> {score:.1f}/10 · {grade} · {conf}"
         + pillar_line
-        + (f"\n\n<b>Why flagged:</b> <i>{rationale[:200]}</i>" if rationale else "")
-        + (f"\n<b>Catalyst:</b> <i>{catalyst[:200]}</i>" if catalyst else "")
+        + (f"\n\n<b>Why flagged:</b> <i>{rationale[:350]}</i>" if rationale else "")
+        + (f"\n<b>Catalyst:</b> <i>{catalyst[:400]}</i>" if catalyst else "")
         + (f"\n<b>Asymmetry:</b> {asymmetry}" if asymmetry else "")
         + (f"\n<b>Cycle:</b> {cycle_pos.get('regime','')} — {cycle_pos.get('phase','')}" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
-        + f"\n\n<b>Bull case:</b> <i>{thesis[:300]}</i>"
-        + (f"\n<b>Key factor:</b> {key_swing[:150]}" if key_swing and key_swing != "—" else "")
-        + (f"\n<b>Position:</b> {pos.get('range','?')} ({pos.get('reasoning','')[:100]})" if isinstance(pos, dict) and pos.get("range") else "")
+        + f"\n\n<b>Bull case:</b> <i>{thesis[:600]}</i>"
+        + (f"\n<b>Key factor:</b> {key_swing[:300]}" if key_swing and key_swing != "—" else "")
+        + (f"\n<b>Position:</b> {pos.get('range','?')} ({pos.get('reasoning','')[:200]})" if isinstance(pos, dict) and pos.get("range") else "")
         + banger_tag
         + f"\n⏰ {d.get('analyzed_at', '')}"
     )
-    return _send(msg, TOPIC_TRADE_ALERTS)
+    return _split_send(msg, TOPIC_TRADE_ALERTS)
 
 
 def alert_gems_summary(discoveries: list[dict]) -> bool:
@@ -228,4 +256,4 @@ def alert_gems_summary(discoveries: list[dict]) -> bool:
             )
         lines.append("\nFull reports sent to Deep Dives ↑")
         msg = "\n".join(lines)
-    return _send(msg, TOPIC_SCAN_RESULTS)
+    return _split_send(msg, TOPIC_SCAN_RESULTS)
