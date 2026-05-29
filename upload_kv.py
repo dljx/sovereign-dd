@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -21,11 +22,43 @@ _SKIP_FILENAMES = {"scout_history.json", "scout_notified.json"}
 
 UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
 UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
+SUPABASE_URL  = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY  = os.getenv("SUPABASE_KEY", "")
 
 HEADERS = {
     "Authorization": f"Bearer {UPLOAD_SECRET}",
     "Content-Type": "application/json",
 }
+
+
+def _extract_archetype(dossier: dict) -> str | None:
+    fv = dossier.get("fair_values", {})
+    arch_obj = fv.get("archetype")
+    if isinstance(arch_obj, dict):
+        return arch_obj.get("archetype")
+    return None
+
+
+def _supabase_insert(table: str, rows: list[dict]) -> None:
+    """POST rows to a Supabase table via REST API. Silently skips if not configured."""
+    if not SUPABASE_URL or not SUPABASE_KEY or not rows:
+        return
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal,resolution=ignore-duplicates",
+            },
+            json=rows,
+            timeout=15,
+        )
+        if resp.status_code not in (200, 201):
+            print(f"  [supabase] {table} insert returned {resp.status_code}: {resp.text[:120]}")
+    except Exception as e:
+        print(f"  [supabase] {table} insert failed: {e}")
 
 
 def _sanitize(obj):
@@ -48,7 +81,7 @@ def _sanitize(obj):
 
 def load_json(path: Path) -> dict | None:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         print(f"  [upload] Could not read {path.name}: {e}")
@@ -57,12 +90,20 @@ def load_json(path: Path) -> dict | None:
 
 def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
     """Collect output/*.json ticker result files. Returns (results_list, index_dict)."""
-    results = []
-    index = {}
-
+    # Dedupe by ticker — keep only the newest file per ticker (filename timestamp
+    # sorts ascending, so the last one wins). Prevents writing the same dd:TICKER key
+    # multiple times per upload (burns the free-tier KV write budget) and avoids
+    # loading every historical file into memory.
+    latest: dict[str, Path] = {}
     for path in sorted(output_dir.glob("*.json")):
         if path.name in _SKIP_FILENAMES:
             continue
+        fname_ticker = path.stem.split("_")[0].upper()
+        latest[fname_ticker] = path
+
+    results = []
+    index = {}
+    for _, path in sorted(latest.items()):
         data = load_json(path)
         if not data:
             continue
@@ -255,6 +296,61 @@ def main():
     except Exception as e:
         print(f"  [upload] Request failed: {e}")
         sys.exit(1)
+
+    # ── Supabase: persist DD history ──────────────────────────────
+    if SUPABASE_URL and SUPABASE_KEY:
+        print("\n[supabase] Writing DD history + scout history...")
+        dd_rows = []
+        for item in portfolio_results:
+            raw = item.get("value", {})
+            result  = raw.get("result", {})
+            dossier = raw.get("dossier", {})
+            if not result.get("ticker"):
+                continue
+            price     = dossier.get("quote", {}).get("price")
+            result_fv = result.get("fair_value_composite")
+            comp_fv   = dossier.get("fair_values", {}).get("composite_fair_value")
+            try:
+                mos = round((result_fv - price) / price, 4) if price and result_fv else None
+            except Exception:
+                mos = None
+            dd_rows.append(_sanitize({
+                "ticker":       result["ticker"],
+                "run_at":       dossier.get("built_at") or result.get("built_at"),
+                "price":        price,
+                "composite_fv": comp_fv,
+                "result_fv":    result_fv,
+                "mos":          mos,
+                "score":        result.get("consensus_score"),
+                "grade":        result.get("consensus_grade"),
+                "confidence":   result.get("confidence"),
+                "archetype":    _extract_archetype(dossier),
+                "agent_scores": result.get("agent_final_scores", {}),
+                "thesis":       (result.get("majority_thesis") or "")[:500],
+                "swing":        (result.get("key_swing_factor") or "")[:300],
+                "is_banger":    bool(result.get("banger", {}).get("is_banger")),
+                "full_result":  {k: v for k, v in result.items() if k != "transcript"},
+            }))
+        if dd_rows:
+            _supabase_insert("dd_history", dd_rows)
+            print(f"  {len(dd_rows)} DD row(s) inserted")
+
+        # Scout history
+        scout_rows = []
+        for s in (discoveries or []):
+            scout_rows.append({
+                "ticker":        s["ticker"],
+                "score":         s.get("score"),
+                "grade":         s.get("grade"),
+                "sector":        s.get("sector"),
+                "path":          s.get("path"),
+                "filters":       s.get("matched_filters", []),
+                "thesis":        (s.get("thesis") or "")[:300],
+                "discovered_at": datetime.now(timezone.utc).isoformat(),
+            })
+        if scout_rows:
+            _supabase_insert("scout_history", scout_rows)
+            print(f"  {len(scout_rows)} scout row(s) inserted")
 
 
 if __name__ == "__main__":

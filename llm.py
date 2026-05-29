@@ -87,7 +87,7 @@ def _cool_key(key: str, duration: float) -> None:
     """Mark a key as RPM-throttled for duration seconds."""
     with _cooldown_lock:
         _key_cooldowns[key] = time.time() + duration
-    print(f"  [llm] key ...{key[-6:]} cooling for {duration:.0f}s")
+    print(f"  [llm] key {_key_label(key)} cooling for {duration:.0f}s")
 
 
 def _exhaust_key(key: str) -> None:
@@ -100,7 +100,7 @@ def _exhaust_key(key: str) -> None:
         _key_cooldowns[key] = time.time() + secs
         _key_daily_exhausted.add(key)
     live = len(_keys) - len(_key_daily_exhausted)
-    print(f"  [llm] key ...{key[-6:]} DAILY QUOTA EXHAUSTED "
+    print(f"  [llm] key {_key_label(key)} DAILY QUOTA EXHAUSTED "
           f"({live}/{len(_keys)} keys remaining today)")
 
 
@@ -119,13 +119,31 @@ def _resolve_model(client: genai.Client, key: str, model: str) -> str:
             return candidate
         except Exception:
             continue
-    _model_ids[key] = model
+    # Both probes failed (likely transient 429/auth). Return a default WITHOUT caching
+    # so a transient failure doesn't poison this key's model ID for the whole process.
     return model
 
 
 def _jittered(base: float) -> float:
-    """Add Â±25% jitter to a backoff delay to desynchronise concurrent retries."""
+    """Add +/-25% jitter to a backoff delay to desynchronise concurrent retries."""
     return base * (0.75 + random.random() * 0.5)
+
+
+def _key_label(key: str) -> str:
+    """Stable, non-secret label for a key (its 1-based position in the pool)."""
+    try:
+        return f"#{_keys.index(key) + 1}"
+    except ValueError:
+        return "#?"
+
+
+def _hit_max_tokens(response) -> bool:
+    """True if the model stopped because it hit the output token cap (truncated)."""
+    try:
+        fr = response.candidates[0].finish_reason
+        return fr is not None and "MAX_TOKENS" in str(fr).upper()
+    except (AttributeError, IndexError, TypeError):
+        return False
 
 
 def call_gemini(
@@ -162,21 +180,31 @@ def call_gemini(
             client = _client_for(cur_key)
             resolved = _resolve_model(client, cur_key, model)
 
-            config_kwargs: dict = dict(
-                system_instruction=system,
-                temperature=temperature,
-                max_output_tokens=32768,
-                thinking_config=types.ThinkingConfig(thinking_level="high"),
-            )
-            if grounding:
-                config_kwargs["tools"] = [{"google_search": {}}]
+            def _generate(thinking: str):
+                cfg: dict = dict(
+                    system_instruction=system,
+                    temperature=temperature,
+                    max_output_tokens=32768,
+                    thinking_config=types.ThinkingConfig(thinking_level=thinking),
+                )
+                if grounding:
+                    cfg["tools"] = [{"google_search": {}}]
+                return client.models.generate_content(
+                    model=resolved,
+                    contents=user,
+                    config=types.GenerateContentConfig(**cfg),
+                )
 
-            response = client.models.generate_content(
-                model=resolved,
-                contents=user,
-                config=types.GenerateContentConfig(**config_kwargs),
-            )
-            return response.text or ""
+            response = _generate("high")
+            text = response.text or ""
+            # thinking_level="high" shares the max_output_tokens budget; if the model
+            # truncated (finish_reason MAX_TOKENS) the JSON is cut off and downstream
+            # extract_json fails -> the agent is silently scored 5.0. Retry once with
+            # thinking lowered to free output budget for the actual answer.
+            if not text or _hit_max_tokens(response):
+                response = _generate("low")
+                text = response.text or text
+            return text
         except Exception as e:
             last_err = e
             err_str = str(e).lower()
@@ -349,6 +377,7 @@ async def call_gemini_with_tools_async(
                 wait += random.uniform(0, 2)
                 await asyncio.sleep(wait)
 
+            server_err_wait = 0.0
             async with _semaphore():
                 try:
                     client = _client_for(key)
@@ -375,8 +404,12 @@ async def call_gemini_with_tools_async(
                         else:
                             _cool_key(key, _jittered(min(2 ** (attempt + 1), 30)))
                     else:
+                        # Set the backoff but DON'T sleep while holding the semaphore —
+                        # that serializes all retries under load. Sleep after release.
                         server_err_wait = _jittered(min(2 ** (attempt + 1), 10))
-                        await asyncio.sleep(server_err_wait)
+            if server_err_wait > 0:
+                print(f"  [llm] tool-call server error attempt {attempt + 1}, retrying in {server_err_wait:.0f}s...")
+                await asyncio.sleep(server_err_wait)
         else:
             raise RuntimeError(f"LLM tool call failed after {max_retries} attempts: {last_err}")
 
@@ -436,8 +469,9 @@ async def call_gemini_with_tools_async(
 
 def extract_json(text: str) -> dict | list:
     """Extract the first JSON object or array from a text response."""
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text)
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
 
     for start_char, end_char in [('{', '}'), ('[', ']')]:
         idx = text.find(start_char)

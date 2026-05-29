@@ -91,6 +91,7 @@ def consensus_gap_adjust(
     score: float,
     price: float | None,
     analyst_target_mean: float | None,
+    num_analysts: int | None = None,
 ) -> tuple[float, dict]:
     """Adjust score based on gap between current price and analyst consensus target.
 
@@ -98,6 +99,10 @@ def consensus_gap_adjust(
     """
     if not price or not analyst_target_mean or price <= 0:
         return score, {"applied": False, "reason": "no analyst data"}
+    # Thin coverage: a 1-2 analyst target is noisy/stale — don't move the score on it
+    # (otherwise quality compounders that trade above sparse targets get penalized).
+    if num_analysts is not None and num_analysts < 5:
+        return score, {"applied": False, "reason": f"thin analyst coverage ({num_analysts})"}
 
     gap_pct = (analyst_target_mean - price) / price * 100
 
@@ -242,14 +247,24 @@ def banger_check(result: dict, dossier: dict) -> dict:
     # Condition 3: fair value floor support (DCF from dossier or ValuationEngine consensus)
     price = (dossier.get("quote") or {}).get("price")
     dcf_iv = (dossier.get("valuation") or {}).get("dcf_iv_per_share")
-    fv_composite = result.get("fair_value_composite")
-    try:
-        fv_composite = float(fv_composite) if fv_composite is not None else None
-    except (ValueError, TypeError):
-        fv_composite = None
-    floor_iv = fv_composite if fv_composite is not None else dcf_iv
+    # Core principle: Python does the math. Prefer the Python-computed composite
+    # (dossier["fair_values"]) and the dossier DCF over the debate's
+    # fair_value_composite, which may be the LLM moderator's number (see debate.py).
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except (ValueError, TypeError):
+            return None
+    py_composite  = _f((dossier.get("fair_values") or {}).get("composite_fair_value"))
+    dcf_iv        = _f(dcf_iv)
+    llm_composite = _f(result.get("fair_value_composite"))
+    if py_composite is not None:
+        floor_iv, source = py_composite, "Python FV composite"
+    elif dcf_iv is not None:
+        floor_iv, source = dcf_iv, "DCF IV"
+    else:
+        floor_iv, source = llm_composite, "LLM FV composite"
     if price and floor_iv and price > 0 and floor_iv >= price * 0.7:
-        source = "FV composite" if fv_composite is not None else "DCF IV"
         conditions_met.append(f"{source} ${floor_iv:.2f} >= 70% of price ${price:.2f}")
     else:
         conditions_failed.append("insufficient fair value floor support")
@@ -342,11 +357,19 @@ def position_size(
         multiplier *= 1.5
         modifiers.append("1.5× BANGER bonus")
 
-    # Cap final_pct to the tier ceiling to keep range label accurate
+    # Cap final_pct to the tier ceiling, and make `reasoning` reflect the ACTUAL
+    # sizing (the prior code printed "× 1.50" even when the cap clamped it lower).
     tier_cap = {0.05: 0.06, 0.035: 0.04, 0.015: 0.02, 0.005: 0.01, 0.0: 0.0}
     cap = tier_cap.get(base, base * 2)
-    final_pct = round(min(cap, base * multiplier) * 100, 2)
-    reasoning = label + (" base" if multiplier == 1.0 else f" base × {multiplier:.2f}")
+    uncapped = base * multiplier
+    capped = min(cap, uncapped)
+    final_pct = round(capped * 100, 2)
+    if multiplier == 1.0:
+        reasoning = label + " base"
+    elif capped < uncapped:
+        reasoning = label + f" base (capped at {cap * 100:.0f}% tier ceiling)"
+    else:
+        reasoning = label + f" base × {multiplier:.2f}"
     if modifiers:
         reasoning += " (" + ", ".join(modifiers) + ")"
 
@@ -451,7 +474,9 @@ def apply_adjustments(
     quote = dossier.get("quote") or {}
     price = quote.get("price")
     valuation = dossier.get("valuation") or {}
-    analyst_target = (valuation.get("analyst_consensus") or {}).get("target_mean")
+    _consensus = valuation.get("analyst_consensus") or {}
+    analyst_target = _consensus.get("target_mean")
+    num_analysts = _consensus.get("num_analysts")
     dq = dossier.get("data_quality") or {}
     data_confidence = dq.get("data_confidence", "HIGH")
     cycle_type = dossier.get("cycle_type")
@@ -483,7 +508,7 @@ def apply_adjustments(
     }
 
     # 2. Analyst consensus
-    score, consensus_details = consensus_gap_adjust(score, price, analyst_target)
+    score, consensus_details = consensus_gap_adjust(score, price, analyst_target, num_analysts)
     adjustments["consensus_gap"] = {**consensus_details, "result": score}
 
     # 3. Cycle position

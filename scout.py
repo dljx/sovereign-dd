@@ -29,6 +29,16 @@ SCOUT_DEBATE_COUNT   = int(os.getenv("SCOUT_DEBATE_COUNT", "6"))
 SCOUT_MAX_LOOPS      = int(os.getenv("SCOUT_MAX_LOOPS", "3"))
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically (tmp file + os.replace) so a crash mid-write can't
+    corrupt the dedup/notify window file — a corrupt file loads as {} and would
+    re-debate and re-alert everything."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _load_history() -> dict:
     """Load {ticker: {ts, score, grade}} from disk. Returns {} if missing or corrupt."""
     try:
@@ -42,8 +52,7 @@ def _load_history() -> dict:
 def _save_history(history: dict) -> None:
     """Persist scout history to disk."""
     try:
-        SCOUT_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SCOUT_HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        _atomic_write_text(SCOUT_HISTORY_FILE, json.dumps(history, indent=2))
     except Exception as e:
         print(f"  [scout] Warning: could not save history: {e}")
 
@@ -67,8 +76,7 @@ def _load_notified() -> dict:
 def _save_notified(notified: dict) -> None:
     """Persist Telegram notification history to disk."""
     try:
-        SCOUT_NOTIFIED_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SCOUT_NOTIFIED_FILE.write_text(json.dumps(notified, indent=2), encoding="utf-8")
+        _atomic_write_text(SCOUT_NOTIFIED_FILE, json.dumps(notified, indent=2))
     except Exception as e:
         print(f"  [scout] Warning: could not save notify history: {e}")
 
@@ -413,9 +421,9 @@ async def _triage_with_gemma(
         return valid[:debate_count]
     except Exception as e:
         print(f"  [scout] Triage parse error: {e}\n  Raw: {text[:300]}")
-        import random
-        sample = random.sample(candidates, min(debate_count, len(candidates)))
-        return [{"ticker": c["ticker"], "lens": c["lens"], "rationale": "fallback pick"} for c in sample]
+        print("  [scout] Skipping run — refusing to debate/alert randomly-selected "
+              "tickers on a triage parse failure.")
+        return []
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────

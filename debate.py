@@ -27,6 +27,18 @@ def _grade(score: float) -> str:
     return "AVOID"
 
 
+def _live_scores(scores: dict, results: dict) -> dict:
+    """Return only the scores of agents that produced a real result.
+
+    A failed agent carries a fabricated 5.0 (see the _r1_agent/_r3_agent fallbacks).
+    Letting those into spread/mean/convergence math invents a fake 'neutral' opinion
+    that shrinks the spread and can fake convergence, so exclude them from all
+    consensus statistics. Falls back to the full set only if every agent failed.
+    """
+    live = {a: s for a, s in scores.items() if not (results.get(a) or {}).get("_failed")}
+    return live if live else dict(scores)
+
+
 # â"€â"€ Per-agent async helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
@@ -40,6 +52,8 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -
         print(f"  [debate] R1-analysis / {agent}...")
         text = await call_gemini_async(sys_p, usr_p)
         result = extract_json(text)
+        if not isinstance(result, dict):
+            raise ValueError(f"expected JSON object, got {type(result).__name__}")
         result["agent"] = agent
         result["web_research"] = web_summary
         return agent, result
@@ -66,6 +80,8 @@ async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: i
         print(f"  [debate] R2-{loop} / {agent} -> challenges {target}...")
         text = await call_gemini_async(sys_p, usr_p)
         result = extract_json(text)
+        if not isinstance(result, dict):
+            raise ValueError(f"expected JSON object, got {type(result).__name__}")
         result["agent"] = agent
         result["target_agent"] = target  # enforce assignment; prevent LLM from redirecting
         return agent, result
@@ -98,6 +114,8 @@ async def _r3_agent(
         print(f"  [debate] R3-{loop} / {agent}...")
         text = await call_gemini_async(sys_p, usr_p)
         result = extract_json(text)
+        if not isinstance(result, dict):
+            raise ValueError(f"expected JSON object, got {type(result).__name__}")
         result["agent"] = agent
         return agent, result
     except Exception as e:
@@ -274,8 +292,9 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             for a in AGENTS if a in r3_results
         }
 
-        score_vals = list(scores.values())
-        spread     = max(score_vals) - min(score_vals)
+        live_scores = _live_scores(scores, r3_results)
+        score_vals  = list(live_scores.values())
+        spread      = max(score_vals) - min(score_vals)
 
         if verbose:
             avg = mean(score_vals)
@@ -286,7 +305,10 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             if verbose:
                 print(f"  OK Converged in {loop} loop(s).")
             break
-        elif prev_spread is not None and (prev_spread - spread) < 0.1:
+        elif prev_spread is not None and 0 <= (prev_spread - spread) < 0.1:
+            # Narrowing too slowly to justify another loop. A WIDENING spread
+            # (prev_spread - spread < 0) is NOT a stall — agents are still moving, so
+            # fall through and run another loop instead of escalating to the moderator.
             if verbose:
                 print(f"  ! Stalled ({prev_spread:.2f} -> {spread:.2f}), escalating to moderator early.")
             break
@@ -312,9 +334,14 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         print(f"|  CONSENSUS                                    |")
         print(f"+----------------------------------------------+")
 
-    score_vals = list(scores.values())
-    spread     = max(score_vals) - min(score_vals)
-    avg        = mean(score_vals)
+    # Consensus statistics over agents that actually produced results — a failed
+    # agent's fabricated 5.0 must not contaminate spread/mean/convergence.
+    _final_results = r3_results if r3_results else r1_results
+    failed_agents  = [a for a in AGENTS if (_final_results.get(a) or {}).get("_failed")]
+    live_scores    = _live_scores(scores, _final_results)
+    score_vals     = list(live_scores.values())
+    spread         = max(score_vals) - min(score_vals)
+    avg            = mean(score_vals)
 
     final_positions = [r3_results[a] for a in AGENTS if a in r3_results] or all_r1
 
@@ -325,6 +352,8 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         print(f"  [debate] Synthesis...")
         text = await call_gemini_async(sys_p, usr_p)
         moderator_result = extract_json(text)
+        if not isinstance(moderator_result, dict):
+            moderator_result = {}
         moderator_result.setdefault("consensus_score", round(avg, 2))
         moderator_result.setdefault("consensus_grade", _grade(avg))
         moderator_result.setdefault("confidence", "HIGH" if spread <= 1.0 else "MEDIUM")
@@ -335,8 +364,19 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         print(f"  [debate] Moderator...")
         text = await call_gemini_async(sys_p, usr_p)
         moderator_result = extract_json(text)
+        if not isinstance(moderator_result, dict):
+            moderator_result = {}
 
     # â"€â"€ Post-debate scoring pipeline â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+    # If agents failed (rate-limit/truncation/parse), the consensus rests on fewer
+    # opinions — surface it and never claim HIGH confidence.
+    if failed_agents:
+        print(f"  [debate] WARNING: {len(failed_agents)}/{len(AGENTS)} agents failed: {failed_agents}")
+        if len(failed_agents) >= 2:
+            moderator_result["confidence"] = "LOW"
+        elif moderator_result.get("confidence") == "HIGH":
+            moderator_result["confidence"] = "MEDIUM"
+
     raw_score = moderator_result.get("consensus_score", round(avg, 2))
     scoring_output = scoring._safe_apply_adjustments(
         raw_score=raw_score,
@@ -397,5 +437,6 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "score_spread":         round(spread, 2),
         "loops_run":            loops_run,
         "converged":            spread <= CONVERGENCE_THRESHOLD,
+        "failed_agents":        failed_agents,
         "transcript":           transcript,
     }

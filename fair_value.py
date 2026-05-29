@@ -47,15 +47,15 @@ def _safe(val, fallback=None):
 
 
 def _norm_margin(v):
-    """Normalise gross/net margin to fractional (0–1).
-    yfinance stores as percentage (e.g. 65.4); FMP stores as fraction (0.654).
-    Auto-detect: if abs(v) > 1, assume percentage and divide by 100.
+    """Normalise a margin to a fraction (0.654 for 65.4%).
+    All call sites pass ratios produced by dossier.py _pct(), which always returns
+    a percentage (e.g. 65.4), so divide unconditionally. The previous abs(v)>1
+    heuristic silently misread legitimately sub-1% margins (e.g. 0.5% -> 0.5).
     """
     if v is None:
         return None
     try:
-        f = float(v)
-        return f / 100 if abs(f) > 1 else f
+        return float(v) / 100
     except (ValueError, TypeError):
         return None
 
@@ -63,7 +63,7 @@ def _norm_margin(v):
 def _cagr(start, end, years):
     """Compound annual growth rate. Returns None if inputs invalid."""
     try:
-        if start and end is not None and years > 0 and start > 0:
+        if start and end is not None and years > 0 and start > 0 and end > 0:
             return (end / start) ** (1 / years) - 1
     except Exception:
         pass
@@ -337,6 +337,12 @@ def compute_fair_values(dossier: dict) -> dict:
         engine = _ENGINES[archetype_key]
         result = engine(dossier)
     except Exception as exc:
+        # Don't kill the batch on one ticker's valuation bug, but make it LOUD:
+        # log the traceback and flag the failure so report/notify treat it as a red
+        # flag rather than a benign "valuation unavailable".
+        import traceback
+        print(f"  [fair_value] valuation FAILED for {dossier.get('ticker', '?')}: {exc}")
+        traceback.print_exc()
         return {
             "archetype": archetype_info,
             "primary_method": None,
@@ -347,6 +353,7 @@ def compute_fair_values(dossier: dict) -> dict:
             "archetype_metrics": {},
             "blind_spot_flags": [],
             "invalid_methods": [],
+            "valuation_failed": True,
             "error": str(exc),
         }
 
@@ -435,18 +442,14 @@ def _value_asset_light(dossier: dict) -> dict:
     if sbc_adjusted_fcf is not None and revenue_ttm is not None and revenue_ttm > 0:
         sbc_adjusted_fcf_margin = sbc_adjusted_fcf / revenue_ttm
 
-    # Rule of 40
+    # Rule of 40 — require BOTH legs. Estimating a missing FCF margin as 0 is
+    # optimistic for money-losing hypergrowth (true FCF can be deeply negative),
+    # so refuse partial credit and let target_multiple fall through to the floor.
     rule_of_40 = None
     rev_growth_pct = (revenue_growth_yoy * 100) if revenue_growth_yoy is not None else None
     fcf_margin_pct = (sbc_adjusted_fcf_margin * 100) if sbc_adjusted_fcf_margin is not None else None
     if rev_growth_pct is not None and fcf_margin_pct is not None:
         rule_of_40 = rev_growth_pct + fcf_margin_pct
-    elif rev_growth_pct is not None:
-        # Only revenue growth known — estimate FCF margin as 0 (conservative partial credit)
-        rule_of_40 = rev_growth_pct
-    elif fcf_margin_pct is not None:
-        # Only FCF margin known — estimate revenue growth as 0 (conservative partial credit)
-        rule_of_40 = fcf_margin_pct
 
     # R&D yield: latest gross_profit_growth / prior year R&D spend
     rd_yield = None
@@ -628,11 +631,14 @@ def _value_cyclical(dossier: dict) -> dict:
     if capex is not None and revenue_ttm is not None and revenue_ttm > 0:
         capex_intensity = abs(capex) / revenue_ttm
 
-    # EV / Invested Capital
+    # EV / Invested Capital. Invested capital = equity + interest-bearing debt
+    # (matches dossier._compute_roic). The prior `total_assets - current_liabilities`
+    # wrongly counted long-term debt on the asset side, inflating invested capital.
     ev_ic = None
     invested_capital = None
-    if total_assets is not None and current_liabilities is not None:
-        invested_capital = total_assets - current_liabilities
+    stockholders_equity_ic = _safe(balance.get("stockholders_equity"))
+    if stockholders_equity_ic is not None:
+        invested_capital = stockholders_equity_ic + (total_debt or 0)
     market_cap = (price * shares_out) if (price is not None and shares_out is not None) else None
     ev = None
     if market_cap is not None:
@@ -740,13 +746,14 @@ def _value_financial(dossier: dict) -> dict:
         ptbv = price / tangible_book_per_share
 
     # Fair P/TBV target based on ROE
+    # ROE arrives as a percentage (e.g. 12.5 == 12.5%) — see dossier.py _pct().
     fair_ptbv_target = 0.6  # default / low ROE
     if roe is not None:
-        if roe >= 0.15:
+        if roe >= 15:
             fair_ptbv_target = 1.8
-        elif roe >= 0.12:
+        elif roe >= 12:
             fair_ptbv_target = 1.3
-        elif roe >= 0.08:
+        elif roe >= 8:
             fair_ptbv_target = 0.9
         else:
             fair_ptbv_target = 0.6
@@ -871,12 +878,25 @@ def _value_infrastructure(dossier: dict) -> dict:
     if ebitda is not None and capex is not None and shares_out is not None and shares_out > 0:
         ebitda_minus_capex = ebitda - abs(capex)
         if ebitda_minus_capex > 0:
-            # EV = EBITDA-CapEx × multiple; subtract net debt to arrive at equity value.
-            target_ev_multiple = target_affo_multiple  # analogous sizing
+            # EV = (EBITDA - CapEx) × EV multiple; subtract net debt -> equity value.
+            # This is an ENTERPRISE multiple and must NOT reuse the equity P/AFFO
+            # multiple (the prior code aliased them, mixing equity and EV bases).
+            # Values are approximate — calibrate against sector comps (TODO). Also note
+            # EBITDA is TTM while CapEx is the latest ANNUAL figure (period mismatch).
+            if "REIT" in industry:
+                target_ev_multiple = 20
+            elif "Utility" in industry or "Utilities" in industry:
+                target_ev_multiple = 16
+            elif "Telecom" in industry:
+                target_ev_multiple = 13
+            else:
+                target_ev_multiple = 16
             equity_value = ebitda_minus_capex * target_ev_multiple - net_debt_infra
             if equity_value > 0:
                 secondary_fv = equity_value / shares_out
             secondary_assumptions["ebitda_minus_capex"] = ebitda_minus_capex
+            secondary_assumptions["target_ev_multiple"] = target_ev_multiple
+            secondary_assumptions["period_mismatch"] = "EBITDA=TTM, CapEx=annual"
 
     secondary = [{
         "method": "EV/(EBITDA-CapEx)",
@@ -1046,10 +1066,11 @@ def _value_mature_compounder(dossier: dict) -> dict:
     if fcf is not None and net_income is not None and net_income > 0:
         fcf_conversion = fcf / net_income
 
-    # ROIC - WACC spread (assume 8% WACC)
+    # ROIC - WACC spread (assume 8% WACC). roic is a percentage (e.g. 20.0),
+    # so the spread is in percentage points.
     roic_wacc_spread = None
     if roic is not None:
-        roic_wacc_spread = roic - 0.08
+        roic_wacc_spread = roic - 8
 
     # Share count trend: not available from dossier
     share_count_trend = None
@@ -1117,7 +1138,8 @@ def _value_mature_compounder(dossier: dict) -> dict:
     if roic is not None and roic < 0:
         blind_spots.append("NEGATIVE_ROIC — value destruction; MATURE_COMPOUNDER archetype may not apply")
     if organic_growth is not None and roic is not None:
-        if organic_growth < 0.03 and roic > 0.15:
+        # organic_growth is a fraction (0.03 == 3%); roic is a percentage (15 == 15%).
+        if organic_growth < 0.03 and roic > 15:
             blind_spots.append("FINANCIAL_ENGINEERING")
 
     return {

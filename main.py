@@ -41,7 +41,7 @@ def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> 
     base.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_path = base / f"{ticker}_{ts}.json"
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"result": result, "dossier": dossier}, f, indent=2, default=str)
     return out_path
 
@@ -190,11 +190,11 @@ async def _run_gems(save: bool = False, notify: bool = False):
             alert_buy_signal(d)
             if d.get("output_file"):
                 try:
-                    with open(d["output_file"]) as f:
+                    with open(d["output_file"], encoding="utf-8") as f:
                         data = json.load(f)
                     alert_dd_result(data["result"])
-                except Exception:
-                    pass
+                except Exception as e:
+                    console.print(f"[dim]  [notify] DD detail unavailable for {d.get('ticker','?')}: {e}[/dim]")
         if discoveries:
             alert_scout_summary(discoveries)
         console.print(f"[dim]Gems alerts sent to Telegram ({len(discoveries)} signal(s))[/dim]")
@@ -225,11 +225,11 @@ async def _run_scout(save: bool = False, notify: bool = False):
             alert_buy_signal(d)
             if d.get("output_file"):
                 try:
-                    with open(d["output_file"]) as f:
+                    with open(d["output_file"], encoding="utf-8") as f:
                         data = json.load(f)
                     alert_dd_result(data["result"])
-                except Exception:
-                    pass
+                except Exception as e:
+                    console.print(f"[dim]  [notify] DD detail unavailable for {d.get('ticker','?')}: {e}[/dim]")
             notified[ticker] = {
                 "ts":    datetime.now(timezone.utc).timestamp(),
                 "score": d["score"],

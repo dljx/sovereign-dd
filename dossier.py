@@ -383,8 +383,8 @@ def _yf_financials(ticker: str) -> dict:
                         "research_development": int(rd) if rd is not None and str(rd) != "nan" else None,
                         "cost_of_revenue": int(cor) if cor is not None and str(cor) != "nan" else None,
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [dossier] income statement parse failed: {e}")
 
         balance = []
         try:
@@ -404,8 +404,8 @@ def _yf_financials(ticker: str) -> dict:
                         "intangible_assets": _bs("Other Intangible Assets"),
                         "inventory": _bs("Inventory"),
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [dossier] balance sheet parse failed: {e}")
 
         cashflow = []
         try:
@@ -425,8 +425,8 @@ def _yf_financials(ticker: str) -> dict:
                         "free_cash_flow": fcf_val,
                         "stock_based_compensation": sbc,
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [dossier] cashflow parse failed: {e}")
 
         # Fresh NTM consensus from Yahoo analyst estimates — more current than info dict.
         # info['earningsGrowth'] / info['revenueGrowth'] can lag 6-12 months; these
