@@ -154,6 +154,8 @@ def call_gemini(
     max_retries: int = 12,
     grounding: bool = False,
     api_key: str | None = None,
+    max_output_tokens: int = 32768,
+    thinking_level: str = "high",
 ) -> str:
     """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation.
 
@@ -184,7 +186,7 @@ def call_gemini(
                 cfg: dict = dict(
                     system_instruction=system,
                     temperature=temperature,
-                    max_output_tokens=32768,
+                    max_output_tokens=max_output_tokens,
                     thinking_config=types.ThinkingConfig(thinking_level=thinking),
                 )
                 if grounding:
@@ -195,7 +197,7 @@ def call_gemini(
                     config=types.GenerateContentConfig(**cfg),
                 )
 
-            response = _generate("high")
+            response = _generate(thinking_level)
             text = response.text or ""
             # thinking_level="high" shares the max_output_tokens budget; if the model
             # truncated (finish_reason MAX_TOKENS) the JSON is cut off and downstream
@@ -252,6 +254,8 @@ async def call_gemini_async(
     temperature: float = 0.3,
     max_retries: int = 12,
     grounding: bool = False,
+    max_output_tokens: int = 32768,
+    thinking_level: str = "high",
 ) -> str:
     """Async wrapper with per-key cooldown tracking to prevent thundering herd.
 
@@ -281,7 +285,8 @@ async def call_gemini_async(
         async with _semaphore():
             try:
                 return await asyncio.to_thread(
-                    call_gemini, system, user, model, temperature, 1, grounding, key
+                    call_gemini, system, user, model, temperature, 1, grounding, key,
+                    max_output_tokens, thinking_level
                 )
             except Exception as e:
                 last_err = e

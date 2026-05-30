@@ -9,15 +9,7 @@ from rich import box
 
 console = Console()
 
-GRADE_COLORS = {
-    "CONVICTION BUY": "bold bright_green",
-    "STRONG BUY":     "bold green",
-    "BUY":            "green",
-    "HOLD":           "yellow",
-    "SELL":           "red",
-    "STRONG SELL":    "bold red",
-    "AVOID":          "bold bright_red",
-}
+from grading import GRADE_COLORS, grade as _grade
 
 AGENT_COLORS = {
     "StructuralEdge":       "bright_yellow",
@@ -247,11 +239,3 @@ def render(result: dict, dossier: dict) -> None:
     console.print(f"[dim]{conv_str}  ·  Score spread: {result.get('score_spread', '?')}[/dim]\n")
 
 
-def _grade(score: float) -> str:
-    if score >= 9.0: return "CONVICTION BUY"
-    if score >= 8.0: return "STRONG BUY"
-    if score >= 6.5: return "BUY"
-    if score >= 5.0: return "HOLD"
-    if score >= 3.5: return "SELL"
-    if score >= 2.0: return "STRONG SELL"
-    return "AVOID"

@@ -305,3 +305,8 @@ async def _main():
 
 if __name__ == "__main__":
     asyncio.run(_main())
+    try:
+        from cache import print_cache_stats
+        print_cache_stats()
+    except Exception:
+        pass

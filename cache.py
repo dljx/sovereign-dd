@@ -13,12 +13,29 @@ Usage:
 """
 
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Hit/miss metrics (approximate; call print_cache_stats() at end of a run).
+_HITS = 0
+_MISSES = 0
+_stats_lock = threading.Lock()
+
+
+def cache_stats() -> tuple[int, int]:
+    """Return (hits, misses) so far this process."""
+    return _HITS, _MISSES
+
+
+def print_cache_stats() -> None:
+    total = _HITS + _MISSES
+    rate = (100 * _HITS / total) if total else 0
+    print(f"  [cache] {_HITS} hit / {_MISSES} miss ({rate:.0f}% hit rate)")
 
 _URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 _KEY = os.getenv("SUPABASE_KEY", "")
@@ -84,9 +101,14 @@ def cached(key: str, ttl_hours: float, fn, *args, **kwargs):
     responses (rate-limit messages, network errors) are not cached so the
     next call retries the real API.
     """
+    global _HITS, _MISSES
     hit = _sb_get(key, ttl_hours)
     if hit is not None:
+        with _stats_lock:
+            _HITS += 1
         return hit
+    with _stats_lock:
+        _MISSES += 1
     result = fn(*args, **kwargs)
     if result:
         _sb_set(key, result)

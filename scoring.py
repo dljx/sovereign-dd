@@ -434,15 +434,7 @@ def portfolio_overlap_adjust(
 
 # ── Grade function ─────────────────────────────────────────────────────────────
 
-def grade(score: float) -> str:
-    """7-tier grading scale."""
-    if score >= 9.0: return "CONVICTION BUY"
-    if score >= 8.0: return "STRONG BUY"
-    if score >= 6.5: return "BUY"
-    if score >= 5.0: return "HOLD"
-    if score >= 3.5: return "SELL"
-    if score >= 2.0: return "STRONG SELL"
-    return "AVOID"
+from grading import grade  # re-exported for callers that do `from scoring import grade`
 
 
 # ── Master pipeline orchestrator ───────────────────────────────────────────────

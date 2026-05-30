@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BUY_THRESHOLD = 6.5
+from grading import BUY_THRESHOLD  # re-exported (upload_kv does `from scout import BUY_THRESHOLD`)
 
 # ── Continuous-mode knobs (override via env) ───────────────────────────────────
 SCOUT_HISTORY_FILE   = Path("output/scout_history.json")

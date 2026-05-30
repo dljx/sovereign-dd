@@ -17,14 +17,7 @@ CONVERGENCE_THRESHOLD = 2.5
 MAX_LOOPS = 3
 
 
-def _grade(score: float) -> str:
-    if score >= 9.0: return "CONVICTION BUY"
-    if score >= 8.0: return "STRONG BUY"
-    if score >= 6.5: return "BUY"
-    if score >= 5.0: return "HOLD"
-    if score >= 3.5: return "SELL"
-    if score >= 2.0: return "STRONG SELL"
-    return "AVOID"
+from grading import grade as _grade
 
 
 def _live_scores(scores: dict, results: dict) -> dict:
@@ -46,11 +39,11 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -
     try:
         sys_r, usr_r = research_prompt(agent, ticker, company_name)
         print(f"  [debate] R1-research / {agent}...")
-        web_summary = await call_gemini_async(sys_r, usr_r, grounding=True)
+        web_summary = await call_gemini_async(sys_r, usr_r, grounding=True, max_output_tokens=8192)
 
         sys_p, usr_p = round1_prompt(agent, ticker, dossier, web_summary)
         print(f"  [debate] R1-analysis / {agent}...")
-        text = await call_gemini_async(sys_p, usr_p)
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=16384)
         result = extract_json(text)
         if not isinstance(result, dict):
             raise ValueError(f"expected JSON object, got {type(result).__name__}")
@@ -78,7 +71,7 @@ async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: i
     try:
         sys_p, usr_p = round2_prompt(agent, ticker, scores[agent], all_r1, loop, target)
         print(f"  [debate] R2-{loop} / {agent} -> challenges {target}...")
-        text = await call_gemini_async(sys_p, usr_p)
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192, thinking_level="low")
         result = extract_json(text)
         if not isinstance(result, dict):
             raise ValueError(f"expected JSON object, got {type(result).__name__}")
@@ -112,7 +105,7 @@ async def _r3_agent(
         challenges = [r for r in r2_results.values() if r.get("target_agent") == agent]
         sys_p, usr_p = round3_prompt(agent, ticker, scores[agent], challenges, all_r2, loop)
         print(f"  [debate] R3-{loop} / {agent}...")
-        text = await call_gemini_async(sys_p, usr_p)
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192, thinking_level="low")
         result = extract_json(text)
         if not isinstance(result, dict):
             raise ValueError(f"expected JSON object, got {type(result).__name__}")
@@ -350,7 +343,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             print(f"  [OK] Scores converged (spread={spread:.2f}) -- synthesizing...")
         sys_p, usr_p = synthesis_prompt(ticker, final_positions)
         print(f"  [debate] Synthesis...")
-        text = await call_gemini_async(sys_p, usr_p)
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=6144)
         moderator_result = extract_json(text)
         if not isinstance(moderator_result, dict):
             moderator_result = {}
@@ -362,7 +355,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             print(f"  [!] Did not converge after {effective_max_loops} loops (spread={spread:.2f}) -- calling moderator...")
         sys_p, usr_p = moderator_prompt(ticker, transcript, loops_run, spread, threshold=CONVERGENCE_THRESHOLD)
         print(f"  [debate] Moderator...")
-        text = await call_gemini_async(sys_p, usr_p)
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192)
         moderator_result = extract_json(text)
         if not isinstance(moderator_result, dict):
             moderator_result = {}

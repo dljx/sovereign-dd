@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BUY_THRESHOLD = 6.5
+from grading import BUY_THRESHOLD
 
 GEMS_HISTORY_FILE   = Path("output/gems_history.json")
 GEMS_COOLDOWN_HOURS = int(os.getenv("GEMS_COOLDOWN_HOURS", "72"))
