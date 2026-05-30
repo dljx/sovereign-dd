@@ -88,8 +88,40 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
-def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
-    """Collect output/*.json ticker result files. Returns (results_list, index_dict)."""
+def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
+    """Build the dd:scouts card shape from a debate result. Shared by scout
+    collection and portfolio/triggered-analysis results so a card always reflects
+    the latest run regardless of which pipeline produced it."""
+    meta = meta or {}
+    return {
+        "ticker":            ticker,
+        "score":             round(result.get("consensus_score", 0), 2),
+        "grade":             result.get("consensus_grade", "?"),
+        "conf":              result.get("confidence", ""),
+        "thesis":            result.get("majority_thesis", "")[:200],
+        "key_swing":         result.get("key_swing_factor", "")[:150],
+        "analyzed_at":       result.get("built_at", ""),
+        "catalyst":          result.get("catalyst", ""),
+        "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
+        "banger":            result.get("banger", {}),
+        "position_guidance": result.get("position_guidance", {}),
+        "cycle_position":    result.get("cycle_position", {}),
+        "matched_filters":   meta.get("matched_filters", []),
+        "path":              meta.get("path", "A"),
+    }
+
+
+def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]:
+    """Collect output/*.json ticker result files.
+
+    Returns (results_list, index_dict, scout_cards, reconcile_remove):
+      - scout_cards: portfolio/triggered tickers scoring >= BUY_THRESHOLD, as scout
+        cards, so a manual `analyze` trigger (or a portfolio run) refreshes the
+        ticker's Scout card with the latest run.
+      - reconcile_remove: tickers analyzed this run that scored BELOW threshold —
+        their stale Scout/Gems card (if any) is removed so Scout stays a clean
+        >= threshold board.
+    """
     # Dedupe by ticker — keep only the newest file per ticker (filename timestamp
     # sorts ascending, so the last one wins). Prevents writing the same dd:TICKER key
     # multiple times per upload (burns the free-tier KV write budget) and avoids
@@ -103,6 +135,8 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
 
     results = []
     index = {}
+    scout_cards = []
+    reconcile_remove = []
     for _, path in sorted(latest.items()):
         data = load_json(path)
         if not data:
@@ -120,8 +154,14 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict]:
             "loops":   result.get("loops_run", 0),
             "spread":  result.get("score_spread", 0),
         }
+        # Reflect this run on the Scout board: >= threshold refreshes/creates the
+        # card; below threshold removes any stale card for the ticker.
+        if result.get("consensus_score", 0) >= BUY_THRESHOLD:
+            scout_cards.append(_scout_card(ticker, result, data.get("meta", {})))
+        else:
+            reconcile_remove.append(ticker)
 
-    return results, index
+    return results, index, scout_cards, reconcile_remove
 
 
 def collect_scout_results(scout_dir: Path) -> list:
@@ -155,23 +195,7 @@ def collect_scout_results(scout_dir: Path) -> list:
         grade  = result.get("consensus_grade", "?")
 
         if score >= BUY_THRESHOLD:
-            meta = data.get("meta", {})
-            discoveries.append({
-                "ticker":           ticker,
-                "score":            round(score, 2),
-                "grade":            grade,
-                "conf":             result.get("confidence", ""),
-                "thesis":           result.get("majority_thesis", "")[:200],
-                "key_swing":        result.get("key_swing_factor", "")[:150],
-                "analyzed_at":      result.get("built_at", ""),
-                "catalyst":         result.get("catalyst", ""),
-                "asymmetry_ratio":  result.get("asymmetry_ratio", ""),
-                "banger":           result.get("banger", {}),
-                "position_guidance": result.get("position_guidance", {}),
-                "cycle_position":   result.get("cycle_position", {}),
-                "matched_filters":  meta.get("matched_filters", []),
-                "path":             meta.get("path", "A"),
-            })
+            discoveries.append(_scout_card(ticker, result, data.get("meta", {})))
 
     return discoveries
 
@@ -238,12 +262,22 @@ def main():
     scout_dir  = output_dir / "scouts"
 
     print("\n[upload] Collecting portfolio results...")
-    portfolio_results, index = collect_portfolio_results(output_dir)
-    print(f"  {len(portfolio_results)} ticker file(s) found")
+    portfolio_results, index, portfolio_cards, reconcile_remove = collect_portfolio_results(output_dir)
+    print(f"  {len(portfolio_results)} ticker file(s) found "
+          f"({len(portfolio_cards)} >= threshold, {len(reconcile_remove)} below)")
 
     print("[upload] Collecting scout results (last 2h)...")
     discoveries = collect_scout_results(scout_dir)
     print(f"  {len(discoveries)} BUY signal(s)")
+
+    # Merge portfolio/triggered cards into the scout payload (dedupe by ticker;
+    # a dedicated scout result wins over a portfolio card for the same ticker).
+    if portfolio_cards:
+        seen = {d["ticker"] for d in discoveries}
+        discoveries = discoveries + [c for c in portfolio_cards if c["ticker"] not in seen]
+        # A ticker that now qualifies must not also be in the removal list.
+        qualifying = {d["ticker"] for d in discoveries}
+        reconcile_remove = [t for t in reconcile_remove if t not in qualifying]
 
     gems_dir = output_dir / "gems"
     print("[upload] Collecting gems results (last 26h)...")
@@ -266,17 +300,23 @@ def main():
         except Exception as e:
             print(f"  [upload] Could not read {fname}: {e}")
 
-    if not portfolio_results and not index and not discoveries and not gems_discoveries:
+    if (not portfolio_results and not index and not discoveries
+            and not gems_discoveries and not reconcile_remove):
         print("[upload] Nothing to upload.")
         return
 
+    if reconcile_remove:
+        print(f"[upload] Reconcile: removing {len(reconcile_remove)} below-threshold "
+              f"card(s) from Scout/Gems: {', '.join(reconcile_remove)}")
+
     payload = {
-        "results":        portfolio_results,
-        "index":          index,
-        "scouts":         discoveries if discoveries else None,
-        "gems":           gems_discoveries if gems_discoveries else None,
-        "scout_history":  scout_history,
-        "scout_notified": scout_notified,
+        "results":          portfolio_results,
+        "index":            index,
+        "scouts":           discoveries if discoveries else None,
+        "gems":             gems_discoveries if gems_discoveries else None,
+        "reconcile_remove": reconcile_remove if reconcile_remove else None,
+        "scout_history":    scout_history,
+        "scout_notified":   scout_notified,
     }
 
     payload = _sanitize(payload)
