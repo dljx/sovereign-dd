@@ -20,7 +20,7 @@ SCOUT_UPLOAD_WINDOW_SECS = 2 * 3600
 # Filenames to skip in output/ — not ticker results
 _SKIP_FILENAMES = {"scout_history.json", "scout_notified.json"}
 
-UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
+UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
 SUPABASE_URL  = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY  = os.getenv("SUPABASE_KEY", "")
@@ -351,6 +351,23 @@ def main():
         if scout_rows:
             _supabase_insert("scout_history", scout_rows)
             print(f"  {len(scout_rows)} scout row(s) inserted")
+
+        # Gems history (requires a Supabase `gems_history` table; insert no-ops with a
+        # warning if it doesn't exist — see DATA_CONTRACT.md).
+        gems_rows = []
+        for g in (gems_discoveries or []):
+            gems_rows.append({
+                "ticker":        g["ticker"],
+                "score":         g.get("score"),
+                "grade":         g.get("grade"),
+                "thesis":        (g.get("thesis") or "")[:300],
+                "catalyst":      (g.get("catalyst") or "")[:300],
+                "fair_value":    g.get("fair_value_composite"),
+                "discovered_at": datetime.now(timezone.utc).isoformat(),
+            })
+        if gems_rows:
+            _supabase_insert("gems_history", gems_rows)
+            print(f"  {len(gems_rows)} gems row(s) inserted")
 
 
 if __name__ == "__main__":

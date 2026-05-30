@@ -14,7 +14,7 @@ from pathlib import Path
 
 import requests
 
-SOVEREIGN_EYE_URL = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
+SOVEREIGN_EYE_URL = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 DD_UPLOAD_SECRET  = os.getenv("DD_UPLOAD_SECRET", "")
 
 

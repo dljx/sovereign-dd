@@ -45,7 +45,7 @@ jobs:
       - name: Restore scout history from KV (cache-miss fallback)
         if: steps.restore-cache.outputs.cache-hit != 'true'
         env:
-          SOVEREIGN_EYE_URL: https://master.sovereign-eye.pages.dev
+          SOVEREIGN_EYE_URL: https://sovereign-eye.pages.dev
           DD_UPLOAD_SECRET:  ${{ secrets.DD_UPLOAD_SECRET }}
         run: python download_history.py
 
@@ -82,5 +82,17 @@ jobs:
         if: always()
         env:
           DD_UPLOAD_SECRET:  ${{ secrets.DD_UPLOAD_SECRET }}
-          SOVEREIGN_EYE_URL: https://master.sovereign-eye.pages.dev
+          SOVEREIGN_EYE_URL: https://sovereign-eye.pages.dev
         run: python upload_kv.py
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC:     ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d message_thread_id="${TELEGRAM_TOPIC}" \
+            -d text="Sovereign scout+gems run FAILED (run ${GITHUB_RUN_ID}). Check GitHub Actions." || true

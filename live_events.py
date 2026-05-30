@@ -12,7 +12,7 @@ import time
 
 import requests
 
-_LIVE_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://master.sovereign-eye.pages.dev")
+_LIVE_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 _LIVE_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
 
 FLUSH_EVERY = 5  # write to KV every N events
