@@ -6,7 +6,7 @@ Flow:
   3. Compute pillar scores for all candidates
   4. Gemma triage with function-calling tools (rank/compare/score) → select top N
   5. Full debate on selected picks (max 4 concurrent)
-  6. Return BUY signals only (score >= 6.5)
+  6. Return BUY signals only (score >= BUY_THRESHOLD)
 """
 
 from __future__ import annotations

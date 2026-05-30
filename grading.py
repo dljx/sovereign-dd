@@ -4,7 +4,9 @@ Imported by debate.py, scoring.py, report.py, scout.py, gems.py so the threshold
 can never drift apart.
 """
 
-BUY_THRESHOLD = 6.5
+# Minimum consensus score to count as a BUY — gates Telegram alerts, the KV upload,
+# and what appears on the Sovereign Scout/Gems dashboard (single lever for all three).
+BUY_THRESHOLD = 7.0
 
 # (min_score, label), descending.
 _LADDER = [

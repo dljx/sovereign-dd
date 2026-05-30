@@ -23,7 +23,7 @@ def test_grade_ladder(score, label):
     assert grade(score) == label
 
 def test_buy_threshold_value():
-    assert BUY_THRESHOLD == 6.5
+    assert BUY_THRESHOLD == 7.0
     # The single source of truth is re-exported everywhere.
     from scout import BUY_THRESHOLD as s
     from gems import BUY_THRESHOLD as g
