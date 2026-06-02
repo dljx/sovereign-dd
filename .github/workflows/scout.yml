@@ -62,6 +62,8 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
+          DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
+          SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
           SCOUT_DEBATE_COUNT: "24"
           SCOUT_COOLDOWN_HOURS: "48"
           GEMS_DEBATE_COUNT: "6"

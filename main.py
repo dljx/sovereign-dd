@@ -27,13 +27,51 @@ from report import render, console
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _portfolio_tickers() -> list[str]:
+def _env_tickers() -> list[str]:
     raw = os.getenv("PORTFOLIO_TICKERS", "")
-    tickers = [t.strip().upper() for t in raw.split(",") if t.strip()]
-    if not tickers:
-        console.print("[red]PORTFOLIO_TICKERS env var is empty or not set[/red]")
-        sys.exit(1)
-    return tickers
+    return [t.strip().upper() for t in raw.split(",") if t.strip()]
+
+
+def _live_tickers() -> list[str]:
+    """Fetch the live holdings list from Sovereign Eye KV (positions:daryl).
+
+    This is the source of truth — what the user actually holds, edited from the
+    dashboard. Returns [] (so the caller falls back to PORTFOLIO_TICKERS) if the
+    endpoint is unconfigured, unreachable, or empty. Never fatal.
+    """
+    base   = os.getenv("SOVEREIGN_EYE_URL", "").rstrip("/")
+    secret = os.getenv("DD_UPLOAD_SECRET", "")
+    if not base or not secret:
+        return []
+    try:
+        import requests
+        r = requests.get(
+            f"{base}/api/dd/positions",
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=15,
+        )
+        if not r.ok:
+            console.print(f"[dim]  [portfolio] live positions HTTP {r.status_code} — using PORTFOLIO_TICKERS[/dim]")
+            return []
+        tickers = r.json().get("tickers", [])
+        return [str(t).strip().upper() for t in tickers if str(t).strip()]
+    except Exception as e:
+        console.print(f"[dim]  [portfolio] live positions fetch failed ({e}) — using PORTFOLIO_TICKERS[/dim]")
+        return []
+
+
+def _portfolio_tickers() -> list[str]:
+    """Live dashboard holdings, falling back to the PORTFOLIO_TICKERS env var."""
+    live = _live_tickers()
+    if live:
+        console.print(f"[dim]  [portfolio] using {len(live)} live holdings from dashboard[/dim]")
+        return live
+    tickers = _env_tickers()
+    if tickers:
+        console.print("[dim]  [portfolio] live positions unavailable — using PORTFOLIO_TICKERS env[/dim]")
+        return tickers
+    console.print("[red]No live positions and PORTFOLIO_TICKERS env var is empty or not set[/red]")
+    sys.exit(1)
 
 
 def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> Path:
