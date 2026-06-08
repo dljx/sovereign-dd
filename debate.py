@@ -17,7 +17,7 @@ CONVERGENCE_THRESHOLD = 2.5
 MAX_LOOPS = 3
 
 
-from grading import grade as _grade
+from grading import grade as _grade, grade_hold as _grade_hold
 
 
 def _live_scores(scores: dict, results: dict) -> dict:
@@ -34,14 +34,14 @@ def _live_scores(scores: dict, results: dict) -> dict:
 
 # â"€â"€ Per-agent async helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
-async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
+async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str, is_holding: bool = False) -> tuple[str, dict]:
     """Run grounded research then scored analysis for one agent. Returns (agent, result)."""
     try:
         sys_r, usr_r = research_prompt(agent, ticker, company_name)
         print(f"  [debate] R1-research / {agent}...")
         web_summary = await call_gemini_async(sys_r, usr_r, grounding=True, max_output_tokens=8192)
 
-        sys_p, usr_p = round1_prompt(agent, ticker, dossier, web_summary)
+        sys_p, usr_p = round1_prompt(agent, ticker, dossier, web_summary, is_holding=is_holding)
         print(f"  [debate] R1-analysis / {agent}...")
         text = await call_gemini_async(sys_p, usr_p, max_output_tokens=16384)
         result = extract_json(text)
@@ -55,9 +55,9 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str) -
         return agent, {"agent": agent, "score": 5.0, "grade": "HOLD", "thesis": "", "web_research": "", "_failed": True}
 
 
-async def _r1_emit(agent: str, ticker: str, dossier: dict, company_name: str) -> tuple[str, dict]:
+async def _r1_emit(agent: str, ticker: str, dossier: dict, company_name: str, is_holding: bool = False) -> tuple[str, dict]:
     """Wraps _r1_agent â€" emits R1_SCORE live event as soon as this agent completes."""
-    pair = await _r1_agent(agent, ticker, dossier, company_name)
+    pair = await _r1_agent(agent, ticker, dossier, company_name, is_holding=is_holding)
     await emit_live(ticker, {
         "type": "R1_SCORE",
         "agent": pair[0],
@@ -71,7 +71,7 @@ async def _r2_agent(agent: str, ticker: str, scores: dict, all_r1: list, loop: i
     try:
         sys_p, usr_p = round2_prompt(agent, ticker, scores[agent], all_r1, loop, target)
         print(f"  [debate] R2-{loop} / {agent} -> challenges {target}...")
-        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192, thinking_level="low")
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192, thinking_level=None)
         result = extract_json(text)
         if not isinstance(result, dict):
             raise ValueError(f"expected JSON object, got {type(result).__name__}")
@@ -105,7 +105,7 @@ async def _r3_agent(
         challenges = [r for r in r2_results.values() if r.get("target_agent") == agent]
         sys_p, usr_p = round3_prompt(agent, ticker, scores[agent], challenges, all_r2, loop)
         print(f"  [debate] R3-{loop} / {agent}...")
-        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192, thinking_level="low")
+        text = await call_gemini_async(sys_p, usr_p, max_output_tokens=8192, thinking_level=None)
         result = extract_json(text)
         if not isinstance(result, dict):
             raise ValueError(f"expected JSON object, got {type(result).__name__}")
@@ -169,11 +169,19 @@ def _sanitize_fv(fv: float | None, price: float | None) -> float | None:
     return fv
 
 
-async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int | None = None) -> dict:
-    """Run the full debate asynchronously. Returns the final consensus dict."""
+async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int | None = None, is_holding: bool = False) -> dict:
+    """Run the full debate asynchronously. Returns the final consensus dict.
+
+    When ``is_holding`` is True, the debate is framed as a hold-vs-trim-vs-exit
+    decision on a current portfolio position rather than a buy-vs-pass decision
+    on a new candidate. Agent prompts get a hold-mode preamble, the scoring
+    pipeline softens its entry-time penalties, and the final grade is drawn from
+    the ADD/HOLD/TRIM/EXIT ladder.
+    """
     transcript: list[dict] = []
     company_name = dossier.get("profile", {}).get("name", ticker)
     effective_max_loops = max_loops if max_loops is not None else MAX_LOOPS
+    _final_grader = _grade_hold if is_holding else _grade
 
     # Signal to frontend that the debate has started
     await emit_live(ticker, {"type": "START"})
@@ -186,7 +194,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         print("+----------------------------------------------+")
 
     r1_pairs = await asyncio.gather(
-        *[_r1_emit(a, ticker, dossier, company_name) for a in AGENTS]
+        *[_r1_emit(a, ticker, dossier, company_name, is_holding=is_holding) for a in AGENTS]
     )
 
     r1_results: dict[str, dict] = {}
@@ -348,7 +356,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         if not isinstance(moderator_result, dict):
             moderator_result = {}
         moderator_result.setdefault("consensus_score", round(avg, 2))
-        moderator_result.setdefault("consensus_grade", _grade(avg))
+        moderator_result.setdefault("consensus_grade", _final_grader(avg))
         moderator_result.setdefault("confidence", "HIGH" if spread <= 1.0 else "MEDIUM")
     else:
         if verbose:
@@ -375,6 +383,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         raw_score=raw_score,
         result=moderator_result,
         dossier=dossier,
+        is_holding=is_holding,
     )
     # Merge adjusted values back into moderator_result so the transcript captures them
     moderator_result["raw_consensus_score"]  = raw_score
@@ -387,7 +396,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
     transcript.append(moderator_result)
 
     # Signal consensus grade and completion to the frontend
-    consensus_grade = moderator_result.get("consensus_grade", _grade(avg))
+    consensus_grade = moderator_result.get("consensus_grade", _final_grader(avg))
     await emit_live(ticker, {"type": "CONSENSUS", "grade": consensus_grade})
     await emit_live(ticker, {"type": "DONE"})
 
@@ -408,7 +417,8 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "ticker":               ticker,
         "raw_consensus_score":  moderator_result.get("raw_consensus_score", round(avg, 2)),
         "consensus_score":      moderator_result.get("consensus_score", round(avg, 2)),
-        "consensus_grade":      moderator_result.get("consensus_grade", _grade(avg)),
+        "consensus_grade":      moderator_result.get("consensus_grade", _final_grader(avg)),
+        "mode":                 "hold" if is_holding else "scout",
         "confidence":           moderator_result.get("confidence", "MEDIUM"),
         "majority_thesis":      moderator_result.get("majority_thesis", ""),
         "dissent":              moderator_result.get("dissent", ""),

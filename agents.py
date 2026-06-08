@@ -296,8 +296,7 @@ red flag in your risk assessment.
 ================================
 
 CYCLE TYPE: {cycle_type} — factor this into your earnings durability and cycle regime assessment.
-{data_quality_warning}
-SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRENT price:
+{data_quality_warning}{hold_mode_block}SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRENT price:
   9.0-10.0  Exceptional — top-decile opportunity, overwhelming evidence, minimal risks
   7.0-8.9   Strong — compelling thesis with manageable risks, clear near-term catalysts
   5.0-6.9   Neutral — balanced bull/bear, no clear edge, fair or uncertain valuation
@@ -306,7 +305,7 @@ SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRE
 
 A great company at an extreme valuation is NOT an automatic high score.
 A troubled company trading at deep distress is NOT an automatic low score.
-Score the INVESTMENT, not the business quality in isolation.
+{scoring_lens_line}
 
 Output ONLY this JSON (no other text):
 {{
@@ -504,7 +503,22 @@ def research_prompt(agent: str, ticker: str, name: str) -> tuple[str, str]:
     return RESEARCH_SYSTEM, user
 
 
-def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> tuple[str, str]:
+HOLD_MODE_PREAMBLE = (
+    "HOLD-MODE: You are reviewing a CURRENT PORTFOLIO HOLDING, not a new buy candidate.\n"
+    "Score the DECISION TO KEEP HOLDING, not the decision to enter today:\n"
+    "  8.0-10.0  ADD — thesis intact and strengthening; size up if you have room\n"
+    "  6.0-7.9   HOLD — thesis intact; current price/cycle isn't a great entry but\n"
+    "             a multi-year compounder doesn't need to be re-bought every morning\n"
+    "  4.0-5.9   TRIM — thesis weakening at the margin; reduce, don't exit wholesale\n"
+    "  1.0-3.9   EXIT — thesis broken or competitive position permanently impaired\n"
+    "Penalize lightly for short-term cyclical timing or premium-to-analyst-target.\n"
+    "Weight thesis durability, moat trajectory, capital allocation, and management\n"
+    "track record heavily — those are why you OWN this, and selling on macro noise\n"
+    "is the most common compounder mistake.\n\n"
+)
+
+
+def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_holding: bool = False) -> tuple[str, str]:
     """Returns (system, user) for round 1 analysis. Receives pre-fetched web research."""
     slim = {k: v for k, v in dossier.items() if k not in ("financials",)}
 
@@ -590,6 +604,14 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
 
     company_name = dossier.get("profile", {}).get("name") or ticker
 
+    hold_block = HOLD_MODE_PREAMBLE if is_holding else ""
+    scoring_lens = (
+        "This stock is a CURRENT HOLDING — score the DECISION TO HOLD vs TRIM vs EXIT, "
+        "not the decision to buy fresh today."
+        if is_holding
+        else "Score the INVESTMENT, not the business quality in isolation."
+    )
+
     return (
         SYSTEM_PROMPTS[agent],
         ROUND1_TEMPLATE.format(
@@ -600,6 +622,8 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str) -> 
             dossier_json=json.dumps(slim, indent=2, default=str),
             cycle_type=dossier.get("cycle_type", "UNKNOWN"),
             data_quality_warning=dq_warning,
+            hold_mode_block=hold_block,
+            scoring_lens_line=scoring_lens,
         ),
     )
 

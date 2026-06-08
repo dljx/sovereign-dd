@@ -156,7 +156,12 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
         }
         # Reflect this run on the Scout board: >= threshold refreshes/creates the
         # card; below threshold removes any stale card for the ticker.
-        if result.get("consensus_score", 0) >= BUY_THRESHOLD:
+        # Hold-mode portfolio runs never populate the Scout board — that list is for
+        # new-buy signals on tickers we DON'T already own. We still reconcile-remove
+        # stale scout cards for held tickers so the board stays clean.
+        if result.get("mode") == "hold":
+            reconcile_remove.append(ticker)
+        elif result.get("consensus_score", 0) >= BUY_THRESHOLD:
             scout_cards.append(_scout_card(ticker, result, data.get("meta", {})))
         else:
             reconcile_remove.append(ticker)

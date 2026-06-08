@@ -434,7 +434,7 @@ def portfolio_overlap_adjust(
 
 # ── Grade function ─────────────────────────────────────────────────────────────
 
-from grading import grade  # re-exported for callers that do `from scoring import grade`
+from grading import grade, grade_hold  # re-exported for callers that do `from scoring import grade`
 
 
 # ── Master pipeline orchestrator ───────────────────────────────────────────────
@@ -444,6 +444,7 @@ def apply_adjustments(
     result: dict,
     dossier: dict,
     portfolio_sectors: dict[str, str] | None = None,
+    is_holding: bool = False,
 ) -> dict:
     """Run the full post-debate scoring pipeline.
 
@@ -489,22 +490,45 @@ def apply_adjustments(
         moat_composite = None
 
     score = raw_score
-    adjustments = {"raw": raw_score}
+    adjustments = {"raw": raw_score, "is_holding": is_holding}
 
-    # 1. Earnings durability
+    # 1. Earnings durability — for holdings, floor the multiplier at 0.92 so a
+    # semicon compounder (durability 6 → ×0.88 normally) doesn't get docked just
+    # for being in a "market-dependent" bucket once we already own it.
+    pre_score = score
     score, durability_score, durability_label = earnings_durability_adjust(score, sector, industry)
+    if is_holding and pre_score > 0:
+        floored_mult = max(score / pre_score, 0.92)
+        score = round(min(10.0, max(1.0, pre_score * floored_mult)), 2)
     adjustments["earnings_durability"] = {
         "score": durability_score,
         "label": durability_label,
         "result": score,
+        "hold_floor_applied": is_holding,
     }
 
-    # 2. Analyst consensus
-    score, consensus_details = consensus_gap_adjust(score, price, analyst_target, num_analysts)
-    adjustments["consensus_gap"] = {**consensus_details, "result": score}
+    # 2. Analyst consensus — skipped entirely for holdings. Thin analyst coverage
+    # on a quality compounder routinely flags the stock as "above consensus" and
+    # docks the score; that's an entry-decision signal, not a hold-decision one.
+    if is_holding:
+        adjustments["consensus_gap"] = {"applied": False, "reason": "skipped in hold-mode", "result": score}
+    else:
+        score, consensus_details = consensus_gap_adjust(score, price, analyst_target, num_analysts)
+        adjustments["consensus_gap"] = {**consensus_details, "result": score}
 
-    # 3. Cycle position
+    # 3. Cycle position — halved for holdings. Late-cycle macro is a real risk
+    # but shouldn't unilaterally turn a held compounder into a SELL.
+    score_before_cycle = score
     score, cycle_details = cycle_position_adjust(score, cycle_phase, cycle_type, moat_composite)
+    if is_holding and cycle_details.get("applied"):
+        full_delta = score - score_before_cycle
+        halved_delta = full_delta * 0.5
+        score = round(min(10.0, max(1.0, score_before_cycle + halved_delta)), 2)
+        cycle_details = {
+            **cycle_details,
+            "adjustment": round(halved_delta, 2),
+            "reason": (cycle_details.get("reason") or "") + " (halved for hold-mode)",
+        }
     adjustments["cycle_position"] = {**cycle_details, "result": score}
 
     # 4. Data confidence
@@ -516,8 +540,8 @@ def apply_adjustments(
         score, overlap_details = portfolio_overlap_adjust(score, sector, portfolio_sectors)
         adjustments["portfolio_overlap"] = {**overlap_details, "result": score}
 
-    # 6. Grade
-    final_grade = grade(score)
+    # 6. Grade — hold ladder (ADD/HOLD/TRIM/EXIT) for holdings, entry ladder otherwise.
+    final_grade = grade_hold(score) if is_holding else grade(score)
     adjustments["final"] = score
 
     # 7. Banger detection
@@ -546,15 +570,16 @@ def apply_adjustments(
     }
 
 
-def _safe_apply_adjustments(raw_score, result, dossier, portfolio_sectors=None):
+def _safe_apply_adjustments(raw_score, result, dossier, portfolio_sectors=None, is_holding=False):
     """Wrapper around apply_adjustments that never raises — degrades gracefully on error."""
     try:
-        return apply_adjustments(raw_score, result, dossier, portfolio_sectors)
+        return apply_adjustments(raw_score, result, dossier, portfolio_sectors, is_holding=is_holding)
     except Exception as e:
+        fallback_grade = grade_hold(raw_score) if is_holding else grade(raw_score)
         return {
             "adjusted_score":    raw_score,
-            "consensus_grade":   grade(raw_score),
-            "score_adjustments": {"raw": raw_score, "error": str(e)},
+            "consensus_grade":   fallback_grade,
+            "score_adjustments": {"raw": raw_score, "is_holding": is_holding, "error": str(e)},
             "banger":            {"is_banger": False, "conditions_met": [], "conditions_failed": ["pipeline error"], "reason": str(e)},
             "position_guidance": {"range": "N/A", "basis_pct": 0.0, "reasoning": "scoring pipeline error", "modifiers": []},
         }

@@ -86,16 +86,17 @@ def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> 
 
 # ── Single ticker ─────────────────────────────────────────────────────────────
 
-async def _run_single(ticker: str, save: bool = False):
+async def _run_single(ticker: str, save: bool = False, is_holding: bool = False):
     from cleaner import clean_ticker_batch
-    console.rule(f"[bold blue]Sovereign DD — {ticker}[/bold blue]")
+    mode_tag = " (hold-mode)" if is_holding else ""
+    console.rule(f"[bold blue]Sovereign DD — {ticker}{mode_tag}[/bold blue]")
     try:
         meta_map = await asyncio.wait_for(clean_ticker_batch([ticker]), timeout=30.0)
     except asyncio.TimeoutError:
         console.print("[dim]  [cleaner] timeout — proceeding without metadata override[/dim]")
         meta_map = {}
     dossier = await build_dossier(ticker, verbose=True, meta=meta_map.get(ticker, {}))
-    result  = await run_debate(ticker, dossier, verbose=True)
+    result  = await run_debate(ticker, dossier, verbose=True, is_holding=is_holding)
     console.rule("[bold]FINAL REPORT[/bold]")
     render(result, dossier)
     if save:
@@ -191,7 +192,9 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
             try:
                 console.rule(f"[blue]{ticker}[/blue]")
                 dossier = await build_dossier(ticker, verbose=True, meta=portfolio_meta.get(ticker, {}))
-                result  = await run_debate(ticker, dossier, verbose=True)
+                # Portfolio screen is by definition reviewing current holdings —
+                # frame the debate as hold-vs-trim-vs-exit, not as a fresh entry.
+                result  = await run_debate(ticker, dossier, verbose=True, is_holding=True)
                 console.rule(f"[bold]{ticker} FINAL REPORT[/bold]")
                 render(result, dossier)
                 if save:
@@ -292,6 +295,7 @@ async def _main():
     portfolio_mode = "--portfolio" in args
     scout_mode     = "--scout"     in args
     gems_mode      = "--gems"      in args
+    hold_mode      = "--hold"      in args  # single-ticker test of hold-mode scoring
     positional     = [a for a in args if not a.startswith("--")]
 
     if portfolio_mode and scout_mode and gems_mode:
@@ -322,7 +326,7 @@ async def _main():
     elif gems_mode:
         await _run_gems(save=save, notify=notify)
     elif len(positional) == 1:
-        await _run_single(positional[0].upper(), save=save)
+        await _run_single(positional[0].upper(), save=save, is_holding=hold_mode)
     elif len(positional) > 1:
         await _run_batch(positional, save=save)
     else:
