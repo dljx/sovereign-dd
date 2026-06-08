@@ -155,7 +155,7 @@ def call_gemini(
     grounding: bool = False,
     api_key: str | None = None,
     max_output_tokens: int = 32768,
-    thinking_level: str = "high",
+    thinking_level: str | None = "high",
 ) -> str:
     """Call the model and return raw text. Retries on 429/500/503. Thread-safe key rotation.
 
@@ -182,29 +182,48 @@ def call_gemini(
             client = _client_for(cur_key)
             resolved = _resolve_model(client, cur_key, model)
 
-            def _generate(thinking: str):
+            def _generate(thinking: str | None):
                 cfg: dict = dict(
                     system_instruction=system,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
-                    thinking_config=types.ThinkingConfig(thinking_level=thinking),
                 )
+                # thinking is optional. None omits thinking_config entirely (no thinking,
+                # full output budget). NOTE: this model accepts thinking_level="high" but
+                # REJECTS "low"/"medium" with a hard 400 ("Thinking level is not supported
+                # for this model"), so passing an unsupported level silently killed every
+                # R2/R3 debate round. Prefer None over a low level to free output budget.
+                if thinking is not None:
+                    cfg["thinking_config"] = types.ThinkingConfig(thinking_level=thinking)
                 if grounding:
                     cfg["tools"] = [{"google_search": {}}]
-                return client.models.generate_content(
-                    model=resolved,
-                    contents=user,
-                    config=types.GenerateContentConfig(**cfg),
-                )
+                try:
+                    return client.models.generate_content(
+                        model=resolved,
+                        contents=user,
+                        config=types.GenerateContentConfig(**cfg),
+                    )
+                except Exception as e:
+                    # Self-heal: if the model rejects the requested thinking level,
+                    # retry once WITHOUT thinking so the agent still produces an answer
+                    # rather than hard-failing (which silently drops it from consensus).
+                    es = str(e).lower()
+                    if thinking is not None and "thinking" in es and "400" in es:
+                        cfg.pop("thinking_config", None)
+                        return client.models.generate_content(
+                            model=resolved,
+                            contents=user,
+                            config=types.GenerateContentConfig(**cfg),
+                        )
+                    raise
 
             response = _generate(thinking_level)
             text = response.text or ""
-            # thinking_level="high" shares the max_output_tokens budget; if the model
-            # truncated (finish_reason MAX_TOKENS) the JSON is cut off and downstream
-            # extract_json fails -> the agent is silently scored 5.0. Retry once with
-            # thinking lowered to free output budget for the actual answer.
+            # If the model truncated (finish_reason MAX_TOKENS) the JSON is cut off and
+            # downstream extract_json fails -> the agent is silently scored 5.0. Retry
+            # once WITHOUT thinking to free the full output budget for the answer.
             if not text or _hit_max_tokens(response):
-                response = _generate("low")
+                response = _generate(None)
                 text = response.text or text
             return text
         except Exception as e:
@@ -255,7 +274,7 @@ async def call_gemini_async(
     max_retries: int = 12,
     grounding: bool = False,
     max_output_tokens: int = 32768,
-    thinking_level: str = "high",
+    thinking_level: str | None = "high",
 ) -> str:
     """Async wrapper with per-key cooldown tracking to prevent thundering herd.
 
