@@ -23,10 +23,18 @@ from grading import BUY_THRESHOLD  # re-exported (upload_kv does `from scout imp
 # ── Continuous-mode knobs (override via env) ───────────────────────────────────
 SCOUT_HISTORY_FILE   = Path("output/scout_history.json")
 SCOUT_NOTIFIED_FILE  = Path("output/scout_notified.json")
+SCOUT_SEEN_FILE      = Path("output/scout_seen.json")  # triage rotation ledger
 SCOUT_COOLDOWN_HOURS        = int(os.getenv("SCOUT_COOLDOWN_HOURS", "48"))
 SCOUT_NOTIFY_COOLDOWN_HOURS = int(os.getenv("SCOUT_NOTIFY_COOLDOWN_HOURS", "168"))  # 7 days
 SCOUT_DEBATE_COUNT   = int(os.getenv("SCOUT_DEBATE_COUNT", "6"))
 SCOUT_MAX_LOOPS      = int(os.getenv("SCOUT_MAX_LOOPS", "3"))
+SCOUT_MIN_MCAP       = int(os.getenv("SCOUT_MIN_MCAP", "300000000"))   # universe floor
+SCOUT_WINDOW_SIZE    = int(os.getenv("SCOUT_WINDOW_SIZE", "600"))      # candidates shown to triage per run
+SCOUT_DRY_RUN        = os.getenv("SCOUT_DRY_RUN", "") == "1"           # stop after triage (testing)
+
+# Fraction of the triage window reserved for lens-tagged candidates (live market
+# action) — the rest is pure staleness rotation through the full universe.
+TAG_RESERVE_FRACTION = 0.25
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -85,6 +93,64 @@ def _recently_notified(notified: dict) -> set[str]:
     """Return set of tickers Telegram-alerted within SCOUT_NOTIFY_COOLDOWN_HOURS."""
     cutoff = datetime.now(timezone.utc).timestamp() - SCOUT_NOTIFY_COOLDOWN_HOURS * 3600
     return {ticker for ticker, entry in notified.items() if entry.get("ts", 0) >= cutoff}
+
+
+def _load_seen() -> dict:
+    """Load the triage rotation ledger {ticker: {last_shown, shown, picked}}."""
+    try:
+        if SCOUT_SEEN_FILE.exists():
+            return json.loads(SCOUT_SEEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_seen(seen: dict) -> None:
+    """Persist the triage rotation ledger to disk (atomic)."""
+    try:
+        _atomic_write_text(SCOUT_SEEN_FILE, json.dumps(seen, indent=2))
+    except Exception as e:
+        print(f"  [scout] Warning: could not save rotation ledger: {e}")
+
+
+def _update_seen(seen: dict, shown: list[dict], picked: set[str], now: float) -> dict:
+    """Record a triage round in the ledger: every windowed ticker was shown;
+    Gemma's picks additionally count as picked. Mutates and returns ``seen``."""
+    for c in shown:
+        e = seen.setdefault(c["ticker"], {"last_shown": 0, "shown": 0, "picked": 0})
+        e["last_shown"] = now
+        e["shown"] = e.get("shown", 0) + 1
+    for t in picked:
+        e = seen.setdefault(t, {"last_shown": now, "shown": 0, "picked": 0})
+        e["picked"] = e.get("picked", 0) + 1
+    return seen
+
+
+def _select_window(candidates: list[dict], seen: dict, window_size: int) -> list[dict]:
+    """Pick the rotating triage window from the candidate universe.
+
+    ~TAG_RESERVE_FRACTION of the window goes to lens-tagged names (today's live
+    market action), ordered stalest-first then most-tagged. The rest is pure
+    rotation: stalest ``last_shown`` first (never-shown = 0 sorts first), with
+    market cap as the tiebreak. Pure function — no I/O.
+    """
+    def last_shown(c: dict) -> float:
+        return (seen.get(c["ticker"]) or {}).get("last_shown", 0)
+
+    tagged = [c for c in candidates if c.get("lenses")]
+    reserve = min(int(window_size * TAG_RESERVE_FRACTION), len(tagged))
+    tagged_sorted = sorted(
+        tagged, key=lambda c: (last_shown(c), -len(c.get("lenses") or []), -(c.get("mcap_b") or 0))
+    )
+    window = tagged_sorted[:reserve]
+    chosen = {c["ticker"] for c in window}
+
+    rest = sorted(
+        (c for c in candidates if c["ticker"] not in chosen),
+        key=lambda c: (last_shown(c), -(c.get("mcap_b") or 0)),
+    )
+    window += rest[: max(0, window_size - len(window))]
+    return window
 
 
 # Yahoo Finance predefined screener API — no key required
@@ -152,71 +218,74 @@ SCREENER_LENSES: list[dict] = [
         "scrId": "portfolio_anchors",
         "count": 250,
     },
-    # ── Sector lenses (Morningstar via YF) — ensures full market coverage ──────
-    {
-        "name": "sector_financials",
-        "desc": "Financial services — banks, insurance, asset managers, fintech",
-        "scrId": "ms_financial_services",
-        "count": 250,
-    },
-    {
-        "name": "sector_healthcare",
-        "desc": "Healthcare — biotech, pharma, medtech, managed care",
-        "scrId": "ms_healthcare",
-        "count": 250,
-    },
-    {
-        "name": "sector_energy",
-        "desc": "Energy — oil & gas, pipelines, renewables",
-        "scrId": "ms_energy",
-        "count": 250,
-    },
-    {
-        "name": "sector_industrials",
-        "desc": "Industrials — aerospace, defense, machinery, construction",
-        "scrId": "ms_industrials",
-        "count": 250,
-    },
-    {
-        "name": "sector_consumer_cyclical",
-        "desc": "Consumer cyclical — autos, retail, restaurants, travel",
-        "scrId": "ms_consumer_cyclical",
-        "count": 250,
-    },
-    {
-        "name": "sector_consumer_defensive",
-        "desc": "Consumer defensive — staples, beverages, household products",
-        "scrId": "ms_consumer_defensive",
-        "count": 250,
-    },
-    {
-        "name": "sector_real_estate",
-        "desc": "Real estate — REITs, data centers, industrial, residential",
-        "scrId": "ms_real_estate",
-        "count": 250,
-    },
-    {
-        "name": "sector_basic_materials",
-        "desc": "Basic materials — miners, chemicals, steel, forestry",
-        "scrId": "ms_basic_materials",
-        "count": 250,
-    },
-    {
-        "name": "sector_communication",
-        "desc": "Communication services — media, telecom, social, streaming",
-        "scrId": "ms_communication_services",
-        "count": 250,
-    },
-    {
-        "name": "sector_utilities",
-        "desc": "Utilities — electric, gas, water — defensive yield plays",
-        "scrId": "ms_utilities",
-        "count": 250,
-    },
+    # NB: the 10 ms_* sector lenses were removed 2026-06-12 — they existed only to
+    # approximate full-market coverage, which _fetch_universe() now provides by
+    # construction. The remaining factor lenses act as signal TAGS on the universe.
 ]
 
 
 # ── Yahoo Finance screener helpers ─────────────────────────────────────────────
+
+# NYSE (NYQ), Nasdaq tiers (NMS/NGM/NCM), AMEX (ASE) — listed-only, no OTC.
+_UNIVERSE_EXCHANGES = ["NMS", "NYQ", "NGM", "NCM", "ASE"]
+
+
+def _fetch_universe() -> list[dict] | None:
+    """THE candidate universe: every US-listed common stock above SCOUT_MIN_MCAP,
+    via yfinance's custom screener (handles Yahoo cookie/crumb internally).
+
+    ~3,900 names at the $300M default floor, paginated 250/page (~16 requests).
+    Returns None on failure or an implausibly small result so the caller can fall
+    back to the predefined-lens union — a Yahoo API change must never kill scout.
+    """
+    import time as _time
+    import yfinance as yf
+    try:
+        q = yf.EquityQuery("and", [
+            yf.EquityQuery("is-in", ["exchange", *_UNIVERSE_EXCHANGES]),
+            yf.EquityQuery("gt", ["intradaymarketcap", SCOUT_MIN_MCAP]),
+        ])
+        out: list[dict] = []
+        seen: set[str] = set()
+        offset, total = 0, None
+        while offset < 10_000:
+            r = yf.screen(q, offset=offset, size=250,
+                          sortField="intradaymarketcap", sortAsc=False)
+            if total is None:
+                total = int(r.get("total") or 0)
+            quotes = r.get("quotes") or []
+            if not quotes:
+                break
+            for item in quotes:
+                sym = (item.get("symbol") or "").upper().strip()
+                if not sym or sym in seen:
+                    continue
+                if item.get("quoteType") != "EQUITY":
+                    continue
+                if not re.match(r"^[A-Z]{1,5}$", sym):
+                    continue
+                seen.add(sym)
+                out.append({
+                    "ticker": sym,
+                    "name":   item.get("longName") or item.get("shortName") or sym,
+                    "mcap_b": round((item.get("marketCap") or 0) / 1e9, 2),
+                    "price":  item.get("regularMarketPrice") or 0,
+                    "volume": item.get("regularMarketVolume") or 0,
+                    "lenses": [],
+                })
+            offset += 250
+            if offset >= total:
+                break
+            _time.sleep(0.2)
+        if len(out) < 500:
+            print(f"  [scout] Universe fetch returned only {len(out)} names — "
+                  f"falling back to predefined lenses")
+            return None
+        return out
+    except Exception as e:
+        print(f"  [scout] Universe fetch failed ({e}) — falling back to predefined lenses")
+        return None
+
 
 def _yf_screen(lens: dict) -> tuple[dict, list[dict]]:
     """Call Yahoo Finance predefined screener for one lens. Returns (lens, results)."""
@@ -248,20 +317,28 @@ def _yf_screen(lens: dict) -> tuple[dict, list[dict]]:
         return lens, []
 
 
-async def _run_all_screeners(portfolio: set[str], exclude: set[str] | None = None) -> list[dict]:
-    """Run all lenses in parallel. Returns deduplicated candidate list."""
-    skip = portfolio | (exclude or set())
-    results = await asyncio.gather(*[
+async def _screen_lenses_raw() -> list[tuple[dict, list[dict]]]:
+    """Run all factor lenses in parallel. Returns [(lens, raw_quotes), ...]."""
+    return list(await asyncio.gather(*[
         asyncio.to_thread(_yf_screen, lens) for lens in SCREENER_LENSES
-    ])
+    ]))
 
-    seen: set[str] = set()
-    candidates: list[dict] = []
 
-    for lens, items in results:
+def _candidates_from_lenses(raw: list[tuple[dict, list[dict]]], skip: set[str]) -> list[dict]:
+    """FALLBACK universe builder (when _fetch_universe fails): the deduplicated
+    union of the predefined lenses — the pre-2026-06-12 behavior. A ticker hit by
+    several lenses carries all of them as tags."""
+    by_ticker: dict[str, dict] = {}
+
+    for lens, items in raw:
+        lname = lens.get("name", "")
         for item in items:
             sym = (item.get("symbol") or "").upper().strip()
-            if not sym or sym in seen or sym in skip:
+            if not sym or sym in skip:
+                continue
+            if sym in by_ticker:
+                if lname and lname not in by_ticker[sym]["lenses"]:
+                    by_ticker[sym]["lenses"].append(lname)
                 continue
             # Only plain US equity tickers (no ETFs like SPY, BRK.B, etc.)
             if not re.match(r'^[A-Z]{1,5}$', sym):
@@ -270,20 +347,50 @@ async def _run_all_screeners(portfolio: set[str], exclude: set[str] | None = Non
             mcap = item.get("marketCap") or 0
             if mcap < 100_000_000:
                 continue
-            seen.add(sym)
-            candidates.append({
+            by_ticker[sym] = {
                 "ticker":   sym,
                 "name":     item.get("longName") or item.get("shortName") or sym,
-                "sector":   item.get("sector") or "—",
-                "industry": item.get("industry") or "—",
                 "mcap_b":   round(mcap / 1e9, 2),
                 "price":    item.get("regularMarketPrice") or item.get("ask") or 0,
-                "beta":     item.get("beta") or 0,
                 "volume":   item.get("regularMarketVolume") or 0,
-                "lens":     lens.get("name", ""),
-            })
+                "lenses":   [lname] if lname else [],
+            }
 
-    return candidates
+    return list(by_ticker.values())
+
+
+def _merge_lens_tags(universe: list[dict], raw: list[tuple[dict, list[dict]]],
+                     skip: set[str]) -> list[dict]:
+    """Tag universe candidates with factor-lens membership. A lens hit that is
+    NOT in the universe (e.g. a sub-floor day-gainer) is appended as an extra
+    candidate — lens hits are interesting by definition."""
+    by_ticker = {c["ticker"]: c for c in universe}
+
+    for lens, items in raw:
+        lname = lens.get("name", "")
+        if not lname:
+            continue
+        for item in items:
+            sym = (item.get("symbol") or "").upper().strip()
+            if not sym or sym in skip or not re.match(r'^[A-Z]{1,5}$', sym):
+                continue
+            if sym in by_ticker:
+                if lname not in by_ticker[sym]["lenses"]:
+                    by_ticker[sym]["lenses"].append(lname)
+                continue
+            mcap = item.get("marketCap") or 0
+            if mcap < 100_000_000:
+                continue
+            by_ticker[sym] = {
+                "ticker":   sym,
+                "name":     item.get("longName") or item.get("shortName") or sym,
+                "mcap_b":   round(mcap / 1e9, 2),
+                "price":    item.get("regularMarketPrice") or item.get("ask") or 0,
+                "volume":   item.get("regularMarketVolume") or 0,
+                "lenses":   [lname],
+            }
+
+    return list(by_ticker.values())
 
 
 # ── Gemma triage ───────────────────────────────────────────────────────────────
@@ -354,25 +461,29 @@ Bias toward less-covered names where genuine alpha exists. Spread picks across a
 
 def _build_triage_prompt(candidates: list[dict], portfolio: set[str], debate_count: int = 12) -> str:
     lines = [
-        f"Below is a pre-screened universe of {len(candidates)} US-listed stocks across "
-        f"multiple investment lenses (value, growth, momentum, small_cap, contrarian, macro_tailwind).\n",
+        f"Below is a rotating window of {len(candidates)} stocks drawn from the FULL US-listed "
+        f"market (every NYSE/Nasdaq/AMEX common stock above ${SCOUT_MIN_MCAP/1e6:.0f}M market cap). "
+        "Some carry factor-lens tags (momentum, value, breakout, ...) — live market action; "
+        "untagged names are EQUALLY valid picks. Judge on research, not name recognition.\n",
         "Use Google Search to research current market conditions and identify which of these "
         "represent the most compelling opportunities RIGHT NOW. Consider earnings season, "
         "sector rotation, macro trends, and any recent news or catalysts.\n",
         f"EXCLUDE tickers already in the portfolio: {', '.join(sorted(portfolio)) or 'none'}.\n",
-        "CANDIDATE UNIVERSE:",
-        f"{'TICKER':<8} {'NAME':<35} {'SECTOR':<25} {'MCAP($B)':<10} {'BETA':<6} {'LENS':<12}",
-        "-" * 96,
+        "CANDIDATE WINDOW:",
+        f"{'TICKER':<8} {'NAME':<38} {'MCAP($B)':<10} {'LENS TAGS':<30}",
+        "-" * 88,
     ]
     for c in candidates:
+        tags = ", ".join(c.get("lenses") or []) or "—"
         lines.append(
-            f"{c['ticker']:<8} {c['name'][:34]:<35} {c['sector'][:24]:<25} "
-            f"{c['mcap_b']:<10.2f} {(c['beta'] or 0):<6.2f} {c['lens']:<12}"
+            f"{c['ticker']:<8} {c['name'][:37]:<38} "
+            f"{c['mcap_b']:<10.2f} {tags[:29]:<30}"
         )
     lines += [
         f"\nSelect EXACTLY {debate_count} tickers from this list that represent the best risk-adjusted "
         "opportunities based on your web research. Prefer less-covered names with asymmetric upside. "
-        "Spread your picks across at least 3 different lenses so the output is diversified.",
+        "When lens tags are present, spread picks across different tags — but a great untagged "
+        "name always beats a mediocre tagged one.",
         "\nReturn your answer as a JSON object with this exact structure:",
         '{"picks": [',
         '  {"ticker": "SYM", "lens": "value", "rationale": "one concise sentence why"},',
@@ -462,32 +573,61 @@ async def run_scout(
         print(f"  [scout] Skipping {len(recently)} recently-analyzed ticker(s): "
               f"{', '.join(sorted(recently))}")
 
-    # Phase 1 — screeners (all lenses in parallel)
+    # Phase 1 — full-market universe + factor lenses, fetched concurrently
     if verbose:
         print(f"\n+----------------------------------------------+")
-        print(f"|  SOVEREIGN SCOUT — quantitative screen       |")
-        print(f"|  Running all {len(SCREENER_LENSES)} lenses simultaneously...  |")
+        print(f"|  SOVEREIGN SCOUT — full-market screen        |")
+        print(f"|  Universe fetch + {len(SCREENER_LENSES)} factor lenses...        |")
         print(f"+----------------------------------------------+")
 
-    candidates = await _run_all_screeners(portfolio_set, exclude=recently)
+    skip = portfolio_set | recently
+    universe, raw_lenses = await asyncio.gather(
+        asyncio.to_thread(_fetch_universe),
+        _screen_lenses_raw(),
+    )
+
+    if universe:
+        universe = [c for c in universe if c["ticker"] not in skip]
+        candidates = _merge_lens_tags(universe, raw_lenses, skip)
+    else:
+        # Yahoo custom screener unavailable — predefined-lens union (legacy mode)
+        candidates = _candidates_from_lenses(raw_lenses, skip)
 
     if verbose:
-        by_lens: dict[str, int] = {}
-        for c in candidates:
-            by_lens[c["lens"]] = by_lens.get(c["lens"], 0) + 1
-        for lens_name, count in by_lens.items():
-            print(f"    {lens_name:<15} → {count} candidates")
-        print(f"  Total unique candidates: {len(candidates)} (excluding {len(recently)} recently scouted)")
+        tagged = sum(1 for c in candidates if c["lenses"])
+        print(f"  Universe: {len(candidates)} candidates "
+              f"({'full-market' if universe else 'LENS FALLBACK'}, {tagged} lens-tagged, "
+              f"excluding {len(recently)} in cooldown)")
 
     if not candidates:
         if verbose:
             print("  [scout] No new candidates — all tickers within cooldown window")
         return []
 
+    # Phase 1b — rotating triage window (stalest-first + tagged reserve)
+    seen_ledger = _load_seen()
+    window = _select_window(candidates, seen_ledger, SCOUT_WINDOW_SIZE)
+    if verbose:
+        never_shown = sum(
+            1 for c in window if (seen_ledger.get(c["ticker"]) or {}).get("last_shown", 0) == 0
+        )
+        w_tagged = sum(1 for c in window if c["lenses"])
+        print(f"  Window: {len(window)} shown to triage "
+              f"({w_tagged} tagged, {never_shown} never shown before)")
+
     # Phase 2 — Gemma triage (one grounded call)
     picks = await _triage_with_gemma(
-        candidates, portfolio_set, verbose=verbose, debate_count=SCOUT_DEBATE_COUNT
+        window, portfolio_set, verbose=verbose, debate_count=SCOUT_DEBATE_COUNT
     )
+
+    # Record the round in the rotation ledger BEFORE any early return — shown
+    # names rotate out of the window even when triage picks nothing.
+    _update_seen(
+        seen_ledger, window,
+        {p["ticker"].upper() for p in picks},
+        datetime.now(timezone.utc).timestamp(),
+    )
+    _save_seen(seen_ledger)
 
     if not picks:
         print("  [scout] Triage returned no picks")
@@ -495,6 +635,11 @@ async def run_scout(
 
     if max_tickers:
         picks = picks[:max_tickers]
+
+    if SCOUT_DRY_RUN:
+        print(f"\n  [scout] DRY RUN — triage picked: "
+              f"{', '.join(p['ticker'] for p in picks)} — skipping debates")
+        return []
 
     # Phase 2b — metadata cleaner: one grounded call for the whole batch.
     # Resolves canonical GICS sector, ADR status, and financials currency before

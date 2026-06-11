@@ -38,6 +38,7 @@ jobs:
             output/scout_history.json
             output/scout_notified.json
             output/gems_history.json
+            output/scout_seen.json
           # Restore the most recent history cache from any previous run
           key: scout-history-${{ github.run_id }}
           restore-keys: scout-history-
@@ -80,6 +81,7 @@ jobs:
             output/scout_history.json
             output/scout_notified.json
             output/gems_history.json
+            output/scout_seen.json
           key: scout-history-${{ github.run_id }}
 
       - name: Upload results to Sovereign Eye

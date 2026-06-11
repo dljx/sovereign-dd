@@ -18,7 +18,7 @@ from scout import BUY_THRESHOLD
 SCOUT_UPLOAD_WINDOW_SECS = 2 * 3600
 
 # Filenames to skip in output/ — not ticker results
-_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json", "gems_history.json"}
+_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json", "gems_history.json", "scout_seen.json"}
 
 UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
@@ -299,11 +299,13 @@ def main():
     print("[upload] Collecting scout history for KV backup...")
     histories: dict[str, dict | None] = {
         "scout_history": None, "scout_notified": None, "gems_history": None,
+        "scout_seen": None,
     }
     for fname, varname in [
         ("scout_history.json",  "scout_history"),
         ("scout_notified.json", "scout_notified"),
         ("gems_history.json",   "gems_history"),
+        ("scout_seen.json",     "scout_seen"),
     ]:
         path = output_dir / fname
         try:
@@ -316,6 +318,7 @@ def main():
     scout_history  = histories["scout_history"]
     scout_notified = histories["scout_notified"]
     gems_history   = histories["gems_history"]
+    scout_seen     = histories["scout_seen"]
 
     # A 0-signal run still MUST upload: the dedup/notify histories grew this run,
     # and skipping the POST would leave the KV backup stale (a later cache miss
@@ -323,7 +326,8 @@ def main():
     # skip the dd:meta heartbeat the health screen watches.
     if (not portfolio_results and not index and not discoveries
             and not gems_discoveries and not reconcile_remove
-            and not scout_history and not scout_notified and not gems_history):
+            and not scout_history and not scout_notified and not gems_history
+            and not scout_seen):
         print("[upload] Nothing to upload.")
         return
 
@@ -340,6 +344,7 @@ def main():
         "scout_history":    scout_history,
         "scout_notified":   scout_notified,
         "gems_history":     gems_history,
+        "scout_seen":       scout_seen,
     }
 
     payload = _sanitize(payload)

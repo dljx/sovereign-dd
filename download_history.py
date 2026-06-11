@@ -46,6 +46,7 @@ def main():
         ("history",  "scout_history.json",  "history"),
         ("notified", "scout_notified.json", "notify history"),
         ("gems",     "gems_history.json",   "gems history"),
+        ("seen",     "scout_seen.json",     "rotation ledger"),
     ]:
         payload = data.get(field, {})
         if payload:
