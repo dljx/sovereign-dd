@@ -88,6 +88,12 @@ def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> 
 
 async def _run_single(ticker: str, save: bool = False, is_holding: bool = False):
     from cleaner import clean_ticker_batch
+    # A dashboard-triggered re-run of a CURRENT holding must grade on the hold
+    # ladder (ADD/HOLD/TRIM/EXIT), not the entry ladder — otherwise the same
+    # stock shows e.g. SELL here but TRIM on the portfolio screen.
+    if not is_holding and ticker in set(_live_tickers()):
+        is_holding = True
+        console.print(f"[dim]  [portfolio] {ticker} is a current holding — switching to hold-mode[/dim]")
     mode_tag = " (hold-mode)" if is_holding else ""
     console.rule(f"[bold blue]Sovereign DD — {ticker}{mode_tag}[/bold blue]")
     try:
@@ -245,8 +251,10 @@ async def _run_gems(save: bool = False, notify: bool = False):
 
 async def _run_scout(save: bool = False, notify: bool = False):
     from scout import run_scout, _load_notified, _save_notified, _recently_notified
-    portfolio = _portfolio_tickers() if os.getenv("PORTFOLIO_TICKERS") else []
-    discoveries = await run_scout(max_tickers=12, portfolio=portfolio, verbose=True)
+    # Exclude current holdings from scout picks. Live positions are the source of
+    # truth; the env var is only the fallback — don't gate the exclusion on it.
+    portfolio = _live_tickers() or _env_tickers()
+    discoveries = await run_scout(portfolio=portfolio, verbose=True)
 
     if notify:
         from notify import alert_scout_summary, alert_buy_signal, alert_dd_result

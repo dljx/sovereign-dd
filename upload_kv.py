@@ -18,7 +18,7 @@ from scout import BUY_THRESHOLD
 SCOUT_UPLOAD_WINDOW_SECS = 2 * 3600
 
 # Filenames to skip in output/ — not ticker results
-_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json"}
+_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json", "gems_history.json"}
 
 UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
@@ -295,24 +295,35 @@ def main():
     gems_discoveries = collect_gems_results(gems_dir)
     print(f"  {len(gems_discoveries)} gems BUY signal(s)")
 
-    # Include scout history files for KV backup (cache-miss recovery)
+    # Include scout/gems history files for KV backup (cache-miss recovery)
     print("[upload] Collecting scout history for KV backup...")
-    scout_history = scout_notified = None
-    for fname, varname in [("scout_history.json", "scout_history"), ("scout_notified.json", "scout_notified")]:
+    histories: dict[str, dict | None] = {
+        "scout_history": None, "scout_notified": None, "gems_history": None,
+    }
+    for fname, varname in [
+        ("scout_history.json",  "scout_history"),
+        ("scout_notified.json", "scout_notified"),
+        ("gems_history.json",   "gems_history"),
+    ]:
         path = output_dir / fname
         try:
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
-                if varname == "scout_history":
-                    scout_history = data
-                else:
-                    scout_notified = data
+                histories[varname] = data
                 print(f"  {len(data)} ticker(s) in {fname}")
         except Exception as e:
             print(f"  [upload] Could not read {fname}: {e}")
+    scout_history  = histories["scout_history"]
+    scout_notified = histories["scout_notified"]
+    gems_history   = histories["gems_history"]
 
+    # A 0-signal run still MUST upload: the dedup/notify histories grew this run,
+    # and skipping the POST would leave the KV backup stale (a later cache miss
+    # would then restore an old window → re-debates and possible re-alerts) and
+    # skip the dd:meta heartbeat the health screen watches.
     if (not portfolio_results and not index and not discoveries
-            and not gems_discoveries and not reconcile_remove):
+            and not gems_discoveries and not reconcile_remove
+            and not scout_history and not scout_notified and not gems_history):
         print("[upload] Nothing to upload.")
         return
 
@@ -328,6 +339,7 @@ def main():
         "reconcile_remove": reconcile_remove if reconcile_remove else None,
         "scout_history":    scout_history,
         "scout_notified":   scout_notified,
+        "gems_history":     gems_history,
     }
 
     payload = _sanitize(payload)

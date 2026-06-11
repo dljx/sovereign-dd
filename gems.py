@@ -43,10 +43,11 @@ def _load_history() -> dict:
 
 
 def _save_history(history: dict) -> None:
-    """Persist gems history to disk."""
+    """Persist gems history to disk (atomic — a corrupt file loads as {} and
+    would re-debate everything, same failure mode the scout helper guards)."""
+    from scout import _atomic_write_text
     try:
-        GEMS_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        GEMS_HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        _atomic_write_text(GEMS_HISTORY_FILE, json.dumps(history, indent=2))
     except Exception as e:
         print(f"  [gems] Warning: could not save history: {e}")
 
@@ -309,6 +310,16 @@ async def run_gems(
         print("  [gems] Triage returned no picks")
         return []
 
+    # Metadata cleaner — same pre-debate pass scout does, so gems dossiers get
+    # ADR/currency/sector corrections too (small caps misclassify the most).
+    from cleaner import clean_ticker_batch
+    try:
+        batch_meta = await asyncio.wait_for(
+            clean_ticker_batch([p["ticker"] for p in picks]), timeout=45.0
+        )
+    except Exception:
+        batch_meta = {}
+
     if verbose:
         print(f"\n+----------------------------------------------+")
         print(f"|  SOVEREIGN GEMS — running debates            |")
@@ -334,7 +345,8 @@ async def run_gems(
                     if pillar_rationale:
                         print(f"         Gemma rationale: {pillar_rationale[:100]}")
 
-                dossier = await build_dossier(ticker, verbose=False)
+                dossier = await build_dossier(ticker, verbose=False,
+                                              meta=batch_meta.get(ticker, {}))
                 result  = await run_debate(ticker, dossier, verbose=False, max_loops=GEMS_MAX_LOOPS)
 
                 score = result.get("consensus_score", 0)
@@ -370,6 +382,8 @@ async def run_gems(
                         "key_swing_factor":      result.get("key_swing_factor", ""),
                         "catalyst":              result.get("catalyst", ""),
                         "asymmetry_ratio":       result.get("asymmetry_ratio", ""),
+                        "rr":                    (result.get("risk_reward") or {}).get("rr_ratio"),
+                        "risk":                  (result.get("risk_reward") or {}).get("risk_tier"),
                         "banger":                result.get("banger", {}),
                         "position_guidance":     result.get("position_guidance", {}),
                         "cycle_position":        result.get("cycle_position", {}),

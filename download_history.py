@@ -42,24 +42,19 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
-    history  = data.get("history",  {})
-    notified = data.get("notified", {})
-
-    if history:
-        (output_dir / "scout_history.json").write_text(
-            json.dumps(history, indent=2), encoding="utf-8"
-        )
-        print(f"[history] Restored scout_history.json  ({len(history)} tickers)")
-    else:
-        print("[history] No history in KV — starting fresh")
-
-    if notified:
-        (output_dir / "scout_notified.json").write_text(
-            json.dumps(notified, indent=2), encoding="utf-8"
-        )
-        print(f"[history] Restored scout_notified.json ({len(notified)} tickers)")
-    else:
-        print("[history] No notify history in KV — starting fresh")
+    for field, fname, label in [
+        ("history",  "scout_history.json",  "history"),
+        ("notified", "scout_notified.json", "notify history"),
+        ("gems",     "gems_history.json",   "gems history"),
+    ]:
+        payload = data.get(field, {})
+        if payload:
+            (output_dir / fname).write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
+            print(f"[history] Restored {fname}  ({len(payload)} tickers)")
+        else:
+            print(f"[history] No {label} in KV — starting fresh")
 
 
 if __name__ == "__main__":

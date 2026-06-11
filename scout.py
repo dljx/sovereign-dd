@@ -429,15 +429,19 @@ async def _triage_with_gemma(
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 async def run_scout(
-    max_tickers: int = 12,
+    max_tickers: int | None = None,
     portfolio: list[str] | None = None,
     verbose: bool = True,
 ) -> list[dict]:
     """
     Full scout pipeline:
       1. All screener lenses fire simultaneously
-      2. Gemma triage picks the N most interesting (grounded)
-      3. Full 6-agent debate on all picks in parallel (max 4 concurrent)
+      2. Gemma triage picks SCOUT_DEBATE_COUNT candidates (grounded)
+      3. Full 5-agent debate on all picks in parallel (max 4 concurrent)
+
+    ``max_tickers`` is an optional extra cap on top of SCOUT_DEBATE_COUNT —
+    leave it None so the triage count is the single knob (passing a smaller
+    value silently discards picks Gemma already selected).
 
     Configurable via env vars:
       SCOUT_DEBATE_COUNT   — tickers to debate per run (default 6)
@@ -489,7 +493,8 @@ async def run_scout(
         print("  [scout] Triage returned no picks")
         return []
 
-    picks = picks[:max_tickers]
+    if max_tickers:
+        picks = picks[:max_tickers]
 
     # Phase 2b — metadata cleaner: one grounded call for the whole batch.
     # Resolves canonical GICS sector, ADR status, and financials currency before
@@ -563,6 +568,8 @@ async def run_scout(
                         "key_swing_factor": result.get("key_swing_factor", ""),
                         "catalyst":         result.get("catalyst", ""),
                         "asymmetry_ratio":  result.get("asymmetry_ratio", ""),
+                        "rr":               (result.get("risk_reward") or {}).get("rr_ratio"),
+                        "risk":             (result.get("risk_reward") or {}).get("risk_tier"),
                         "banger":           result.get("banger", {}),
                         "position_guidance": result.get("position_guidance", {}),
                         "cycle_position":   result.get("cycle_position", {}),
