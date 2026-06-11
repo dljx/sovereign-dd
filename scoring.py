@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from risk_reward import compute_risk_reward, compact as _rr_compact, BANGER_MIN_RR
+
 
 # ── Sector / industry → earnings durability mappings ──────────────────────────
 
@@ -212,13 +214,14 @@ def data_confidence_adjust(score: float, data_confidence: str) -> tuple[float, d
 
 # ── Banger detector ────────────────────────────────────────────────────────────
 
-def banger_check(result: dict, dossier: dict) -> dict:
+def banger_check(result: dict, dossier: dict, risk_reward: dict | None = None) -> dict:
     """Check if a stock qualifies as an asymmetric 'BANGER' opportunity.
 
     Four conditions must ALL be met:
     1. Adjusted score >= 7.5
     2. Catalyst present (from debate output)
-    3. DCF intrinsic value >= 0.7x current price (floor support)
+    3. Computed risk/reward ratio >= 2:1 (falls back to the legacy
+       fair-value-floor test when the risk_reward layer isn't applied)
     4. Insider net buying (buy_count > sell_count)
 
     Returns {"is_banger": bool, "conditions_met": list, "conditions_failed": list, "reason": str}
@@ -244,30 +247,40 @@ def banger_check(result: dict, dossier: dict) -> dict:
     else:
         conditions_failed.append("no specific catalyst identified")
 
-    # Condition 3: fair value floor support (DCF from dossier or ValuationEngine consensus)
-    price = (dossier.get("quote") or {}).get("price")
-    dcf_iv = (dossier.get("valuation") or {}).get("dcf_iv_per_share")
-    # Core principle: Python does the math. Prefer the Python-computed composite
-    # (dossier["fair_values"]) and the dossier DCF over the debate's
-    # fair_value_composite, which may be the LLM moderator's number (see debate.py).
-    def _f(v):
-        try:
-            return float(v) if v is not None else None
-        except (ValueError, TypeError):
-            return None
-    py_composite  = _f((dossier.get("fair_values") or {}).get("composite_fair_value"))
-    dcf_iv        = _f(dcf_iv)
-    llm_composite = _f(result.get("fair_value_composite"))
-    if py_composite is not None:
-        floor_iv, source = py_composite, "Python FV composite"
-    elif dcf_iv is not None:
-        floor_iv, source = dcf_iv, "DCF IV"
+    # Condition 3: asymmetric risk/reward. The computed rr_ratio (risk_reward.py)
+    # is strictly more informative than the old FV-floor test — it measures both
+    # the upside AND a conservative downside floor. Legacy FV-floor kept verbatim
+    # as the fallback so old saved results / missing-data names behave as before.
+    if risk_reward and risk_reward.get("applied"):
+        rr_ratio = risk_reward.get("rr_ratio") or 0.0
+        if rr_ratio >= BANGER_MIN_RR:
+            conditions_met.append(f"rr_ratio {rr_ratio:.1f} >= {BANGER_MIN_RR:.1f} (computed asymmetry)")
+        else:
+            conditions_failed.append(f"insufficient risk/reward asymmetry (rr {rr_ratio:.1f} < {BANGER_MIN_RR:.1f})")
     else:
-        floor_iv, source = llm_composite, "LLM FV composite"
-    if price and floor_iv and price > 0 and floor_iv >= price * 0.7:
-        conditions_met.append(f"{source} ${floor_iv:.2f} >= 70% of price ${price:.2f}")
-    else:
-        conditions_failed.append("insufficient fair value floor support")
+        price = (dossier.get("quote") or {}).get("price")
+        dcf_iv = (dossier.get("valuation") or {}).get("dcf_iv_per_share")
+        # Core principle: Python does the math. Prefer the Python-computed composite
+        # (dossier["fair_values"]) and the dossier DCF over the debate's
+        # fair_value_composite, which may be the LLM moderator's number (see debate.py).
+        def _f(v):
+            try:
+                return float(v) if v is not None else None
+            except (ValueError, TypeError):
+                return None
+        py_composite  = _f((dossier.get("fair_values") or {}).get("composite_fair_value"))
+        dcf_iv        = _f(dcf_iv)
+        llm_composite = _f(result.get("fair_value_composite"))
+        if py_composite is not None:
+            floor_iv, source = py_composite, "Python FV composite"
+        elif dcf_iv is not None:
+            floor_iv, source = dcf_iv, "DCF IV"
+        else:
+            floor_iv, source = llm_composite, "LLM FV composite"
+        if price and floor_iv and price > 0 and floor_iv >= price * 0.7:
+            conditions_met.append(f"{source} ${floor_iv:.2f} >= 70% of price ${price:.2f}")
+        else:
+            conditions_failed.append("insufficient fair value floor support")
 
     # Condition 4: insider net buying
     insiders = dossier.get("insiders") or {}
@@ -305,6 +318,7 @@ def position_size(
     cycle_phase: str | None,
     durability_score: int,
     data_confidence: str,
+    risk_reward: dict | None = None,
 ) -> dict:
     """Map adjusted score to suggested portfolio allocation %.
 
@@ -351,6 +365,18 @@ def position_size(
     if data_confidence == "LOW":
         multiplier *= 0.5
         modifiers.append("halved: low data confidence")
+
+    # Risk/reward quadrant: size up the prize quadrant, size down un-afforded risk
+    # (HIGH risk with HIGH reward is partially afforded — 0.75x instead of 0.5x).
+    rrq = risk_reward or {}
+    if rrq.get("applied"):
+        if rrq.get("quadrant") == "LOW_RISK_HIGH_REWARD":
+            multiplier *= 1.25
+            modifiers.append("1.25× low-risk/high-reward quadrant")
+        elif rrq.get("risk_tier") == "HIGH":
+            f = 0.75 if rrq.get("reward_tier") == "HIGH" else 0.5
+            multiplier *= f
+            modifiers.append(f"{f}×: HIGH risk tier")
 
     # BANGER bonus: allow 1.5x
     if is_banger:
@@ -453,13 +479,14 @@ def apply_adjustments(
 
     Pipeline order:
     1. Earnings durability multiplier
-    2. Analyst consensus gap adjustment
+    2. Analyst consensus gap adjustment (superseded by risk/reward when it applies)
     3. Cycle position adjustment
-    4. Data confidence penalty
-    5. Portfolio overlap (if portfolio provided)
-    6. Grade assignment
-    7. Banger detection
-    8. Position sizing
+    4. Quantified risk/reward matrix (risk_reward.py)
+    5. Data confidence penalty
+    6. Portfolio overlap (if portfolio provided)
+    7. Grade assignment
+    8. Banger detection
+    9. Position sizing
     """
     profile = dossier.get("profile") or {}
     sector = profile.get("sector") or "Unknown"
@@ -489,6 +516,10 @@ def apply_adjustments(
     except (ValueError, TypeError):
         moat_composite = None
 
+    # Quantified risk/reward — computed once, reused by the matrix step, banger
+    # gate, and position sizing. Returns {"applied": False, ...} on missing data.
+    rr = compute_risk_reward(dossier)
+
     score = raw_score
     adjustments = {"raw": raw_score, "is_holding": is_holding}
 
@@ -512,6 +543,10 @@ def apply_adjustments(
     # docks the score; that's an entry-decision signal, not a hold-decision one.
     if is_holding:
         adjustments["consensus_gap"] = {"applied": False, "reason": "skipped in hold-mode", "result": score}
+    elif rr.get("applied"):
+        # The risk/reward layer already blends the analyst-target gap into its
+        # upside measure (0.3 weight) — applying both would double-count it.
+        adjustments["consensus_gap"] = {"applied": False, "reason": "superseded by risk_reward layer", "result": score}
     else:
         score, consensus_details = consensus_gap_adjust(score, price, analyst_target, num_analysts)
         adjustments["consensus_gap"] = {**consensus_details, "result": score}
@@ -531,25 +566,32 @@ def apply_adjustments(
         }
     adjustments["cycle_position"] = {**cycle_details, "result": score}
 
-    # 4. Data confidence
+    # 4. Quantified risk/reward matrix — full strength in BOTH scout and hold mode:
+    # for holdings this IS the "remaining reward affords the risk" logic (a held
+    # name with little upside left and elevated risk should feel trim pressure).
+    if rr.get("applied"):
+        score = round(min(10.0, max(1.0, score + rr["adjustment"])), 2)
+    adjustments["risk_reward"] = {**rr, "result": score}
+
+    # 5. Data confidence
     score, dc_details = data_confidence_adjust(score, data_confidence)
     adjustments["data_confidence"] = {**dc_details, "result": score}
 
-    # 5. Portfolio overlap (optional)
+    # 6. Portfolio overlap (optional)
     if portfolio_sectors is not None:
         score, overlap_details = portfolio_overlap_adjust(score, sector, portfolio_sectors)
         adjustments["portfolio_overlap"] = {**overlap_details, "result": score}
 
-    # 6. Grade — hold ladder (ADD/HOLD/TRIM/EXIT) for holdings, entry ladder otherwise.
+    # 7. Grade — hold ladder (ADD/HOLD/TRIM/EXIT) for holdings, entry ladder otherwise.
     final_grade = grade_hold(score) if is_holding else grade(score)
     adjustments["final"] = score
 
-    # 7. Banger detection
+    # 8. Banger detection
     result_for_banger = dict(result)
     result_for_banger["consensus_score"] = score  # use adjusted score for banger check
-    banger = banger_check(result_for_banger, dossier)
+    banger = banger_check(result_for_banger, dossier, risk_reward=rr)
 
-    # 8. Position sizing
+    # 9. Position sizing
     confidence = result.get("confidence", "MEDIUM")
     sizing = position_size(
         score=score,
@@ -559,6 +601,7 @@ def apply_adjustments(
         cycle_phase=cycle_phase,
         durability_score=durability_score,
         data_confidence=data_confidence,
+        risk_reward=rr,
     )
 
     return {
@@ -567,6 +610,7 @@ def apply_adjustments(
         "score_adjustments": adjustments,
         "banger":            banger,
         "position_guidance": sizing,
+        "risk_reward":       _rr_compact(rr),
     }
 
 
@@ -582,4 +626,5 @@ def _safe_apply_adjustments(raw_score, result, dossier, portfolio_sectors=None, 
             "score_adjustments": {"raw": raw_score, "is_holding": is_holding, "error": str(e)},
             "banger":            {"is_banger": False, "conditions_met": [], "conditions_failed": ["pipeline error"], "reason": str(e)},
             "position_guidance": {"range": "N/A", "basis_pct": 0.0, "reasoning": "scoring pipeline error", "modifiers": []},
+            "risk_reward":       {"applied": False, "reason": "pipeline error"},
         }

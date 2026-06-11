@@ -392,6 +392,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
     moderator_result["score_adjustments"]    = scoring_output["score_adjustments"]
     moderator_result["banger"]               = scoring_output["banger"]
     moderator_result["position_guidance"]    = scoring_output["position_guidance"]
+    moderator_result["risk_reward"]          = scoring_output.get("risk_reward", {"applied": False})
 
     transcript.append(moderator_result)
 
@@ -413,6 +414,33 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         _price,
     )
 
+    # Cross-check the agents' bull/bear price targets against the computed R:R —
+    # a large divergence flags either an over-excited debate or a stale FV engine.
+    _rr = moderator_result.get("risk_reward") or {}
+    if _rr.get("applied"):
+        from risk_reward import llm_cross_check
+
+        def _coerce(v):
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        # Synthesis may return null targets — fall back to CatalystHunter's R1
+        # bull_target/bear_floor (the agent explicitly asked to price the range).
+        def _target(field):
+            v = _coerce(moderator_result.get(field))
+            if v is None:
+                for t in transcript:
+                    if isinstance(t, dict) and t.get("agent") == "CatalystHunter" and t.get(field) is not None:
+                        v = _coerce(t.get(field))
+                        break
+            return _sanitize_fv(v, _price)
+
+        _xc = llm_cross_check(_rr, _target("bull_target"), _target("bear_floor"), _price)
+        if _xc:
+            _rr["llm_cross_check"] = _xc
+
     return {
         "ticker":               ticker,
         "raw_consensus_score":  moderator_result.get("raw_consensus_score", round(avg, 2)),
@@ -426,6 +454,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "score_rationale":      moderator_result.get("score_rationale", ""),
         "catalyst":             moderator_result.get("catalyst", ""),
         "asymmetry_ratio":      moderator_result.get("asymmetry_ratio", ""),
+        "risk_reward":          moderator_result.get("risk_reward", {"applied": False}),
         "moat_composite":       moderator_result.get("moat_composite"),
         "cycle_position":       moderator_result.get("cycle_position", {}),
         "fair_value_composite": _llm_fv or _dossier_fv,

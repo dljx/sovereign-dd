@@ -3,6 +3,8 @@
 import json
 import re
 
+from risk_reward import compute_risk_reward
+
 AGENTS = [
     "StructuralEdge",
     "FundamentalForensics",
@@ -296,7 +298,7 @@ red flag in your risk assessment.
 ================================
 
 CYCLE TYPE: {cycle_type} — factor this into your earnings durability and cycle regime assessment.
-{data_quality_warning}{hold_mode_block}SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRENT price:
+{data_quality_warning}{risk_reward_block}{hold_mode_block}SCORING CALIBRATION — your score MUST reflect risk-adjusted merit at the CURRENT price:
   9.0-10.0  Exceptional — top-decile opportunity, overwhelming evidence, minimal risks
   7.0-8.9   Strong — compelling thesis with manageable risks, clear near-term catalysts
   5.0-6.9   Neutral — balanced bull/bear, no clear edge, fair or uncertain valuation
@@ -366,7 +368,9 @@ If you are CatalystHunter, also add these fields to your JSON:
   "cycle_phase": "<EARLY|MID|LATE|PEAK|TROUGH>",
   "cycle_evidence": "<one sentence: why this phase — cite specific data points>",
   "risk_matrix": [{{"risk": "<description>", "probability": "<HIGH|MED|LOW>", "impact": "<HIGH|MED|LOW>"}}],
-  "macro_sensitivity": "<HIGH|MEDIUM|LOW> — <key exposure>"
+  "macro_sensitivity": "<HIGH|MEDIUM|LOW> — <key exposure>",
+  "bull_target": <float — your 12-18 month bull-case PRICE for the stock, a dollar number not a ratio>,
+  "bear_floor": <float — your bear-case downside floor PRICE, a dollar number not a ratio>
 
 If you are MarketStructure, also add these fields to your JSON:
   "trend_alignment": "<BULLISH_STACK|PARTIAL|BEARISH_STACK|TRANSITIONING>",
@@ -459,6 +463,8 @@ Output ONLY this JSON:
   "score_rationale": "<why this score, not higher — what specific risks or uncertainties prevent a higher rating>",
   "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
   "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
+  "bull_target": <float or null — consensus bull-case PRICE from CatalystHunter/agents>,
+  "bear_floor": <float or null — consensus bear-case floor PRICE>,
   "moat_composite": "<StructuralEdge composite score if available, else null>",
   "fair_value_composite": <float or null — ValuationEngine's consensus fair value estimate>,
   "entry_assessment": "<MarketStructure's timing recommendation: ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
@@ -488,6 +494,8 @@ Output ONLY this JSON:
   "score_rationale": "<why this score, not higher or lower>",
   "catalyst": "<the primary catalyst that would drive re-rating, from agent consensus>",
   "asymmetry_ratio": "<consensus upside/downside ratio estimate>",
+  "bull_target": <float or null — consensus bull-case PRICE from CatalystHunter/agents>,
+  "bear_floor": <float or null — consensus bear-case floor PRICE>,
   "moat_composite": "<StructuralEdge composite score if available, else null>",
   "fair_value_composite": <float or null — ValuationEngine's consensus fair value estimate>,
   "entry_assessment": "<MarketStructure's timing recommendation: ENTER_NOW|WAIT_FOR_PULLBACK|AVOID_ENTRY>",
@@ -604,6 +612,26 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
 
     company_name = dossier.get("profile", {}).get("name") or ticker
 
+    # Computed asymmetry baseline — agents debate these numbers instead of
+    # inventing a ratio from vibes. Wrapped so a layer bug can never break R1.
+    try:
+        rr = compute_risk_reward(dossier)
+    except Exception:
+        rr = {"applied": False}
+    if rr.get("applied"):
+        flags = "; ".join(rr.get("risk_components") or []) or "none"
+        rr_block = (
+            "\nQUANTIFIED RISK/REWARD (computed deterministically from the dossier — treat as the asymmetry baseline):\n"
+            f"  Upside to blended fair value: {rr['upside_pct']:+.1f}%  (source: {rr['upside_source']})\n"
+            f"  Downside to support floor:    -{rr['downside_pct']:.1f}%  (floor ${rr['downside_floor']:.2f})\n"
+            f"  R/R ratio: {rr['rr_ratio']:.1f}:1  ·  Risk index: {rr['risk_index']:.1f}/10 ({rr['risk_tier']})  ·  Reward tier: {rr['reward_tier']}\n"
+            f"  Risk flags: {flags}\n"
+            "Debate these computed numbers rather than inventing your own ratio. If your research\n"
+            "supports different bull/bear targets, state explicitly WHY they differ.\n"
+        )
+    else:
+        rr_block = ""
+
     hold_block = HOLD_MODE_PREAMBLE if is_holding else ""
     scoring_lens = (
         "This stock is a CURRENT HOLDING — score the DECISION TO HOLD vs TRIM vs EXIT, "
@@ -622,6 +650,7 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
             dossier_json=json.dumps(slim, indent=2, default=str),
             cycle_type=dossier.get("cycle_type", "UNKNOWN"),
             data_quality_warning=dq_warning,
+            risk_reward_block=rr_block,
             hold_mode_block=hold_block,
             scoring_lens_line=scoring_lens,
         ),

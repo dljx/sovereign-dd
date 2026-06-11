@@ -103,6 +103,8 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
         "analyzed_at":       result.get("built_at", ""),
         "catalyst":          result.get("catalyst", ""),
         "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
+        "rr":                (result.get("risk_reward") or {}).get("rr_ratio"),
+        "risk":              (result.get("risk_reward") or {}).get("risk_tier"),
         "banger":            result.get("banger", {}),
         "position_guidance": result.get("position_guidance", {}),
         "cycle_position":    result.get("cycle_position", {}),
@@ -153,6 +155,8 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
             "updated": result.get("built_at", ""),
             "loops":   result.get("loops_run", 0),
             "spread":  result.get("score_spread", 0),
+            "rr":      (result.get("risk_reward") or {}).get("rr_ratio"),
+            "risk":    (result.get("risk_reward") or {}).get("risk_tier"),
         }
         # Reflect this run on the Scout board: >= threshold refreshes/creates the
         # card; below threshold removes any stale card for the ticker.
@@ -248,6 +252,8 @@ def collect_gems_results(gems_dir: Path) -> list:
                 "analyzed_at":       result.get("built_at", ""),
                 "catalyst":          result.get("catalyst", ""),
                 "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
+                "rr":                (result.get("risk_reward") or {}).get("rr_ratio"),
+                "risk":              (result.get("risk_reward") or {}).get("risk_tier"),
                 "banger":            result.get("banger", {}),
                 "position_guidance": result.get("position_guidance", {}),
                 "cycle_position":    result.get("cycle_position", {}),

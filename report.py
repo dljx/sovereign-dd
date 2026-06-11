@@ -87,15 +87,22 @@ def render(result: dict, dossier: dict) -> None:
     # ── Catalyst & Asymmetry ───────────────────────────────────────────────────
     catalyst = result.get("catalyst", "")
     asymmetry = result.get("asymmetry_ratio", "")
+    rr = result.get("risk_reward") or {}
     cycle_pos = result.get("cycle_position", {})
     moat_comp = result.get("moat_composite")
 
-    if catalyst or asymmetry or cycle_pos or moat_comp:
+    if catalyst or asymmetry or cycle_pos or moat_comp or rr.get("applied"):
         parts = []
         if catalyst:
             parts.append(f"[bold]Catalyst:[/bold] {escape(catalyst[:200])}")
         if asymmetry:
             parts.append(f"[bold]Asymmetry:[/bold] {escape(str(asymmetry))}")
+        if rr.get("applied"):
+            parts.append(
+                f"[bold]R/R (computed):[/bold] {rr.get('rr_ratio', 0):.1f}:1"
+                f"  ·  risk {rr.get('risk_tier','?')} ({rr.get('risk_index','?')}/10)"
+                f"  ·  reward {rr.get('reward_tier','?')}"
+            )
         if isinstance(cycle_pos, dict) and cycle_pos.get("phase"):
             parts.append(f"[bold]Cycle:[/bold] {escape(cycle_pos.get('regime', ''))} — {escape(cycle_pos.get('phase', ''))}"
                          f"  ({escape(cycle_pos.get('evidence', '')[:100])})")
@@ -203,6 +210,11 @@ def render(result: dict, dossier: dict) -> None:
             if adj_dict.get("cycle_position", {}).get("applied"):
                 cp = adj_dict["cycle_position"]
                 adj_lines.append(f"  Cycle position: {cp.get('reason','?')} ({cp.get('adjustment',0):+.1f}) → {cp.get('result', 0.0):.2f}")
+            if adj_dict.get("risk_reward", {}).get("applied"):
+                rra = adj_dict["risk_reward"]
+                adj_lines.append(
+                    f"  Risk/reward: {rra.get('quadrant','?')} ({rra.get('adjustment',0):+.2f}) → {rra.get('result', 0.0):.2f}"
+                )
             if adj_dict.get("data_confidence", {}).get("applied"):
                 adj_lines.append(f"  Data confidence penalty: -0.5")
 

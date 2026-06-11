@@ -113,6 +113,7 @@ def alert_buy_signal(d: dict) -> bool:
         + (f"<b>Gemma flagged:</b> <i>{rationale[:350]}</i>\n" if rationale else "")
         + (f"\n<b>Catalyst:</b> <i>{catalyst[:400]}</i>\n" if catalyst else "")
         + (f"<b>Asymmetry:</b> {asymmetry}\n" if asymmetry else "")
+        + (f"<b>R/R:</b> {d['rr']:.1f}:1 ({d.get('risk','?')} risk)\n" if d.get("rr") is not None else "")
         + (f"<b>Cycle:</b> {cycle_pos.get('regime','')} — {cycle_pos.get('phase','')}\n" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
         + f"\n<b>Bull case:</b> <i>{d['thesis'][:600]}</i>\n\n"
         + (f"<b>Why not higher:</b> <i>{penalty[:450]}</i>\n\n" if penalty else "")
@@ -149,9 +150,16 @@ def alert_dd_result(result: dict) -> bool:
     banger = result.get("banger", {})
     banger_line = f"\n🔥 <b>BANGER</b> — {banger.get('reason','')[:250]}" if isinstance(banger, dict) and banger.get("is_banger") else ""
 
+    rrd = result.get("risk_reward") or {}
+    rr_line = (
+        f"<b>R/R:</b> {rrd['rr_ratio']:.1f}:1 ({rrd.get('risk_tier','?')} risk)\n"
+        if rrd.get("applied") and rrd.get("rr_ratio") is not None else ""
+    )
+
     msg = (
         f"{emoji} <b>SOVEREIGN DD — {ticker}</b>\n"
-        f"<b>Score:</b> {score:.2f}/10 · {grade} · {cconf}\n\n"
+        f"<b>Score:</b> {score:.2f}/10 · {grade} · {cconf}\n"
+        + rr_line + "\n"
         f"<pre>{agents_block}</pre>\n\n"
         + (f"<b>Catalyst:</b> <i>{catalyst[:400]}</i>\n\n" if catalyst else "")
         + f"<i>{thesis}</i>"
