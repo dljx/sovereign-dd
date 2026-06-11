@@ -46,6 +46,8 @@ jobs:
           PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,MTZ,PENG,VST,AVGO,GOOG,MSFT,MU,NOW,P"
           DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
           SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
         run: |
           TICKER="${{ github.event.inputs.ticker }}"
           if [ -z "$TICKER" ]; then
@@ -60,6 +62,8 @@ jobs:
         env:
           DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
           SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
         run: python upload_kv.py
 
       - name: Notify on failure
