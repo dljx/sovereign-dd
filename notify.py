@@ -22,6 +22,10 @@ GRADE_EMOJI = {
     "SELL":           "🔴",
     "STRONG SELL":    "🔴🔴",
     "AVOID":          "🔴🔴🔴",
+    # Hold-mode labels (ADD/HOLD/TRIM/EXIT) — mirror GRADE_COLORS in grading.py
+    "ADD":            "🟢🟢",
+    "TRIM":           "🔴",
+    "EXIT":           "🔴🔴",
 }
 
 CONF_EMOJI = {"HIGH": "⭐⭐⭐", "MEDIUM": "⭐⭐", "LOW": "⭐"}
