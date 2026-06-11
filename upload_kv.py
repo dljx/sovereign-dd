@@ -367,7 +367,10 @@ def main():
                 mos = None
             dd_rows.append(_sanitize({
                 "ticker":       result["ticker"],
-                "run_at":       dossier.get("built_at") or result.get("built_at"),
+                # run_at is NOT NULL in Supabase — a missing built_at would reject the
+                # whole batch insert, so fall back to upload time.
+                "run_at":       dossier.get("built_at") or result.get("built_at")
+                                or datetime.now(timezone.utc).isoformat(),
                 "price":        price,
                 "composite_fv": comp_fv,
                 "result_fv":    result_fv,
