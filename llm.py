@@ -25,6 +25,14 @@ _key_lock  = threading.Lock()       # thread-safe rotation for concurrent async 
 _clients: dict[str, genai.Client] = {}
 _model_ids: dict[str, str] = {}     # key -> verified model ID string
 
+# Hard timeouts. Without them a stalled HTTP connection blocks generate_content
+# FOREVER — on 2026-06-10 a moderator call hung 5.5h until GitHub killed the job
+# at the 6-hour limit (and the queued next run was auto-cancelled). The SDK
+# timeout is per-request (milliseconds); the asyncio guard is a belt-and-braces
+# outer bound on the whole thread in case the SDK timeout fails to fire.
+_HTTP_TIMEOUT_MS    = int(os.getenv("LLM_HTTP_TIMEOUT_MS", "240000"))   # 4 min
+_CALL_TIMEOUT_SECS  = int(os.getenv("LLM_CALL_TIMEOUT_SECS", "300"))    # 5 min
+
 _key_cooldowns: dict[str, float] = {}   # key -> unix timestamp when available again
 _key_daily_exhausted: set[str] = set() # keys with daily RPD quota consumed
 _cooldown_lock = threading.Lock()
@@ -51,19 +59,26 @@ def _is_daily_exhausted(err_str: str) -> bool:
     )
 
 
+def _new_client(key: str) -> genai.Client:
+    return genai.Client(
+        api_key=key,
+        http_options=types.HttpOptions(timeout=_HTTP_TIMEOUT_MS),
+    )
+
+
 def _client() -> tuple[genai.Client, str]:
     """Return (client, api_key) for the next key in rotation. Thread-safe."""
     with _key_lock:
         key = next(_key_cycle)
     if key not in _clients:
-        _clients[key] = genai.Client(api_key=key)
+        _clients[key] = _new_client(key)
     return _clients[key], key
 
 
 def _client_for(key: str) -> genai.Client:
     """Return (or create) a client for a specific key."""
     if key not in _clients:
-        _clients[key] = genai.Client(api_key=key)
+        _clients[key] = _new_client(key)
     return _clients[key]
 
 
@@ -303,16 +318,35 @@ async def call_gemini_async(
         server_err_wait = 0.0
         async with _semaphore():
             try:
-                return await asyncio.to_thread(
-                    call_gemini, system, user, model, temperature, 1, grounding, key,
-                    max_output_tokens, thinking_level
+                return await asyncio.wait_for(
+                    asyncio.to_thread(
+                        call_gemini, system, user, model, temperature, 1, grounding, key,
+                        max_output_tokens, thinking_level
+                    ),
+                    timeout=_CALL_TIMEOUT_SECS,
                 )
+            except asyncio.TimeoutError as e:
+                # The worker thread is abandoned (the SDK's own HTTP timeout will
+                # reap it); treat like a transient server error and try another key.
+                last_err = e
+                if attempt == max_retries - 1:
+                    raise RuntimeError(
+                        f"LLM call timed out after {_CALL_TIMEOUT_SECS}s on final attempt"
+                    ) from e
+                print(f"  [llm] call timed out after {_CALL_TIMEOUT_SECS}s "
+                      f"(attempt {attempt + 1}), retrying on another key...")
+                _cool_key(key, _jittered(30))
             except Exception as e:
                 last_err = e
                 err_str = str(e).lower()
+                # thinking-400: _generate's self-heal normally absorbs this; if one
+                # still escapes (seen 2026-06-10 when Google transiently rejected
+                # thinking on requests that didn't even send it), it's a server-side
+                # incident — retry on another key rather than failing the agent.
                 is_retryable = (
                     "429" in err_str or "quota" in err_str
                     or "503" in err_str or "500" in err_str or "502" in err_str
+                    or ("thinking" in err_str and "400" in err_str)
                 )
                 if not is_retryable or attempt == max_retries - 1:
                     raise
@@ -378,13 +412,18 @@ async def call_gemini_with_tools_async(
         _types.Content(role="user", parts=[_types.Part(text=user)])
     ]
 
-    config = _types.GenerateContentConfig(
-        system_instruction=system,
-        tools=[tools],
-        temperature=temperature,
-        max_output_tokens=32768,
-        thinking_config=_types.ThinkingConfig(thinking_level="high"),
-    )
+    def _build_config(with_thinking: bool) -> "_types.GenerateContentConfig":
+        cfg: dict = dict(
+            system_instruction=system,
+            tools=[tools],
+            temperature=temperature,
+            max_output_tokens=32768,
+        )
+        if with_thinking:
+            cfg["thinking_config"] = _types.ThinkingConfig(thinking_level="high")
+        return _types.GenerateContentConfig(**cfg)
+
+    config = _build_config(with_thinking=True)
 
     for turn in range(max_tool_turns + 1):
         # Make API call with retries (reuse existing key rotation)
@@ -406,16 +445,35 @@ async def call_gemini_with_tools_async(
                 try:
                     client = _client_for(key)
                     resolved_model = _resolve_model(client, key, model)
-                    response = await asyncio.to_thread(
-                        client.models.generate_content,
-                        model=resolved_model,
-                        contents=contents,
-                        config=config,
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.models.generate_content,
+                            model=resolved_model,
+                            contents=contents,
+                            config=config,
+                        ),
+                        timeout=_CALL_TIMEOUT_SECS,
                     )
                     break  # success
+                except asyncio.TimeoutError as e:
+                    last_err = e
+                    if attempt == max_retries - 1:
+                        raise RuntimeError(
+                            f"LLM tool call timed out after {_CALL_TIMEOUT_SECS}s on final attempt"
+                        ) from e
+                    print(f"  [llm] tool call timed out after {_CALL_TIMEOUT_SECS}s "
+                          f"(attempt {attempt + 1}), retrying on another key...")
+                    _cool_key(key, _jittered(30))
                 except Exception as e:
                     last_err = e
                     err_str = str(e).lower()
+                    # Self-heal: model rejected the thinking level (same failure mode
+                    # call_gemini's _generate absorbs) — drop thinking and retry.
+                    if "thinking" in err_str and "400" in err_str:
+                        if attempt == max_retries - 1:
+                            raise
+                        config = _build_config(with_thinking=False)
+                        continue
                     is_retryable = (
                         "429" in err_str or "quota" in err_str
                         or "503" in err_str or "500" in err_str or "502" in err_str

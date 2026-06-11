@@ -17,6 +17,9 @@ jobs:
   analyze:
     name: Run analysis
     runs-on: ubuntu-latest
+    # Portfolio scan is ~15 hold-mode debates (well under an hour); 90 min stops
+    # a hung LLM call from occupying the runner for GitHub's full 6-hour limit.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout

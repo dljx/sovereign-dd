@@ -16,6 +16,10 @@ jobs:
   scout:
     name: Run scout + gems
     runs-on: ubuntu-latest
+    # A hung LLM call once ran the full 6h GitHub limit, and the queued next run
+    # was auto-cancelled. Normal runs are 30-60 min; 150 converts a zombie into a
+    # clean failure (Telegram alert fires) while the queued run still executes.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout
