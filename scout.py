@@ -499,7 +499,10 @@ async def _triage_with_gemma(
     portfolio: set[str],
     verbose: bool = True,
     debate_count: int = 6,
-) -> list[dict]:
+) -> list[dict] | None:
+    """Returns the validated picks, or None when triage itself failed (LLM error
+    or unparseable output) — None tells the caller the window was never
+    evaluated, so it must not be marked shown in the rotation ledger."""
     from llm import call_gemini_async, extract_json
 
     if not candidates:
@@ -514,8 +517,8 @@ async def _triage_with_gemma(
         text = await call_gemini_async(TRIAGE_SYSTEM, prompt, grounding=True, temperature=0.3)
     except Exception as e:
         print(f"  [scout] Triage LLM call failed: {e}")
-        print("  [scout] Gemma quota likely exhausted — skipping run to conserve budget")
-        return []
+        print("  [scout] Skipping run — window will be re-shown next run")
+        return None
 
     try:
         parsed = extract_json(text)
@@ -533,8 +536,8 @@ async def _triage_with_gemma(
     except Exception as e:
         print(f"  [scout] Triage parse error: {e}\n  Raw: {text[:300]}")
         print("  [scout] Skipping run — refusing to debate/alert randomly-selected "
-              "tickers on a triage parse failure.")
-        return []
+              "tickers on a triage parse failure. Window will be re-shown next run.")
+        return None
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -619,6 +622,13 @@ async def run_scout(
     picks = await _triage_with_gemma(
         window, portfolio_set, verbose=verbose, debate_count=SCOUT_DEBATE_COUNT
     )
+
+    if picks is None:
+        # Triage itself failed (LLM error / unparseable output) — the window
+        # was never evaluated, so leave the ledger untouched: the same names
+        # get first shot at the next run instead of silently skipping ~600
+        # stocks a full rotation cycle.
+        return []
 
     # Record the round in the rotation ledger BEFORE any early return — shown
     # names rotate out of the window even when triage picks nothing.

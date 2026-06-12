@@ -85,3 +85,60 @@ def test_load_seen_corrupt_returns_empty(tmp_path, monkeypatch):
     path.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(scout, "SCOUT_SEEN_FILE", path)
     assert scout._load_seen() == {}
+
+
+# ── Triage failure must not burn the window (504 zombie of 2026-06-11) ─────────
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_triage_llm_failure_returns_none(monkeypatch):
+    import llm
+
+    async def boom(*a, **k):
+        raise RuntimeError("504 DEADLINE_EXCEEDED")
+
+    monkeypatch.setattr(llm, "call_gemini_async", boom)
+    result = _run(scout._triage_with_gemma([_mk("AAA")], set(), verbose=False))
+    assert result is None
+
+
+def test_triage_parse_failure_returns_none(monkeypatch):
+    import llm
+
+    async def garbage(*a, **k):
+        return "not json at all"
+
+    monkeypatch.setattr(llm, "call_gemini_async", garbage)
+    monkeypatch.setattr(llm, "extract_json", lambda t: (_ for _ in ()).throw(ValueError("no JSON")))
+    result = _run(scout._triage_with_gemma([_mk("AAA")], set(), verbose=False))
+    assert result is None
+
+
+def test_triage_legit_empty_returns_list(monkeypatch):
+    import llm
+
+    async def empty_picks(*a, **k):
+        return '{"picks": []}'
+
+    monkeypatch.setattr(llm, "call_gemini_async", empty_picks)
+    monkeypatch.setattr(llm, "extract_json", lambda t: {"picks": []})
+    result = _run(scout._triage_with_gemma([_mk("AAA")], set(), verbose=False))
+    assert result == []
+
+
+def test_triage_valid_picks_returned(monkeypatch):
+    import llm
+
+    async def ok(*a, **k):
+        return "json"
+
+    monkeypatch.setattr(llm, "call_gemini_async", ok)
+    monkeypatch.setattr(
+        llm, "extract_json",
+        lambda t: {"picks": [{"ticker": "AAA", "reason": "x"}, {"ticker": "ZZZ", "reason": "y"}]},
+    )
+    result = _run(scout._triage_with_gemma([_mk("AAA")], set(), verbose=False, debate_count=5))
+    assert [p["ticker"] for p in result] == ["AAA"]  # ZZZ not in window → dropped

@@ -346,6 +346,7 @@ async def call_gemini_async(
                 is_retryable = (
                     "429" in err_str or "quota" in err_str
                     or "503" in err_str or "500" in err_str or "502" in err_str
+                    or "504" in err_str or "deadline" in err_str
                     or ("thinking" in err_str and "400" in err_str)
                 )
                 if not is_retryable or attempt == max_retries - 1:
@@ -477,6 +478,7 @@ async def call_gemini_with_tools_async(
                     is_retryable = (
                         "429" in err_str or "quota" in err_str
                         or "503" in err_str or "500" in err_str or "502" in err_str
+                        or "504" in err_str or "deadline" in err_str
                     )
                     if not is_retryable or attempt == max_retries - 1:
                         raise
