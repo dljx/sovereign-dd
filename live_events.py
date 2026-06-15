@@ -4,6 +4,15 @@ Batching strategy: accumulate events in memory per ticker and flush to KV
 as a full replacement every FLUSH_EVERY events (or immediately on DONE).
 This changes ~35 individual read+write KV pairs per run into ~7 write-only
 operations, cutting live-event KV usage by ~5x on both reads and writes.
+
+Opt-in via LIVE_EVENTS=1: a full scout+gems run debates ~30 tickers, each
+emitting ~35-55 events → ~280 write-only KV ops/run. Six 4-hourly crons plus
+the portfolio scan = ~1,700 writes/day, which blows the Cloudflare KV free-tier
+1,000 writes/day limit (observed: the upload step then 403s with "KV put()
+limit exceeded"). Nobody watches an unattended cron live (KV read analytics: 44
+reads vs 1,819 writes over 2.5 days), so the stream is pure waste there. Only
+user-triggered single-ticker analyses set LIVE_EVENTS=1 (see analyze.yml); every
+scheduled run leaves it unset and emits nothing.
 """
 
 import asyncio
@@ -16,6 +25,15 @@ _LIVE_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 _LIVE_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
 
 FLUSH_EVERY = 5  # write to KV every N events
+
+
+def _live_on() -> bool:
+    """Live streaming is opt-in. Requires both the upload secret (to reach KV)
+    and LIVE_EVENTS truthy — read at call time so a per-invocation env var
+    (LIVE_EVENTS=1 python main.py TICKER) takes effect without re-import."""
+    if not _LIVE_SECRET:
+        return False
+    return os.getenv("LIVE_EVENTS", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # In-memory buffer: ticker → [events].  Accumulated for the lifetime of the
 # process (single GitHub Actions run), so memory growth is bounded.
@@ -39,7 +57,7 @@ async def emit_live(ticker: str, event: dict) -> None:
 
     DONE events always trigger an immediate flush regardless of batch size.
     """
-    if not _LIVE_SECRET:
+    if not _live_on():
         return
     event["ts"] = time.time()
 

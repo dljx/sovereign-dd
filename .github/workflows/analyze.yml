@@ -54,11 +54,14 @@ jobs:
         run: |
           TICKER="${{ github.event.inputs.ticker }}"
           if [ -z "$TICKER" ]; then
-            echo "=== Portfolio scan ==="
+            echo "=== Portfolio scan (unattended — live events off) ==="
             python main.py --portfolio --save --notify
           else
-            echo "=== Single ticker: $TICKER ==="
-            python main.py "$TICKER" --save
+            # Single-ticker runs are user-triggered from the dashboard and watched
+            # live, so stream debate events to KV. Scheduled runs leave LIVE_EVENTS
+            # unset to stay under the Cloudflare KV free-tier write budget.
+            echo "=== Single ticker: $TICKER (live events on) ==="
+            LIVE_EVENTS=1 python main.py "$TICKER" --save
           fi
 
       - name: Upload results to Sovereign Eye
