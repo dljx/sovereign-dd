@@ -358,8 +358,11 @@ async def run_gems(
                     json.dump({"result": result, "dossier": dossier}, f, indent=2, default=str)
 
                 if verbose:
-                    print(f"  [gems] {ticker} → {score:.2f}/10 [{grade}]"
-                          + (" ← BUY SIGNAL" if score >= BUY_THRESHOLD else ""))
+                    _tag = ""
+                    if score >= BUY_THRESHOLD:
+                        _tag = (" ← BUY ✓ CONFIRMED" if result.get("confirmed", True)
+                                else " ← BUY ⚠ UNDER REVIEW")
+                    print(f"  [gems] {ticker} → {score:.2f}/10 [{grade}]{_tag}")
 
                 # Record in history regardless of grade (prevents re-analysis in cooldown window)
                 async with history_lock:
@@ -393,6 +396,8 @@ async def run_gems(
                         "gemma_rationale":       pillar_rationale,
                         "analyzed_at":           ts,
                         "output_file":           str(out_path),
+                        "confirmed":             result.get("confirmed", True),
+                        "verification":          result.get("verification", {}),
                     }
                 return None
             except Exception as e:

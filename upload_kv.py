@@ -165,9 +165,10 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
         # stale scout cards for held tickers so the board stays clean.
         if result.get("mode") == "hold":
             reconcile_remove.append(ticker)
-        elif result.get("consensus_score", 0) >= BUY_THRESHOLD:
+        elif result.get("consensus_score", 0) >= BUY_THRESHOLD and result.get("confirmed", True):
             scout_cards.append(_scout_card(ticker, result, data.get("meta", {})))
         else:
+            # Below threshold OR failed the confirmation gate — keep off the Scout board.
             reconcile_remove.append(ticker)
 
     return results, index, scout_cards, reconcile_remove
@@ -203,7 +204,7 @@ def collect_scout_results(scout_dir: Path) -> list:
         score  = result.get("consensus_score", 0)
         grade  = result.get("consensus_grade", "?")
 
-        if score >= BUY_THRESHOLD:
+        if score >= BUY_THRESHOLD and result.get("confirmed", True):
             discoveries.append(_scout_card(ticker, result, data.get("meta", {})))
 
     return discoveries
@@ -241,7 +242,7 @@ def collect_gems_results(gems_dir: Path) -> list:
         score  = result.get("consensus_score", 0)
         grade  = result.get("consensus_grade", "?")
 
-        if score >= BUY_THRESHOLD:
+        if score >= BUY_THRESHOLD and result.get("confirmed", True):
             discoveries.append({
                 "ticker":            ticker,
                 "score":             round(score, 2),
@@ -262,6 +263,43 @@ def collect_gems_results(gems_dir: Path) -> list:
             })
 
     return discoveries
+
+
+def collect_watchlist_results(output_dir: Path) -> list:
+    """Collect BUYs that crossed BUY_THRESHOLD but FAILED the confirmation gate
+    (confirmed is False), from both the scouts and gems output dirs. These are the
+    'Under Review' cards for dd:watchlist.
+
+    Uses the same recency windows as the confirmed collectors so a stale reject
+    ages off the board naturally; dedupes to the newest file per ticker.
+    """
+    out = []
+    for src_dir, window in [(output_dir / "scouts", SCOUT_UPLOAD_WINDOW_SECS),
+                            (output_dir / "gems",   GEMS_UPLOAD_WINDOW_SECS)]:
+        if not src_dir.exists():
+            continue
+        cutoff = time.time() - window
+        latest: dict[str, Path] = {}
+        for path in src_dir.glob("*.json"):
+            if path.stat().st_mtime < cutoff:
+                continue
+            ticker = path.stem.split("_")[0].upper()
+            if ticker not in latest or path.stat().st_mtime > latest[ticker].stat().st_mtime:
+                latest[ticker] = path
+        for ticker, path in sorted(latest.items()):
+            data = load_json(path)
+            if not data:
+                continue
+            result = data.get("result", {})
+            # Only true confirmation-gate rejects: scored a BUY but confirmed is False.
+            if result.get("consensus_score", 0) < BUY_THRESHOLD:
+                continue
+            if result.get("confirmed", True):
+                continue
+            card = _scout_card(ticker, result, data.get("meta", {}))
+            card["verification"] = result.get("verification", {})
+            out.append(card)
+    return out
 
 
 def main():
@@ -295,6 +333,10 @@ def main():
     gems_discoveries = collect_gems_results(gems_dir)
     print(f"  {len(gems_discoveries)} gems BUY signal(s)")
 
+    print("[upload] Collecting watchlist (confirmation-gate rejects)...")
+    watchlist = collect_watchlist_results(output_dir)
+    print(f"  {len(watchlist)} under-review")
+
     # Include scout/gems history files for KV backup (cache-miss recovery)
     print("[upload] Collecting scout history for KV backup...")
     histories: dict[str, dict | None] = {
@@ -325,7 +367,7 @@ def main():
     # would then restore an old window → re-debates and possible re-alerts) and
     # skip the dd:meta heartbeat the health screen watches.
     if (not portfolio_results and not index and not discoveries
-            and not gems_discoveries and not reconcile_remove
+            and not gems_discoveries and not reconcile_remove and not watchlist
             and not scout_history and not scout_notified and not gems_history
             and not scout_seen):
         print("[upload] Nothing to upload.")
@@ -340,6 +382,7 @@ def main():
         "index":            index,
         "scouts":           discoveries if discoveries else None,
         "gems":             gems_discoveries if gems_discoveries else None,
+        "watchlist":        watchlist if watchlist else None,
         "reconcile_remove": reconcile_remove if reconcile_remove else None,
         "scout_history":    scout_history,
         "scout_notified":   scout_notified,

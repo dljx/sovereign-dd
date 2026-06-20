@@ -698,8 +698,11 @@ async def run_scout(
                     json.dump({"result": result, "dossier": dossier, "meta": {"path": _path, "matched_filters": _matched}}, f, indent=2, default=str)
 
                 if verbose:
-                    print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]"
-                          + (" ← BUY SIGNAL" if score >= BUY_THRESHOLD else ""))
+                    _tag = ""
+                    if score >= BUY_THRESHOLD:
+                        _tag = (" ← BUY ✓ CONFIRMED" if result.get("confirmed", True)
+                                else " ← BUY ⚠ UNDER REVIEW")
+                    print(f"  [scout] {ticker} → {score:.2f}/10 [{grade}]{_tag}")
 
                 # Record in history regardless of grade (prevents re-analysis in cooldown window)
                 # Save immediately so a mid-run crash doesn't lose completed tickers
@@ -734,6 +737,8 @@ async def run_scout(
                         "gemma_rationale":  rationale,
                         "analyzed_at":      ts,
                         "output_file":      str(out_path),
+                        "confirmed":        result.get("confirmed", True),
+                        "verification":     result.get("verification", {}),
                     }
                 return None
             except Exception as e:

@@ -232,8 +232,10 @@ async def _run_gems(save: bool = False, notify: bool = False):
     discoveries = await run_gems(verbose=True)
 
     if notify:
-        from notify import alert_buy_signal, alert_scout_summary, alert_dd_result
-        for d in discoveries:
+        from notify import alert_buy_signal, alert_scout_summary, alert_dd_result, alert_watchlist
+        confirmed = [d for d in discoveries if d.get("confirmed", True)]
+        review    = [d for d in discoveries if not d.get("confirmed", True)]
+        for d in confirmed:
             alert_buy_signal(d)
             if d.get("output_file"):
                 try:
@@ -242,9 +244,11 @@ async def _run_gems(save: bool = False, notify: bool = False):
                     alert_dd_result(data["result"])
                 except Exception as e:
                     console.print(f"[dim]  [notify] DD detail unavailable for {d.get('ticker','?')}: {e}[/dim]")
-        if discoveries:
-            alert_scout_summary(discoveries)
-        console.print(f"[dim]Gems alerts sent to Telegram ({len(discoveries)} signal(s))[/dim]")
+        for d in review:
+            alert_watchlist(d)
+        if confirmed:
+            alert_scout_summary(confirmed)
+        console.print(f"[dim]Gems alerts sent ({len(confirmed)} confirmed, {len(review)} under review)[/dim]")
 
     return discoveries
 
@@ -257,13 +261,20 @@ async def _run_scout(save: bool = False, notify: bool = False):
     discoveries = await run_scout(portfolio=portfolio, verbose=True)
 
     if notify:
-        from notify import alert_scout_summary, alert_buy_signal, alert_dd_result
+        from notify import alert_scout_summary, alert_buy_signal, alert_dd_result, alert_watchlist
 
         notified   = _load_notified()
         suppressed = _recently_notified(notified)
         alerted    = []
+        # Under-review BUYs go to the watchlist. We do NOT record them in the
+        # notified ledger: the 48h scout_history cooldown already prevents a
+        # re-debate (and so re-alert) within that window, and recording them
+        # would suppress a legitimate CONFIRMED alert if the ticker later clears.
+        review     = [d for d in discoveries if not d.get("confirmed", True)]
 
         for d in discoveries:
+            if not d.get("confirmed", True):
+                continue  # routed to the watchlist loop below
             ticker = d["ticker"]
             if ticker in suppressed:
                 console.print(
@@ -287,8 +298,12 @@ async def _run_scout(save: bool = False, notify: bool = False):
             _save_notified(notified)
             alerted.append(d)
 
+        for d in review:
+            alert_watchlist(d)
+
         alert_scout_summary(alerted)
-        console.print(f"[dim]Scout alerts sent to Telegram ({len(alerted)} signal(s))[/dim]")
+        console.print(f"[dim]Scout alerts sent ({len(alerted)} confirmed BUY(s), "
+                      f"{len(review)} under review)[/dim]")
 
     return discoveries
 

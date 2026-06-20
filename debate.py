@@ -17,7 +17,7 @@ CONVERGENCE_THRESHOLD = 2.5
 MAX_LOOPS = 3
 
 
-from grading import grade as _grade, grade_hold as _grade_hold
+from grading import grade as _grade, grade_hold as _grade_hold, BUY_THRESHOLD
 
 
 def _live_scores(scores: dict, results: dict) -> dict:
@@ -441,7 +441,7 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         if _xc:
             _rr["llm_cross_check"] = _xc
 
-    return {
+    result_out = {
         "ticker":               ticker,
         "raw_consensus_score":  moderator_result.get("raw_consensus_score", round(avg, 2)),
         "consensus_score":      moderator_result.get("consensus_score", round(avg, 2)),
@@ -472,3 +472,19 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
         "failed_agents":        failed_agents,
         "transcript":           transcript,
     }
+
+    # ── BUY confirmation gate ──────────────────────────────────────────────────
+    # A scout/gems BUY gets a second round of scrutiny (deterministic quality gate
+    # + adversarial red-team) before it is surfaced. Hold-mode (portfolio) results
+    # and sub-threshold scores are not gated. verify_buy never raises.
+    if not is_holding and result_out["consensus_score"] >= BUY_THRESHOLD:
+        import verify
+        _ver = await verify.verify_buy(ticker, result_out, dossier)
+        result_out["verification"] = _ver
+        result_out["confirmed"]    = _ver.get("confirmed", True)
+        if verbose:
+            print(f"  [verify] {ticker} BUY → "
+                  f"{'CONFIRMED' if result_out['confirmed'] else 'UNDER REVIEW'} "
+                  f"({_ver.get('verdict', '?')})")
+
+    return result_out

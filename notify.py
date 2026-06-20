@@ -13,6 +13,9 @@ CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 TOPIC_TRADE_ALERTS  = os.getenv("TELEGRAM_TOPIC_TRADE_ALERTS", "")
 TOPIC_DEEP_DIVES    = os.getenv("TELEGRAM_TOPIC_DEEP_DIVES", "")
 TOPIC_SCAN_RESULTS  = os.getenv("TELEGRAM_TOPIC_SCAN_RESULTS", "")
+# Under-Review watchlist — confirmed-gate rejects. Falls back to Scan Results
+# until a dedicated topic ID is set in TELEGRAM_TOPIC_WATCHLIST.
+TOPIC_WATCHLIST     = os.getenv("TELEGRAM_TOPIC_WATCHLIST", "") or TOPIC_SCAN_RESULTS
 
 GRADE_EMOJI = {
     "CONVICTION BUY": "🟢🟢🟢",
@@ -127,6 +130,47 @@ def alert_buy_signal(d: dict) -> bool:
         + f"\n⏰ {d['analyzed_at']}"
     )
     return _split_send(msg, TOPIC_TRADE_ALERTS)
+
+
+def alert_watchlist(d: dict) -> bool:
+    """Send an 'Under Review' alert for a BUY that crossed the threshold but
+    failed the confirmation gate → Watchlist topic (falls back to Scan Results).
+
+    Leads with the reason it was held back (Stage-1 quality reasons or the
+    red-team's strongest bear point) so it reads as a near-miss, not a signal."""
+    v = d.get("verification", {}) or {}
+    verdict  = v.get("verdict", "?")
+    vscore   = v.get("verification_score")
+    bear     = v.get("strongest_bear_point", "")
+    reasons  = v.get("reasons", []) or []
+    findings = v.get("falsification_findings", []) or []
+
+    if v.get("stage") == 1:
+        held = "Failed internal quality checks — " + "; ".join(reasons)
+    else:
+        held = bear or (reasons[0] if reasons else "Flagged by red-team review")
+
+    conf        = CONF_EMOJI.get(d.get("confidence", ""), "")
+    lens        = d.get("scout_lens", "")
+    lens_tag    = f" · <code>{lens}</code>" if lens else ""
+    vscore_line = f" · verify {vscore:.1f}/10" if isinstance(vscore, (int, float)) else ""
+
+    findings_block = ""
+    if findings:
+        findings_block = ("\n<b>Disconfirming findings:</b>\n"
+                          + "\n".join(f"• <i>{str(f)[:200]}</i>" for f in findings[:4]) + "\n")
+
+    msg = (
+        f"⚠️ <b>UNDER REVIEW — {d['ticker']}</b>{lens_tag}\n"
+        f"<b>Score:</b> {d['score']:.1f}/10 · {d.get('grade','?')} · {conf} · <b>{verdict}</b>{vscore_line}\n"
+        f"<i>Crossed the BUY line but failed the confirmation gate — not a confirmed signal.</i>\n\n"
+        f"<b>Why held back:</b> {held[:500]}\n"
+        + findings_block
+        + (f"<b>R/R:</b> {d['rr']:.1f}:1 ({d.get('risk','?')} risk)\n" if d.get("rr") is not None else "")
+        + f"\n<b>Bull case (unconfirmed):</b> <i>{d.get('thesis','')[:450]}</i>\n"
+        + f"\n⏰ {d.get('analyzed_at','')}"
+    )
+    return _split_send(msg, TOPIC_WATCHLIST)
 
 
 def alert_dd_result(result: dict) -> bool:
