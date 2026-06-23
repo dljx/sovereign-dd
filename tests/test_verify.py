@@ -7,6 +7,8 @@ cost-saving short-circuit (no LLM call on a Stage-1 reject) and fail-open.
 
 import asyncio
 
+import pytest
+
 import llm
 import verify
 from verify import quality_gate, verify_buy
@@ -14,6 +16,12 @@ from verify import quality_gate, verify_buy
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture(autouse=True)
+def _fast_red_team_backoff(monkeypatch):
+    """Neutralize the inter-retry sleep so retry tests never wait on real seconds."""
+    monkeypatch.setattr(verify, "_RED_TEAM_BACKOFF", 0.0)
 
 
 def _good_result(**over):
@@ -170,3 +178,108 @@ def test_disabled_passthrough(monkeypatch):
     v = _run(verify_buy("AAA", _good_result(converged=False), _DOSSIER))
     assert v["confirmed"] is True and v["verdict"] == "DISABLED"
     assert calls == []
+
+
+# ── Stage 2: red-team retries (transient flakiness must not fail-open a BUY) ──────
+
+def test_red_team_retries_then_succeeds(monkeypatch):
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "3")
+    state = {"n": 0}
+    good = ('{"verdict":"CONFIRM","verification_score":8.0,"confirms_buy":true,'
+            '"strongest_bear_point":"none material","falsification_findings":[]}')
+
+    async def stub(system, user, **kwargs):
+        state["n"] += 1
+        if state["n"] < 3:
+            raise RuntimeError("503 overloaded")
+        return good
+    monkeypatch.setattr(llm, "call_gemini_async", stub)
+
+    v = _run(verify_buy("AAA", _good_result(), _DOSSIER))
+    assert v["confirmed"] is True and v["verdict"] == "CONFIRM"
+    assert state["n"] == 3  # retried through two transient failures, then succeeded
+
+
+def test_red_team_exhausts_attempts(monkeypatch):
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "3")
+    monkeypatch.setenv("VERIFY_FAIL_OPEN", "1")
+    calls = []
+    _patch_llm(monkeypatch, raises=RuntimeError("503 overloaded"), track=calls)
+    v = _run(verify_buy("AAA", _good_result(), _DOSSIER))  # 7.6 < 8.0 -> fail-open
+    assert v["verdict"] == "UNVERIFIED"
+    assert len(calls) == 3  # tried exactly N times before giving up
+
+
+def test_red_team_timeout_error_is_legible(monkeypatch):
+    # asyncio.TimeoutError stringifies to "" — the _error must still name the cause.
+    _patch_llm(monkeypatch, raises=asyncio.TimeoutError())
+    rt = _run(verify.red_team("AAA", _good_result(), _DOSSIER, attempts=1))
+    assert "_error" in rt and rt["_error"]  # non-empty (class name, not "")
+
+
+def test_red_team_retries_unparseable_verdict(monkeypatch):
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "2")
+    state = {"n": 0}
+    good = ('{"verdict":"VETO","verification_score":2.0,"confirms_buy":false,'
+            '"strongest_bear_point":"fraud","falsification_findings":[]}')
+
+    async def stub(system, user, **kwargs):
+        state["n"] += 1
+        return '{"verdict":"MAYBE"}' if state["n"] == 1 else good
+    monkeypatch.setattr(llm, "call_gemini_async", stub)
+
+    rt = _run(verify.red_team("AAA", _good_result(), _DOSSIER))
+    assert rt.get("verdict") == "VETO"  # bad verdict on attempt 1, recovered on 2
+
+
+# ── Tiered fail-closed: a verifier outage must not auto-confirm a top-tier BUY ───
+
+def test_failclosed_top_tier_holds_despite_fail_open(monkeypatch):
+    monkeypatch.setenv("VERIFY_FAIL_OPEN", "1")
+    monkeypatch.setenv("VERIFY_FAILCLOSED_SCORE", "8.0")
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "1")
+    _patch_llm(monkeypatch, raises=RuntimeError("503 overloaded"))
+    v = _run(verify_buy("AAA", _good_result(consensus_score=9.01,
+                                            consensus_grade="CONVICTION BUY"), _DOSSIER))
+    assert v["confirmed"] is False and v["verdict"] == "UNVERIFIED"
+    assert any("held" in r.lower() for r in v["reasons"])
+    assert "held" in v["strongest_bear_point"].lower()
+
+
+def test_failclosed_at_threshold_holds(monkeypatch):
+    monkeypatch.setenv("VERIFY_FAIL_OPEN", "1")
+    monkeypatch.setenv("VERIFY_FAILCLOSED_SCORE", "8.0")
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "1")
+    _patch_llm(monkeypatch, raises=RuntimeError("err"))
+    v = _run(verify_buy("AAA", _good_result(consensus_score=8.0), _DOSSIER))
+    assert v["confirmed"] is False  # exactly at the tier -> fails closed
+
+
+def test_failclosed_below_threshold_preserves_fail_open(monkeypatch):
+    monkeypatch.setenv("VERIFY_FAIL_OPEN", "1")
+    monkeypatch.setenv("VERIFY_FAILCLOSED_SCORE", "8.0")
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "1")
+    _patch_llm(monkeypatch, raises=RuntimeError("err"))
+    v = _run(verify_buy("AAA", _good_result(consensus_score=7.5), _DOSSIER))
+    assert v["confirmed"] is True and v["verdict"] == "UNVERIFIED"  # below tier -> fail-open
+
+
+# ── Card surfacing: confirmed BUYs carry an auditable slim verdict ───────────────
+
+def test_scout_card_includes_slim_verification():
+    import upload_kv
+    result = _good_result(verification={
+        "verdict": "CONFIRM", "verification_score": 8.4,
+        "strongest_bear_point": "valuation rich", "falsification_findings": ["x", "y"],
+        "stage": 2, "reasons": [],
+    })
+    card = upload_kv._scout_card("AAA", result, {})
+    assert card["verification"]["verdict"] == "CONFIRM"
+    assert card["verification"]["verification_score"] == 8.4
+    assert "falsification_findings" not in card["verification"]  # slim, not the full blob
+
+
+def test_slim_verification_empty_when_absent():
+    import upload_kv
+    assert upload_kv._slim_verification(None) == {}
+    assert upload_kv._scout_card("AAA", _good_result(), {})["verification"] == {}

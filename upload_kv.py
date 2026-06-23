@@ -88,6 +88,21 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
+def _slim_verification(v: dict | None) -> dict:
+    """Compact confirmation-gate verdict for a card — enough to audit a confirmed
+    BUY (verdict, score, top bear point) without bloating the board blob. The
+    watchlist collector overrides this with the full verification (incl. the
+    complete falsification_findings) for rejects."""
+    v = v or {}
+    if not v:
+        return {}
+    return {
+        "verdict":              v.get("verdict"),
+        "verification_score":   v.get("verification_score"),
+        "strongest_bear_point": (v.get("strongest_bear_point") or "")[:300],
+    }
+
+
 def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
     """Build the dd:scouts card shape from a debate result. Shared by scout
     collection and portfolio/triggered-analysis results so a card always reflects
@@ -110,6 +125,7 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
         "cycle_position":    result.get("cycle_position", {}),
         "matched_filters":   meta.get("matched_filters", []),
         "path":              meta.get("path", "A"),
+        "verification":      _slim_verification(result.get("verification")),
     }
 
 

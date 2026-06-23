@@ -55,7 +55,29 @@ def _max_risk_index() -> float:
         return 6.0
 
 
-_RED_TEAM_TIMEOUT = 90.0  # seconds — wraps the single grounded call
+def _red_team_attempts() -> int:
+    """How many times to (re)try the grounded red-team call before giving up.
+    Grounded Gemma calls flake under load — a single transient 5xx/timeout must not
+    fail the whole verification (and so silently fail-open a real BUY)."""
+    try:
+        return max(1, int(os.getenv("VERIFY_RED_TEAM_ATTEMPTS", "3")))
+    except ValueError:
+        return 3
+
+
+def _failclosed_score() -> float:
+    """At/above this consensus score, a verifier that can't reach a verdict fails
+    CLOSED (→ Under Review) instead of fail-open — the highest-stakes BUYs are never
+    auto-confirmed by a transient outage. Below it, fail-open (VERIFY_FAIL_OPEN) is
+    preserved so the feed keeps flowing."""
+    try:
+        return float(os.getenv("VERIFY_FAILCLOSED_SCORE", "8.0"))
+    except ValueError:
+        return 8.0
+
+
+_RED_TEAM_TIMEOUT = 90.0  # seconds — wraps each grounded call attempt
+_RED_TEAM_BACKOFF = 3.0   # seconds between retry attempts
 
 
 # ── Stage 1: deterministic quality gate (0 LLM calls) ───────────────────────────
@@ -208,24 +230,9 @@ def _build_user_prompt(ticker: str, result: dict, dossier: dict) -> str:
     )
 
 
-async def red_team(ticker: str, result: dict, dossier: dict) -> dict:
-    """Run the adversarial prosecutor. Returns a normalized verdict dict, or
-    {"_error": "..."} on failure (verify_buy decides fail-open vs fail-closed)."""
-    try:
-        from llm import call_gemini_async, extract_json
-    except ImportError:
-        return {"_error": "llm module unavailable"}
-
-    prompt = _build_user_prompt(ticker, result, dossier)
-    try:
-        text = await asyncio.wait_for(
-            call_gemini_async(RED_TEAM_SYSTEM, prompt, grounding=True, temperature=0.2),
-            timeout=_RED_TEAM_TIMEOUT,
-        )
-        raw = extract_json(text)
-    except Exception as exc:
-        return {"_error": str(exc)}
-
+def _parse_red_team(raw) -> dict:
+    """Validate + normalize one red-team JSON response. Returns a verdict dict, or
+    {"_error": ...} if the payload isn't a usable verdict (the caller may retry)."""
     if not isinstance(raw, dict):
         return {"_error": "red-team response was not a JSON object"}
 
@@ -249,6 +256,45 @@ async def red_team(ticker: str, result: dict, dossier: dict) -> dict:
         "strongest_bear_point": str(raw.get("strongest_bear_point", ""))[:400],
         "falsification_findings": [str(f)[:300] for f in findings[:6]],
     }
+
+
+async def red_team(ticker: str, result: dict, dossier: dict, attempts: int | None = None) -> dict:
+    """Run the adversarial prosecutor. Returns a normalized verdict dict, or
+    {"_error": "..."} on failure (verify_buy decides fail-open vs fail-closed).
+
+    Retries up to `attempts` times (default VERIFY_RED_TEAM_ATTEMPTS) on a transient
+    error, a timeout, OR an unparseable verdict — grounded Gemma calls flake under
+    load, and one blip must not fail-open a real BUY. Each attempt rotates API keys
+    via call_gemini_async."""
+    try:
+        from llm import call_gemini_async, extract_json
+    except ImportError:
+        return {"_error": "llm module unavailable"}
+
+    if attempts is None:
+        attempts = _red_team_attempts()
+    prompt = _build_user_prompt(ticker, result, dossier)
+
+    last_err = "no attempt made"
+    for i in range(attempts):
+        try:
+            text = await asyncio.wait_for(
+                call_gemini_async(RED_TEAM_SYSTEM, prompt, grounding=True, temperature=0.2),
+                timeout=_RED_TEAM_TIMEOUT,
+            )
+            parsed = _parse_red_team(extract_json(text))
+        except Exception as exc:
+            # asyncio.TimeoutError stringifies to "" — keep the class name so the
+            # cause stays legible in the saved `note` (this produced the `_error: ""`).
+            parsed = {"_error": str(exc) or type(exc).__name__}
+
+        if "_error" not in parsed:
+            return parsed
+        last_err = parsed["_error"]
+        if i < attempts - 1:
+            await asyncio.sleep(_RED_TEAM_BACKOFF)
+
+    return {"_error": last_err}
 
 
 # ── Orchestration ───────────────────────────────────────────────────────────────
@@ -283,15 +329,22 @@ async def verify_buy(ticker: str, result: dict, dossier: dict) -> dict:
     rt = await red_team(ticker, result, dossier)
 
     if "_error" in rt:
-        fail_open = _fail_open()
+        # Tiered fail-safety: at/above the fail-closed score a verifier that can't
+        # reach a verdict must NOT auto-confirm — hold the BUY for review. Below it,
+        # preserve fail-open (a transient blip shouldn't demote an ordinary BUY).
+        score = result.get("consensus_score", 0) or 0
+        top_tier = isinstance(score, (int, float)) and score >= _failclosed_score()
+        fail_open = _fail_open() and not top_tier
+        held_reason = (f"Top-tier BUY (score >= {_failclosed_score():g}) held — "
+                       f"red-team unavailable after retries; not auto-confirmed")
         return {
             "confirmed": fail_open,
             "stage": 2,
             "stage1_pass": True,
             "verdict": "UNVERIFIED",
-            "reasons": [] if fail_open else ["red-team unavailable; fail-closed"],
+            "reasons": [] if fail_open else [held_reason],
             "verification_score": None,
-            "strongest_bear_point": "",
+            "strongest_bear_point": "" if fail_open else held_reason,
             "falsification_findings": [],
             "note": f"red-team unavailable ({rt['_error']})",
             "checked_at": now,

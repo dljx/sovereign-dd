@@ -113,9 +113,23 @@ def alert_buy_signal(d: dict) -> bool:
     penalty    = score_rat or dissent
     filter_line = f"<b>Filters met:</b> {' · '.join(filters)}\n" if filters else ""
 
+    # Confirmation-gate verdict line — a clean CONFIRM shows the prosecutor's score;
+    # a fail-open (UNVERIFIED) BUY is now visibly flagged instead of silently passed.
+    v = d.get("verification", {}) or {}
+    vverdict = str(v.get("verdict", "")).upper()
+    vscore   = v.get("verification_score")
+    if vverdict == "CONFIRM":
+        _vs = f" · {vscore:.1f}/10" if isinstance(vscore, (int, float)) else ""
+        verify_line = f"🛡️ <b>Verified:</b> prosecutor CONFIRM{_vs}\n"
+    elif vverdict == "UNVERIFIED":
+        verify_line = "🛡️ <i>Unverified — red-team unavailable, auto-passed</i>\n"
+    else:
+        verify_line = ""
+
     msg = (
         f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
+        + verify_line
         + filter_line
         + (f"<b>Gemma flagged:</b> <i>{rationale[:350]}</i>\n" if rationale else "")
         + (f"\n<b>Catalyst:</b> <i>{catalyst[:400]}</i>\n" if catalyst else "")
