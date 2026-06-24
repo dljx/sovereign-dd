@@ -276,6 +276,7 @@ def collect_gems_results(gems_dir: Path) -> list:
                 "cycle_position":    result.get("cycle_position", {}),
                 "fair_value_composite": result.get("fair_value_composite"),
                 "entry_assessment":  result.get("entry_assessment", ""),
+                "verification":      _slim_verification(result.get("verification")),
             })
 
     return discoveries

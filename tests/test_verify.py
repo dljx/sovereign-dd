@@ -283,3 +283,22 @@ def test_slim_verification_empty_when_absent():
     import upload_kv
     assert upload_kv._slim_verification(None) == {}
     assert upload_kv._scout_card("AAA", _good_result(), {})["verification"] == {}
+
+
+def test_gems_card_includes_slim_verification(tmp_path):
+    """Gems board cards must carry the slim verdict too (separate builder from _scout_card)."""
+    import json, upload_kv
+    result = _good_result(verification={
+        "verdict": "CONFIRM", "verification_score": 9.2,
+        "strongest_bear_point": "GAAP NI down on R&D spend",
+        "falsification_findings": ["x"], "stage": 2,
+    })
+    (tmp_path / "AAA_20260624_000000.json").write_text(
+        json.dumps({"result": result, "dossier": {}, "meta": {}}, default=str),
+        encoding="utf-8",
+    )
+    gems = upload_kv.collect_gems_results(tmp_path)
+    assert len(gems) == 1
+    assert gems[0]["verification"]["verdict"] == "CONFIRM"
+    assert gems[0]["verification"]["verification_score"] == 9.2
+    assert "falsification_findings" not in gems[0]["verification"]  # slim, not full blob
