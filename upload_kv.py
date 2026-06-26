@@ -103,6 +103,41 @@ def _slim_verification(v: dict | None) -> dict:
     }
 
 
+def _scout_history_row(s: dict) -> dict:
+    """Supabase scout_history row from a scout discovery. `price`/`confirmed`/`verdict`
+    capture the signal-time entry price and BUY-gate outcome so a signal's forward
+    return becomes computable later (see DATA_CONTRACT.md)."""
+    return {
+        "ticker":        s["ticker"],
+        "score":         s.get("score"),
+        "grade":         s.get("grade"),
+        "sector":        s.get("sector"),
+        "path":          s.get("path"),
+        "filters":       s.get("matched_filters", []),
+        "thesis":        (s.get("thesis") or "")[:300],
+        "price":         s.get("price"),
+        "confirmed":     s.get("confirmed"),
+        "verdict":       (s.get("verification") or {}).get("verdict"),
+        "discovered_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _gems_history_row(g: dict) -> dict:
+    """Supabase gems_history row from a gems discovery (see _scout_history_row)."""
+    return {
+        "ticker":        g["ticker"],
+        "score":         g.get("score"),
+        "grade":         g.get("grade"),
+        "thesis":        (g.get("thesis") or "")[:300],
+        "catalyst":      (g.get("catalyst") or "")[:300],
+        "fair_value":    g.get("fair_value_composite"),
+        "price":         g.get("price"),
+        "confirmed":     g.get("confirmed"),
+        "verdict":       (g.get("verification") or {}).get("verdict"),
+        "discovered_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
     """Build the dd:scouts card shape from a debate result. Shared by scout
     collection and portfolio/triggered-analysis results so a card always reflects
@@ -467,35 +502,14 @@ def main():
             print(f"  {len(dd_rows)} DD row(s) inserted")
 
         # Scout history
-        scout_rows = []
-        for s in (discoveries or []):
-            scout_rows.append({
-                "ticker":        s["ticker"],
-                "score":         s.get("score"),
-                "grade":         s.get("grade"),
-                "sector":        s.get("sector"),
-                "path":          s.get("path"),
-                "filters":       s.get("matched_filters", []),
-                "thesis":        (s.get("thesis") or "")[:300],
-                "discovered_at": datetime.now(timezone.utc).isoformat(),
-            })
+        scout_rows = [_scout_history_row(s) for s in (discoveries or [])]
         if scout_rows:
             _supabase_insert("scout_history", scout_rows)
             print(f"  {len(scout_rows)} scout row(s) inserted")
 
         # Gems history (requires a Supabase `gems_history` table; insert no-ops with a
         # warning if it doesn't exist — see DATA_CONTRACT.md).
-        gems_rows = []
-        for g in (gems_discoveries or []):
-            gems_rows.append({
-                "ticker":        g["ticker"],
-                "score":         g.get("score"),
-                "grade":         g.get("grade"),
-                "thesis":        (g.get("thesis") or "")[:300],
-                "catalyst":      (g.get("catalyst") or "")[:300],
-                "fair_value":    g.get("fair_value_composite"),
-                "discovered_at": datetime.now(timezone.utc).isoformat(),
-            })
+        gems_rows = [_gems_history_row(g) for g in (gems_discoveries or [])]
         if gems_rows:
             _supabase_insert("gems_history", gems_rows)
             print(f"  {len(gems_rows)} gems row(s) inserted")

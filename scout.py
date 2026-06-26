@@ -719,6 +719,7 @@ async def run_scout(
                         "ticker":           ticker,
                         "score":            round(score, 2),
                         "grade":            grade,
+                        "price":            (dossier.get("quote") or {}).get("price"),
                         "confidence":       result.get("confidence", ""),
                         "thesis":           result.get("majority_thesis", ""),
                         "score_rationale":  result.get("score_rationale", ""),
