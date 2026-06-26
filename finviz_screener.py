@@ -255,11 +255,52 @@ def get_unique_candidates(screen_results: dict[str, list[str]]) -> list[str]:
     return sorted(seen)
 
 
+def _parse_fundament(soup, ticker: str) -> dict:
+    """Parse Finviz fundamentals straight from the snapshot table.
+
+    Replaces finvizfinance's ``ticker_fundament()``, which crashes whenever
+    Finviz renames the sector-links block — it did as of 2026-06 (``div.quote-
+    links`` is gone), so the library raises ``AttributeError`` on line 145
+    *before* it ever reads any data. Everything we consume lives in
+    ``table.snapshot-table2``, which is stable; Sector/Industry/Country are
+    recovered best-effort from the screener-link hrefs.
+
+    Returns ``{}`` if the snapshot table is absent (treated as "no data").
+    """
+    info: dict[str, str] = {"Ticker": ticker}
+
+    company = soup.find("h2", class_="quote-header_ticker-wrapper_company")
+    if company:
+        info["Company"] = company.text.strip()
+
+    table = soup.find("table", class_="snapshot-table2")
+    if table is None:
+        return {}
+    cells = [td.text for td in table.find_all("td")]
+    for i in range(0, len(cells) - 1, 2):
+        info[cells[i]] = cells[i + 1]
+
+    # Sector / Industry / Country link to ?f=sec_/ind_/geo_ filter screens.
+    # Set last so these deliberate, link-derived values are authoritative.
+    needed = {"sec_": "Sector", "ind_": "Industry", "geo_": "Country"}
+    for a in soup.find_all("a", href=True):
+        for key in list(needed):
+            if key in a["href"]:
+                info[needed.pop(key)] = a.text.strip()
+                break
+        if not needed:
+            break
+
+    return info
+
+
 def enrich_candidates(tickers: list[str]) -> dict[str, dict]:
-    """Fetch 70+ Finviz fundamentals for each ticker via finvizfinance.
+    """Fetch 80+ Finviz fundamentals for each ticker via finvizfinance.
 
     Processes tickers sequentially with a 0.5-second sleep between calls.
-    If a ticker lookup fails, an empty dict is stored for that ticker.
+    If a ticker lookup fails, an empty dict is stored for that ticker; the
+    first failure is logged so a future Finviz markup change is visible in CI
+    rather than silently zeroing out every candidate.
 
     Args:
         tickers: List of ticker strings (e.g. from get_unique_candidates()).
@@ -268,11 +309,16 @@ def enrich_candidates(tickers: list[str]) -> dict[str, dict]:
         {ticker: {metric: value, ...}, ...}
     """
     result: dict[str, dict] = {}
+    first_error_logged = False
     for ticker in tickers:
         try:
             f = FinvizQuote(ticker)
-            result[ticker] = f.ticker_fundament()
-        except Exception:
+            result[ticker] = _parse_fundament(f.soup, ticker)
+        except Exception as e:
+            if not first_error_logged:
+                print(f"  [gems] fundament fetch failed for {ticker}: "
+                      f"{type(e).__name__}: {e}")
+                first_error_logged = True
             result[ticker] = {}
         time.sleep(0.5)
     return result
