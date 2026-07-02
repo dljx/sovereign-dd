@@ -240,6 +240,63 @@ def _get_vix() -> float | None:
         return None
 
 
+def _price_momentum(close) -> dict:
+    """Canonical price-momentum measures from a ~1y daily close series (fractions).
+
+    ``mom_12_1`` is the Jegadeesh-Titman 12-1 measure: return from ~12 months ago
+    to ~1 month ago, skipping the most recent month (short-term reversal). Keys are
+    None when the history is too short (recent IPOs) — never fabricated.
+    """
+    out: dict = {"mom_12_1": None, "mom_6m": None, "mom_1m": None}
+    try:
+        n = len(close)
+        last = float(close.iloc[-1])
+        if n >= 21:
+            p1m = float(close.iloc[-21])
+            if p1m > 0:
+                out["mom_1m"] = round((last - p1m) / p1m, 4)
+        if n >= 126:
+            p6m = float(close.iloc[-126])
+            if p6m > 0:
+                out["mom_6m"] = round((last - p6m) / p6m, 4)
+        if n >= 240:  # ~a full trading year (tolerates short holiday calendars)
+            p12 = float(close.iloc[max(0, n - 252)])
+            p1 = float(close.iloc[-21])
+            if p12 > 0:
+                out["mom_12_1"] = round((p1 - p12) / p12, 4)
+    except Exception:
+        pass
+    return out
+
+
+def quality_composite(ratios: dict) -> float | None:
+    """Quality score 0-10 from profitability / balance-sheet ratios already in
+    ``ratios_ttm`` (evidence: Novy-Marx 2013 profitability premium, FF RMW, AQR
+    QMJ). Monotonic maps averaged over available components; None when fewer
+    than 2 components exist so a data-starved name doesn't get a fake mid-score.
+    Consumed by the signal factor stamp for outcome measurement — deliberately
+    NOT injected into the debate agents' context.
+    """
+    if not ratios:
+        return None
+    comps: list[float] = []
+    roic = ratios.get("roic")  # percent (25 = 25%)
+    if roic is not None:
+        comps.append(min(10.0, max(0.0, roic / 2.5)))
+    gm = ratios.get("gross_margin")  # percent
+    if gm is not None:
+        comps.append(min(10.0, max(0.0, gm / 8.0)))
+    fcf_y = ratios.get("fcf_yield")  # fraction (0.05 = 5%)
+    if fcf_y is not None:
+        comps.append(min(10.0, max(0.0, fcf_y * 125.0)))
+    de = ratios.get("debt_equity")  # yfinance percentage (30.27 = 0.30x)
+    if de is not None:
+        comps.append(min(10.0, max(0.0, 10.0 - de / 30.0)))
+    if len(comps) < 2:
+        return None
+    return round(sum(comps) / len(comps), 2)
+
+
 def _technicals(ticker: str) -> dict:
     try:
         try:
@@ -269,6 +326,8 @@ def _technicals(ticker: str) -> dict:
         w52_low = float(hist["Low"].min())
         pct_from_high = round((price - w52_high) / w52_high * 100, 1)
 
+        momentum = _price_momentum(close)
+
         return {
             "price": round(price, 2),
             "sma50": round(sma50, 2),
@@ -282,6 +341,7 @@ def _technicals(ticker: str) -> dict:
             "52w_high": round(w52_high, 2),
             "52w_low": round(w52_low, 2),
             "pct_from_52w_high": pct_from_high,
+            **momentum,
         }
     except Exception as e:
         return {"error": str(e)}

@@ -118,6 +118,7 @@ def _scout_history_row(s: dict) -> dict:
         "price":         s.get("price"),
         "confirmed":     s.get("confirmed"),
         "verdict":       (s.get("verification") or {}).get("verdict"),
+        "factors":       s.get("factors"),
         "discovered_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -134,15 +135,50 @@ def _gems_history_row(g: dict) -> dict:
         "price":         g.get("price"),
         "confirmed":     g.get("confirmed"),
         "verdict":       (g.get("verification") or {}).get("verdict"),
+        "factors":       g.get("factors"),
         "discovered_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
-def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
+def _factor_stamp(dossier: dict | None) -> dict | None:
+    """Evidence-factor profile at signal time, built from the output file's
+    dossier. upload_kv is the ONLY producer of the Supabase signal rows, so the
+    stamp lives here — a field added upstream in scout.py's in-memory discovery
+    dict never reaches Supabase (that mistake cost 2026-06-26→07-03 of price
+    data). ``v`` versions the methodology: 2 = post the 2026-07-03 changes
+    (true momentum lens, analyst-gap removal)."""
+    if not dossier:
+        return None
+    try:
+        from dossier import quality_composite  # lazy — the upload must never die on an import
+    except Exception:
+        def quality_composite(_r):
+            return None
+    tech = dossier.get("technicals") or {}
+    ratios = (dossier.get("financials") or {}).get("ratios_ttm") or {}
+    return {
+        "v":           2,
+        "mom_12_1":    tech.get("mom_12_1"),
+        "mom_6m":      tech.get("mom_6m"),
+        "mom_1m":      tech.get("mom_1m"),
+        "quality":     quality_composite(ratios),
+        "eps_rev_mom": ratios.get("eps_revision_momentum"),
+        "fcf_yield":   ratios.get("fcf_yield"),
+        "roic":        ratios.get("roic"),
+    }
+
+
+def _scout_card(ticker: str, result: dict, meta: dict | None = None,
+                dossier: dict | None = None) -> dict:
     """Build the dd:scouts card shape from a debate result. Shared by scout
     collection and portfolio/triggered-analysis results so a card always reflects
-    the latest run regardless of which pipeline produced it."""
+    the latest run regardless of which pipeline produced it.
+
+    ``dossier`` (the output file's dossier) supplies the signal-time price,
+    sector, and factor stamp — the fields the Supabase history rows need for
+    outcome measurement. Callers that have the file MUST pass it."""
     meta = meta or {}
+    dossier = dossier or {}
     return {
         "ticker":            ticker,
         "score":             round(result.get("consensus_score", 0), 2),
@@ -161,6 +197,11 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None) -> dict:
         "matched_filters":   meta.get("matched_filters", []),
         "path":              meta.get("path", "A"),
         "verification":      _slim_verification(result.get("verification")),
+        "sector":            (dossier.get("profile") or {}).get("sector"),
+        "price":             (dossier.get("quote") or {}).get("price"),
+        "confirmed":         result.get("confirmed", True),
+        "fair_value_composite": result.get("fair_value_composite"),
+        "factors":           _factor_stamp(dossier) if dossier else None,
     }
 
 
@@ -217,7 +258,7 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
         if result.get("mode") == "hold":
             reconcile_remove.append(ticker)
         elif result.get("consensus_score", 0) >= BUY_THRESHOLD and result.get("confirmed", True):
-            scout_cards.append(_scout_card(ticker, result, data.get("meta", {})))
+            scout_cards.append(_scout_card(ticker, result, data.get("meta", {}), data.get("dossier")))
         else:
             # Below threshold OR failed the confirmation gate — keep off the Scout board.
             reconcile_remove.append(ticker)
@@ -256,7 +297,7 @@ def collect_scout_results(scout_dir: Path) -> list:
         grade  = result.get("consensus_grade", "?")
 
         if score >= BUY_THRESHOLD and result.get("confirmed", True):
-            discoveries.append(_scout_card(ticker, result, data.get("meta", {})))
+            discoveries.append(_scout_card(ticker, result, data.get("meta", {}), data.get("dossier")))
 
     return discoveries
 
@@ -294,6 +335,7 @@ def collect_gems_results(gems_dir: Path) -> list:
         grade  = result.get("consensus_grade", "?")
 
         if score >= BUY_THRESHOLD and result.get("confirmed", True):
+            _dossier = data.get("dossier") or {}
             discoveries.append({
                 "ticker":            ticker,
                 "score":             round(score, 2),
@@ -312,6 +354,9 @@ def collect_gems_results(gems_dir: Path) -> list:
                 "fair_value_composite": result.get("fair_value_composite"),
                 "entry_assessment":  result.get("entry_assessment", ""),
                 "verification":      _slim_verification(result.get("verification")),
+                "price":             (_dossier.get("quote") or {}).get("price"),
+                "confirmed":         result.get("confirmed", True),
+                "factors":           _factor_stamp(_dossier),
             })
 
     return discoveries
@@ -348,8 +393,11 @@ def collect_watchlist_results(output_dir: Path) -> list:
                 continue
             if result.get("confirmed", True):
                 continue
-            card = _scout_card(ticker, result, data.get("meta", {}))
+            card = _scout_card(ticker, result, data.get("meta", {}), data.get("dossier"))
             card["verification"] = result.get("verification", {})
+            # Source tag so the Supabase insert can route rejects to the right
+            # history table (scout_history vs gems_history).
+            card["src"] = "gems" if src_dir.name == "gems" else "scout"
             out.append(card)
     return out
 
@@ -501,8 +549,13 @@ def main():
             _supabase_insert("dd_history", dd_rows)
             print(f"  {len(dd_rows)} DD row(s) inserted")
 
-        # Scout history
+        # Scout history — confirmed discoveries AND confirmation-gate rejects.
+        # Rejects were previously never logged, which made the core measurement
+        # question ("does the gate add edge?") unanswerable: you need the forward
+        # returns of the signals the gate DIDN'T like as the comparison group.
+        _watch = watchlist or []
         scout_rows = [_scout_history_row(s) for s in (discoveries or [])]
+        scout_rows += [_scout_history_row(w) for w in _watch if w.get("src") != "gems"]
         if scout_rows:
             _supabase_insert("scout_history", scout_rows)
             print(f"  {len(scout_rows)} scout row(s) inserted")
@@ -510,6 +563,7 @@ def main():
         # Gems history (requires a Supabase `gems_history` table; insert no-ops with a
         # warning if it doesn't exist — see DATA_CONTRACT.md).
         gems_rows = [_gems_history_row(g) for g in (gems_discoveries or [])]
+        gems_rows += [_gems_history_row(w) for w in _watch if w.get("src") == "gems"]
         if gems_rows:
             _supabase_insert("gems_history", gems_rows)
             print(f"  {len(gems_rows)} gems row(s) inserted")

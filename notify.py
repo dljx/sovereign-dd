@@ -243,12 +243,22 @@ def alert_portfolio_summary(results: list[dict]) -> bool:
     return _split_send("\n".join(lines), TOPIC_SCAN_RESULTS)
 
 
-def alert_scout_summary(discoveries: list[dict]) -> bool:
-    """Send scout run summary → Scan Results topic."""
+def alert_scout_summary(discoveries: list[dict], title: str = "SOVEREIGN SCOUT") -> bool:
+    """Send scout/gems run summary → Scan Results topic.
+
+    Abstention is a first-class recommendation: an empty scan affirmatively says
+    the default allocation is the index (VWRA), not silence — a pick has to beat
+    that alternative to be worth surfacing at all.
+    """
     if not discoveries:
-        msg = "🔍 <b>SOVEREIGN SCOUT</b>\n\nNo BUY signals found in today's scan."
+        msg = (
+            f"🔍 <b>{title}</b>\n\n"
+            "No new opportunities cleared the bar this scan.\n"
+            "📥 Default allocation: <b>VWRA</b> — when nothing shows an edge over "
+            "the index, the index is the position."
+        )
     else:
-        lines = [f"🔍 <b>SOVEREIGN SCOUT — {len(discoveries)} signal(s) found</b>\n"]
+        lines = [f"🔍 <b>{title} — {len(discoveries)} signal(s) found</b>\n"]
         for d in discoveries:
             emoji = GRADE_EMOJI.get(d["grade"], "")
             lines.append(f"{emoji} <b>{d['ticker']}</b>  {d['score']:.1f}/10")

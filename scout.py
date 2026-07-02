@@ -176,12 +176,12 @@ SCREENER_LENSES: list[dict] = [
         "scrId": "growth_technology_stocks",
         "count": 250,
     },
-    {
-        "name": "momentum",
-        "desc": "Most actively traded — high volume, momentum plays",
-        "scrId": "most_actives",
-        "count": 250,
-    },
+    # NB: the old "momentum" lens (scrId most_actives) was volume, not momentum —
+    # replaced 2026-07-03 by the custom 52-week relative-strength screen in
+    # _momentum_lens() (true price momentum, the best-documented factor premium).
+    # The "contrarian" lens (scrId day_losers) was removed the same day: buying
+    # short-term losers is anti-evidence (loser continuation at 3-12mo horizons);
+    # genuinely oversold names remain reachable via universe rotation.
     {
         "name": "small_cap",
         "desc": "Small-cap gainers — hidden gems with asymmetric upside",
@@ -192,12 +192,6 @@ SCREENER_LENSES: list[dict] = [
         "name": "aggressive_small_cap",
         "desc": "Aggressive small-caps — high-risk, high-reward growth",
         "scrId": "aggressive_small_caps",
-        "count": 250,
-    },
-    {
-        "name": "contrarian",
-        "desc": "Day losers — oversold names with potential reversal setups",
-        "scrId": "day_losers",
         "count": 250,
     },
     {
@@ -317,11 +311,34 @@ def _yf_screen(lens: dict) -> tuple[dict, list[dict]]:
         return lens, []
 
 
+def _momentum_lens() -> tuple[dict, list[dict]]:
+    """True price-momentum lens: top 250 names by 52-week % change above the mcap
+    floor (≈ 12-0 momentum; the dossier's mom_12_1 refines it to the canonical
+    12-1 measure). Replaces the old most_actives "momentum" lens, which measured
+    volume, not momentum. Returns (lens, quotes) shaped like _yf_screen."""
+    lens = {"name": "momentum", "desc": "12-month price leaders — relative strength (52w % change)"}
+    try:
+        import yfinance as yf
+        q = yf.EquityQuery("and", [
+            yf.EquityQuery("is-in", ["exchange", *_UNIVERSE_EXCHANGES]),
+            yf.EquityQuery("gt", ["intradaymarketcap", SCOUT_MIN_MCAP]),
+            yf.EquityQuery("gt", ["fiftytwowkpercentchange", 0]),
+        ])
+        r = yf.screen(q, offset=0, size=250,
+                      sortField="fiftytwowkpercentchange", sortAsc=False)
+        quotes = r.get("quotes") or []
+        return lens, quotes if isinstance(quotes, list) else []
+    except Exception as e:
+        print(f"  [scout] momentum lens error: {e}")
+        return lens, []
+
+
 async def _screen_lenses_raw() -> list[tuple[dict, list[dict]]]:
     """Run all factor lenses in parallel. Returns [(lens, raw_quotes), ...]."""
-    return list(await asyncio.gather(*[
-        asyncio.to_thread(_yf_screen, lens) for lens in SCREENER_LENSES
-    ]))
+    return list(await asyncio.gather(
+        *[asyncio.to_thread(_yf_screen, lens) for lens in SCREENER_LENSES],
+        asyncio.to_thread(_momentum_lens),
+    ))
 
 
 def _candidates_from_lenses(raw: list[tuple[dict, list[dict]]], skip: set[str]) -> list[dict]:
@@ -455,6 +472,9 @@ DEPRIORITIZE across all paths:
   - Revenue growth declining for 2+ consecutive quarters with no explained catalyst
   - Heavy net insider selling (>$10M in 90 days) not attributable to planned 10b5-1 sales
   - Earnings estimates being cut while stock is near 52-week high (distribution phase)
+  - Negative 12-month price momentum (stock well below its level a year ago) unless you
+    identify a specific fundamental inflection — historically, 12-month losers keep losing
+    at 3-12 month horizons; "it's cheap because it fell" is not a thesis
 
 Bias toward less-covered names where genuine alpha exists. Spread picks across at least 3 different lenses."""
 
@@ -714,6 +734,10 @@ async def run_scout(
                     }
                     _save_history(history)
 
+                # NB: fields for Supabase signal history do NOT belong here — this
+                # dict only feeds Telegram alerts. The durable rows are built by
+                # upload_kv.py from the output FILES (_scout_card + _factor_stamp);
+                # stamping here instead is how price silently stayed NULL 06-26→07-03.
                 if score >= BUY_THRESHOLD:
                     return {
                         "ticker":           ticker,

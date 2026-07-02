@@ -252,23 +252,28 @@ def test_apply_adjustments_has_risk_reward_trace():
     assert set(out["risk_reward"]) == set(compact(tr))
 
 
-def test_consensus_gap_superseded_in_scout_mode():
+def test_consensus_gap_removed_in_scout_mode():
+    """Removed 2026-07-03 — analyst targets lack predictive power. The audit key
+    stays (applied=False) so dashboards degrade gracefully, and the score must
+    never move on it again."""
     out = scoring.apply_adjustments(7.0, _result(), _dossier(), is_holding=False)
     cg = out["score_adjustments"]["consensus_gap"]
-    assert cg["applied"] is False and "superseded" in cg["reason"]
+    assert cg["applied"] is False and "removed" in cg["reason"]
+    # score unchanged through the step: result equals the durability step's result
+    assert cg["result"] == out["score_adjustments"]["earnings_durability"]["result"]
 
 
-def test_consensus_gap_survives_when_layer_off():
+def test_consensus_gap_stays_removed_when_rr_layer_off():
     d = _dossier(fair_values={"composite_fair_value": None}, technicals={})
     d["valuation"]["dcf_iv_per_share"] = None
     out = scoring.apply_adjustments(7.0, _result(), d, is_holding=False)
     cg = out["score_adjustments"]["consensus_gap"]
-    assert "superseded" not in (cg.get("reason") or "")
+    assert cg["applied"] is False and "removed" in cg["reason"]
 
 
-def test_hold_mode_consensus_still_skipped():
+def test_hold_mode_consensus_also_removed():
     out = scoring.apply_adjustments(7.0, _result(), _dossier(), is_holding=True)
-    assert out["score_adjustments"]["consensus_gap"]["reason"] == "skipped in hold-mode"
+    assert out["score_adjustments"]["consensus_gap"]["applied"] is False
     assert out["score_adjustments"]["risk_reward"]["applied"] is True
 
 

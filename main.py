@@ -246,8 +246,8 @@ async def _run_gems(save: bool = False, notify: bool = False):
                     console.print(f"[dim]  [notify] DD detail unavailable for {d.get('ticker','?')}: {e}[/dim]")
         for d in review:
             alert_watchlist(d)
-        if confirmed:
-            alert_scout_summary(confirmed)
+        # Always send — an empty gems scan is an affirmative "default: VWRA", not silence.
+        alert_scout_summary(confirmed, title="SOVEREIGN GEMS")
         console.print(f"[dim]Gems alerts sent ({len(confirmed)} confirmed, {len(review)} under review)[/dim]")
 
     return discoveries

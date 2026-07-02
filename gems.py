@@ -373,6 +373,8 @@ async def run_gems(
                     }
                     _save_history(history)
 
+                # NB: Supabase history rows are built by upload_kv.py from the
+                # output FILES (_factor_stamp) — this dict only feeds Telegram.
                 if score >= BUY_THRESHOLD:
                     return {
                         "ticker":                ticker,

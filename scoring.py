@@ -87,47 +87,14 @@ def earnings_durability_adjust(
     return adjusted, durability, label
 
 
-# ── Analyst consensus positioning ─────────────────────────────────────────────
-
-def consensus_gap_adjust(
-    score: float,
-    price: float | None,
-    analyst_target_mean: float | None,
-    num_analysts: int | None = None,
-) -> tuple[float, dict]:
-    """Adjust score based on gap between current price and analyst consensus target.
-
-    Returns (adjusted_score, details_dict).
-    """
-    if not price or not analyst_target_mean or price <= 0:
-        return score, {"applied": False, "reason": "no analyst data"}
-    # Thin coverage: a 1-2 analyst target is noisy/stale — don't move the score on it
-    # (otherwise quality compounders that trade above sparse targets get penalized).
-    if num_analysts is not None and num_analysts < 5:
-        return score, {"applied": False, "reason": f"thin analyst coverage ({num_analysts})"}
-
-    gap_pct = (analyst_target_mean - price) / price * 100
-
-    if gap_pct > 30:
-        adj, label = 0.3, "STRONG UPSIDE vs consensus"
-    elif gap_pct > 10:
-        adj, label = 0.15, "MODERATE UPSIDE vs consensus"
-    elif gap_pct > -5:
-        adj, label = 0.0, "AT CONSENSUS"
-    elif gap_pct >= -20:
-        adj, label = -0.15, "ABOVE CONSENSUS (moderate)"
-    else:
-        adj, label = -0.3, "SIGNIFICANTLY ABOVE CONSENSUS"
-
-    adjusted = round(min(10.0, max(1.0, score + adj)), 2)
-    return adjusted, {
-        "applied": True,
-        "price": price,
-        "target": analyst_target_mean,
-        "gap_pct": round(gap_pct, 1),
-        "adjustment": adj,
-        "label": label,
-    }
+# ── Analyst consensus positioning — REMOVED 2026-07-03 ────────────────────────
+# consensus_gap_adjust (±0.3 on the price-vs-mean-analyst-target gap) was deleted:
+# analyst price targets have no documented predictive power for forward returns
+# (systematically optimistic, and targets chase price rather than lead it) — see
+# docs/METHODOLOGY_REVIEW.md. The risk/reward layer's 0.30-weight analyst blend
+# in its upside estimate (risk_reward.py) deliberately remains for now: the tier
+# mapping absorbs most of that noise, and removing it changes reward tiers in
+# unmeasured ways — Tier-2, pending the signal-outcome analysis.
 
 
 # ── Cycle position adjustment ──────────────────────────────────────────────────
@@ -479,7 +446,7 @@ def apply_adjustments(
 
     Pipeline order:
     1. Earnings durability multiplier
-    2. Analyst consensus gap adjustment (superseded by risk/reward when it applies)
+    2. (removed 2026-07-03) analyst consensus gap — targets lack predictive power
     3. Cycle position adjustment
     4. Quantified risk/reward matrix (risk_reward.py)
     5. Data confidence penalty
@@ -491,12 +458,6 @@ def apply_adjustments(
     profile = dossier.get("profile") or {}
     sector = profile.get("sector") or "Unknown"
     industry = profile.get("industry") or ""  # may not be in profile, will default gracefully
-    quote = dossier.get("quote") or {}
-    price = quote.get("price")
-    valuation = dossier.get("valuation") or {}
-    _consensus = valuation.get("analyst_consensus") or {}
-    analyst_target = _consensus.get("target_mean")
-    num_analysts = _consensus.get("num_analysts")
     dq = dossier.get("data_quality") or {}
     data_confidence = dq.get("data_confidence", "HIGH")
     cycle_type = dossier.get("cycle_type")
@@ -538,18 +499,14 @@ def apply_adjustments(
         "hold_floor_applied": is_holding,
     }
 
-    # 2. Analyst consensus — skipped entirely for holdings. Thin analyst coverage
-    # on a quality compounder routinely flags the stock as "above consensus" and
-    # docks the score; that's an entry-decision signal, not a hold-decision one.
-    if is_holding:
-        adjustments["consensus_gap"] = {"applied": False, "reason": "skipped in hold-mode", "result": score}
-    elif rr.get("applied"):
-        # The risk/reward layer already blends the analyst-target gap into its
-        # upside measure (0.3 weight) — applying both would double-count it.
-        adjustments["consensus_gap"] = {"applied": False, "reason": "superseded by risk_reward layer", "result": score}
-    else:
-        score, consensus_details = consensus_gap_adjust(score, price, analyst_target, num_analysts)
-        adjustments["consensus_gap"] = {**consensus_details, "result": score}
+    # 2. Analyst consensus gap — REMOVED 2026-07-03 (analyst targets lack
+    # predictive power; see docs/METHODOLOGY_REVIEW.md). The audit key stays so
+    # dashboards/reports degrade gracefully.
+    adjustments["consensus_gap"] = {
+        "applied": False,
+        "reason": "removed — analyst targets lack predictive power",
+        "result": score,
+    }
 
     # 3. Cycle position — halved for holdings. Late-cycle macro is a real risk
     # but shouldn't unilaterally turn a held compounder into a SELL.

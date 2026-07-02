@@ -30,20 +30,12 @@ def test_buy_threshold_value():
     assert s == g == BUY_THRESHOLD
 
 
-# ── consensus_gap_adjust: thin-coverage gate ─────────────────────────────────
+# ── consensus gap: removed 2026-07-03 (analyst targets lack predictive power) ─
 
-def test_consensus_gap_skipped_on_thin_coverage():
-    _, details = scoring.consensus_gap_adjust(7.0, 100.0, 130.0, num_analysts=2)
-    assert details["applied"] is False
-
-def test_consensus_gap_applied_with_enough_analysts():
-    adj, details = scoring.consensus_gap_adjust(7.0, 100.0, 130.0, num_analysts=10)
-    assert details["applied"] is True
-    assert adj > 7.0  # 30% upside vs consensus nudges the score up
-
-def test_consensus_gap_applied_when_count_unknown():
-    _, details = scoring.consensus_gap_adjust(7.0, 100.0, 130.0)
-    assert details["applied"] is True
+def test_consensus_gap_adjust_is_gone():
+    """The ±0.3 analyst-target adjustment was removed — its return would be a
+    regression (see docs/METHODOLOGY_REVIEW.md)."""
+    assert not hasattr(scoring, "consensus_gap_adjust")
 
 
 # ── valuation engine smoke (no exceptions; sane composite) ───────────────────
