@@ -248,17 +248,29 @@ CONFIRM.** Rejected BUYs are not dropped — they route to the **"Under Review"*
 watchlist (a dashboard tab + the 🔎 Under Review Telegram topic) with the verdict
 and strongest bear point attached.
 
-### Robustness (hardened 2026-06-24)
+### Robustness (hardened 2026-06-24; budget fixed + fail-closed 2026-07-03)
 
 The grounded call flakes under load, and a naive fail-open would silently
 rubber-stamp a BUY on a transient 5xx/timeout. So:
 
-- **Retries:** up to `VERIFY_RED_TEAM_ATTEMPTS` (3), rotating keys, with backoff,
-  on error/timeout/unparseable verdict.
-- **Tiered fail-closed:** at/above `VERIFY_FAILCLOSED_SCORE` (**8.0** = STRONG BUY
-  and up), a verifier that still can't reach a verdict **fails CLOSED** → held to
-  Under Review as `UNVERIFIED` (never auto-confirmed). Below 8.0, `VERIFY_FAIL_OPEN`
-  (default on) keeps the feed flowing.
+- **A realistic budget (the 2026-07-03 fix):** each red-team attempt gets
+  `VERIFY_RED_TEAM_TIMEOUT_SECS` (**300s**, matching the debate agents' own
+  per-call budget) and runs with `thinking_level=None` + an 8k output cap — the
+  latency belongs to grounded search, not thinking tokens. *History:* the
+  original 90s timeout starved the call (it runs right when all API keys are in
+  50–80s RPM cooldown after a debate), so **~95% of gated BUYs from launch to
+  2026-07-03 came back `UNVERIFIED`** and passed via fail-open — the red-team
+  layer was effectively a no-op. Measured from `scout_history` verdicts:
+  18/19 UNVERIFIED, 1 CONFIRM.
+- **Retries:** up to `VERIFY_RED_TEAM_ATTEMPTS` (3) outer attempts on
+  error/timeout/unparseable verdict; each attempt lets the inner key rotation
+  (`max_retries=6`) absorb transient 429/5xx within its window.
+- **Fail-CLOSED by default (2026-07-03):** a BUY without a verdict is **not
+  confirmed** — it routes to Under Review as `UNVERIFIED` at any score. An
+  unverified pick isn't a proven edge (see METHODOLOGY_REVIEW.md §1). The
+  emergency lever `VERIFY_FAIL_OPEN=1` restores fail-open below
+  `VERIFY_FAILCLOSED_SCORE` (8.0) during a known verifier outage; at/above it a
+  BUY is never auto-confirmed regardless.
 - **Auditable:** confirmed cards carry a slim `verification` (verdict, score,
   strongest bear point) so the dashboard 🛡 chip and Telegram alert show *how* a
   BUY was verified; a fail-open auto-pass is **visibly flagged**, not silent.
@@ -307,8 +319,9 @@ rubber-stamp a BUY on a transient 5xx/timeout. So:
 | `VERIFY_MAX_SPREAD` | 2.0 | Stage-1 reject if converged spread exceeds this |
 | `VERIFY_MAX_RISK_INDEX` | 6.0 | Stage-1 reject above this risk index |
 | `VERIFY_RED_TEAM_ATTEMPTS` | 3 | Red-team retries before declaring an error |
-| `VERIFY_FAILCLOSED_SCORE` | 8.0 | At/above this, an unreachable verifier fails **closed** |
-| `VERIFY_FAIL_OPEN` | on | Below the fail-closed score, auto-confirm on verifier outage |
+| `VERIFY_RED_TEAM_TIMEOUT_SECS` | 300 | Outer bound per red-team attempt (was 90 — starved the call; fixed 2026-07-03) |
+| `VERIFY_FAIL_OPEN` | **off** | Emergency lever: `1` restores auto-confirm below the fail-closed score during a verifier outage (default fail-closed since 2026-07-03) |
+| `VERIFY_FAILCLOSED_SCORE` | 8.0 | Even with `VERIFY_FAIL_OPEN=1`, at/above this a BUY is never auto-confirmed |
 
 > Approved models only: `gemini-3.5-flash` and `gemma-4-31b-it`. The red-team
 > prosecutor uses grounded `gemma-4-31b-it`.

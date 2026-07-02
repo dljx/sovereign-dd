@@ -232,6 +232,50 @@ def test_red_team_retries_unparseable_verdict(monkeypatch):
     assert rt.get("verdict") == "VETO"  # bad verdict on attempt 1, recovered on 2
 
 
+# ── 2026-07-03: fail-CLOSED is the default; the call gets a real budget ─────────
+
+def test_default_is_fail_closed_at_any_score(monkeypatch):
+    """No VERIFY_FAIL_OPEN env set -> a BUY without a verdict is NOT confirmed,
+    even below the 8.0 tier. (The 90s-starved red-team had been erroring on ~95%
+    of BUYs and fail-open reduced the gate to a no-op.)"""
+    monkeypatch.delenv("VERIFY_FAIL_OPEN", raising=False)
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "1")
+    _patch_llm(monkeypatch, raises=RuntimeError("503 overloaded"))
+    v = _run(verify_buy("AAA", _good_result(consensus_score=7.5), _DOSSIER))
+    assert v["confirmed"] is False and v["verdict"] == "UNVERIFIED"
+    assert any("held" in r.lower() for r in v["reasons"])
+    assert "503" in (v["reasons"][0] + v.get("note", ""))  # underlying cause legible
+
+
+def test_red_team_call_config_is_lean(monkeypatch):
+    """The verdict call must run grounded but LEAN: no thinking budget, small
+    output cap, inner retries — the original inherited defaults (thinking=high,
+    32k output) were a big part of the 90s starvation."""
+    captured = {}
+
+    async def stub(system, user, **kwargs):
+        captured.update(kwargs)
+        return ('{"verdict":"CONFIRM","verification_score":8.0,"confirms_buy":true,'
+                '"strongest_bear_point":"","falsification_findings":[]}')
+    monkeypatch.setattr(llm, "call_gemini_async", stub)
+
+    v = _run(verify_buy("AAA", _good_result(), _DOSSIER))
+    assert v["confirmed"] is True
+    assert captured["grounding"] is True
+    assert captured["thinking_level"] is None
+    assert captured["max_output_tokens"] == 8192
+    assert captured["max_retries"] == 6
+
+
+def test_red_team_timeout_env_knob(monkeypatch):
+    monkeypatch.delenv("VERIFY_RED_TEAM_TIMEOUT_SECS", raising=False)
+    assert verify._red_team_timeout() == 300.0     # default matches LLM_CALL_TIMEOUT_SECS
+    monkeypatch.setenv("VERIFY_RED_TEAM_TIMEOUT_SECS", "120")
+    assert verify._red_team_timeout() == 120.0
+    monkeypatch.setenv("VERIFY_RED_TEAM_TIMEOUT_SECS", "garbage")
+    assert verify._red_team_timeout() == 300.0     # unparsable -> safe default
+
+
 # ── Tiered fail-closed: a verifier outage must not auto-confirm a top-tier BUY ───
 
 def test_failclosed_top_tier_holds_despite_fail_open(monkeypatch):

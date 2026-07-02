@@ -21,8 +21,10 @@ Rejected BUYs are not dropped — the caller routes them to an "Under Review"
 watchlist with the reason attached.
 
 Fail-safe contract (mirrors cleaner.py): never raises. On a Stage-2 error the
-behavior is governed by VERIFY_FAIL_OPEN (default: confirm, so a transient API
-blip never demotes a real BUY — no worse than the pre-gate behavior).
+BUY fails CLOSED by default (2026-07-03): no verdict -> not confirmed -> Under
+Review. An unverified pick isn't a proven edge, and Under Review still surfaces
+it (watchlist topic + dashboard tab). Set VERIFY_FAIL_OPEN=1 to restore
+fail-open below VERIFY_FAILCLOSED_SCORE during a known verifier outage.
 """
 
 from __future__ import annotations
@@ -38,7 +40,11 @@ def _enabled() -> bool:
 
 
 def _fail_open() -> bool:
-    return os.getenv("VERIFY_FAIL_OPEN", "1").strip().lower() in ("1", "true", "yes", "on")
+    """Default OFF since 2026-07-03 — the gate fails closed. The 90s-starved
+    red-team (see _red_team_timeout) had been erroring on ~95% of BUYs and
+    fail-open silently reduced the gate to a no-op; a BUY without a verdict now
+    routes to Under Review instead of the alerts feed."""
+    return os.getenv("VERIFY_FAIL_OPEN", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _max_spread() -> float:
@@ -76,7 +82,17 @@ def _failclosed_score() -> float:
         return 8.0
 
 
-_RED_TEAM_TIMEOUT = 90.0  # seconds — wraps each grounded call attempt
+def _red_team_timeout() -> float:
+    """Outer bound per red-team attempt. Default 300s, matching llm.py's
+    _CALL_TIMEOUT_SECS — the grounded call must absorb end-of-debate key
+    cooldowns (observed 50-80s) PLUS grounded generation. The original 90s
+    starved it: ~95% of gated BUYs came back UNVERIFIED (fixed 2026-07-03)."""
+    try:
+        return float(os.getenv("VERIFY_RED_TEAM_TIMEOUT_SECS", "300"))
+    except ValueError:
+        return 300.0
+
+
 _RED_TEAM_BACKOFF = 3.0   # seconds between retry attempts
 
 
@@ -278,9 +294,16 @@ async def red_team(ticker: str, result: dict, dossier: dict, attempts: int | Non
     last_err = "no attempt made"
     for i in range(attempts):
         try:
+            # thinking_level=None + small output cap: the verdict JSON is tiny and
+            # the latency budget belongs to grounded search, not to thinking tokens
+            # (high-thinking grounded calls were a big part of the 90s starvation).
+            # max_retries=6: let the INNER key rotation absorb transient 429/5xx
+            # within this attempt's window instead of multiplying outer retries.
             text = await asyncio.wait_for(
-                call_gemini_async(RED_TEAM_SYSTEM, prompt, grounding=True, temperature=0.2),
-                timeout=_RED_TEAM_TIMEOUT,
+                call_gemini_async(RED_TEAM_SYSTEM, prompt, grounding=True,
+                                  temperature=0.2, thinking_level=None,
+                                  max_output_tokens=8192, max_retries=6),
+                timeout=_red_team_timeout(),
             )
             parsed = _parse_red_team(extract_json(text))
         except Exception as exc:
@@ -329,14 +352,16 @@ async def verify_buy(ticker: str, result: dict, dossier: dict) -> dict:
     rt = await red_team(ticker, result, dossier)
 
     if "_error" in rt:
-        # Tiered fail-safety: at/above the fail-closed score a verifier that can't
-        # reach a verdict must NOT auto-confirm — hold the BUY for review. Below it,
-        # preserve fail-open (a transient blip shouldn't demote an ordinary BUY).
+        # No verdict -> fail CLOSED (default since 2026-07-03): an unverified BUY
+        # is not a confirmed BUY; it goes to Under Review, not the alerts feed.
+        # VERIFY_FAIL_OPEN=1 restores fail-open BELOW the fail-closed score tier
+        # (emergency lever for a known verifier outage); at/above the tier a BUY
+        # is never auto-confirmed regardless.
         score = result.get("consensus_score", 0) or 0
         top_tier = isinstance(score, (int, float)) and score >= _failclosed_score()
         fail_open = _fail_open() and not top_tier
-        held_reason = (f"Top-tier BUY (score >= {_failclosed_score():g}) held — "
-                       f"red-team unavailable after retries; not auto-confirmed")
+        held_reason = (f"BUY held — red-team unavailable after retries "
+                       f"({str(rt['_error'])[:120]}); not auto-confirmed")
         return {
             "confirmed": fail_open,
             "stage": 2,

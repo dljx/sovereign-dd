@@ -86,7 +86,7 @@ long-short averages from the academic literature — real but lumpy, with multi-
 | Quality signals in triage — ROIC>15%, GM, FCF yield, Rule of 40 (`scout.py:_compute_matched_filters`) | ✅ evidence-aligned | Profitability premium territory |
 | BANGER requires insider **net buying** + R:R ≥ 2:1 (`scoring.py`) | ✅ evidence-aligned | |
 | `eps_revision_momentum` in the dossier | ✅ evidence-aligned | Revision momentum |
-| Adversarial red-team gate on every BUY (`verify.py`) | ✅ good process | Institutionalized disconfirmation — guards the LLM's narrative bias |
+| Adversarial red-team gate on every BUY (`verify.py`) | ✅ design / **was a no-op in practice, fixed 2026-07-03** | Good process on paper — but a 90s timeout starved the grounded call (measured: 18/19 verdicts `UNVERIFIED`, auto-passed via fail-open). Fixed: 300s budget, lean call config, and **fail-closed by default** — no verdict → Under Review, not the alerts feed |
 | Two-ladder grading (entry vs hold), softened hold-mode penalties | ✅ sensible design | Behavioral discipline, not a return factor |
 | **Price momentum** | **fixed 2026-07-03** | Was absent; "momentum" lens was `most_actives` (volume ≠ momentum). Now: true 52-wk relative-strength lens (`scout._momentum_lens`) + canonical `mom_12_1/mom_6m/mom_1m` in every dossier (`dossier._price_momentum`) |
 | **`day_losers` "contrarian" lens** | **removed 2026-07-03** | Anti-evidence (loser continuation) |

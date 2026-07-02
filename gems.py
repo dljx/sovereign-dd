@@ -360,8 +360,12 @@ async def run_gems(
                 if verbose:
                     _tag = ""
                     if score >= BUY_THRESHOLD:
-                        _tag = (" ← BUY ✓ CONFIRMED" if result.get("confirmed", True)
-                                else " ← BUY ⚠ UNDER REVIEW")
+                        _v = result.get("verification") or {}
+                        _verdict = _v.get("verdict", "?")
+                        _note = (f": {str(_v.get('note', ''))[:60]}"
+                                 if _verdict == "UNVERIFIED" and _v.get("note") else "")
+                        _tag = (f" ← BUY ✓ CONFIRMED ({_verdict})" if result.get("confirmed", True)
+                                else f" ← BUY ⚠ UNDER REVIEW ({_verdict}{_note})")
                     print(f"  [gems] {ticker} → {score:.2f}/10 [{grade}]{_tag}")
 
                 # Record in history regardless of grade (prevents re-analysis in cooldown window)
@@ -418,7 +422,12 @@ async def run_gems(
     discoveries = [r for r in results if r is not None]
 
     if verbose:
+        _n_conf = sum(1 for d in discoveries if d.get("confirmed", True))
+        _n_unver = sum(1 for d in discoveries
+                       if (d.get("verification") or {}).get("verdict") == "UNVERIFIED")
         print(f"\n  Gems complete: {len(discoveries)} BUY signal(s) "
-              f"from {len(picks)} debated · history now has {len(history)} ticker(s)")
+              f"({_n_conf} confirmed · {len(discoveries) - _n_conf} under review · "
+              f"{_n_unver} unverified) from {len(picks)} debated · "
+              f"history now has {len(history)} ticker(s)")
 
     return discoveries
