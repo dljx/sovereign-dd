@@ -39,26 +39,43 @@ def _extract_archetype(dossier: dict) -> str | None:
     return None
 
 
-def _supabase_insert(table: str, rows: list[dict]) -> None:
-    """POST rows to a Supabase table via REST API. Silently skips if not configured."""
+# Retry budget for Supabase inserts. Backoff is a module constant so tests can
+# zero it.
+_SB_ATTEMPTS = 3
+_SB_BACKOFF = (2.0, 6.0)
+
+
+def _supabase_insert(table: str, rows: list[dict]) -> bool:
+    """POST rows to a Supabase table via REST API, retrying transient failures.
+
+    Returns True on success (or when unconfigured / nothing to insert — local
+    runs stay a silent no-op). False means the history tables are missing rows;
+    the caller must fail the run so the loss is loud, not a log line — these
+    tables are the outcome-measurement dataset.
+    """
     if not SUPABASE_URL or not SUPABASE_KEY or not rows:
-        return
-    try:
-        resp = requests.post(
-            f"{SUPABASE_URL}/rest/v1/{table}",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal,resolution=ignore-duplicates",
-            },
-            json=rows,
-            timeout=15,
-        )
-        if resp.status_code not in (200, 201):
+        return True
+    for attempt in range(_SB_ATTEMPTS):
+        try:
+            resp = requests.post(
+                f"{SUPABASE_URL}/rest/v1/{table}",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal,resolution=ignore-duplicates",
+                },
+                json=rows,
+                timeout=15,
+            )
+            if resp.status_code in (200, 201):
+                return True
             print(f"  [supabase] {table} insert returned {resp.status_code}: {resp.text[:120]}")
-    except Exception as e:
-        print(f"  [supabase] {table} insert failed: {e}")
+        except Exception as e:
+            print(f"  [supabase] {table} insert failed: {e}")
+        if attempt < _SB_ATTEMPTS - 1:
+            time.sleep(_SB_BACKOFF[min(attempt, len(_SB_BACKOFF) - 1)])
+    return False
 
 
 def _sanitize(obj):
@@ -511,6 +528,7 @@ def main():
     # ── Supabase: persist DD history ──────────────────────────────
     if SUPABASE_URL and SUPABASE_KEY:
         print("\n[supabase] Writing DD history + scout history...")
+        sb_failed: list[str] = []
         dd_rows = []
         for item in portfolio_results:
             raw = item.get("value", {})
@@ -546,8 +564,10 @@ def main():
                 "full_result":  {k: v for k, v in result.items() if k != "transcript"},
             }))
         if dd_rows:
-            _supabase_insert("dd_history", dd_rows)
-            print(f"  {len(dd_rows)} DD row(s) inserted")
+            if _supabase_insert("dd_history", dd_rows):
+                print(f"  {len(dd_rows)} DD row(s) inserted")
+            else:
+                sb_failed.append("dd_history")
 
         # Scout history — confirmed discoveries AND confirmation-gate rejects.
         # Rejects were previously never logged, which made the core measurement
@@ -557,16 +577,28 @@ def main():
         scout_rows = [_scout_history_row(s) for s in (discoveries or [])]
         scout_rows += [_scout_history_row(w) for w in _watch if w.get("src") != "gems"]
         if scout_rows:
-            _supabase_insert("scout_history", scout_rows)
-            print(f"  {len(scout_rows)} scout row(s) inserted")
+            if _supabase_insert("scout_history", scout_rows):
+                print(f"  {len(scout_rows)} scout row(s) inserted")
+            else:
+                sb_failed.append("scout_history")
 
-        # Gems history (requires a Supabase `gems_history` table; insert no-ops with a
-        # warning if it doesn't exist — see DATA_CONTRACT.md).
+        # Gems history (see DATA_CONTRACT.md for the table schema).
         gems_rows = [_gems_history_row(g) for g in (gems_discoveries or [])]
         gems_rows += [_gems_history_row(w) for w in _watch if w.get("src") == "gems"]
         if gems_rows:
-            _supabase_insert("gems_history", gems_rows)
-            print(f"  {len(gems_rows)} gems row(s) inserted")
+            if _supabase_insert("gems_history", gems_rows):
+                print(f"  {len(gems_rows)} gems row(s) inserted")
+            else:
+                sb_failed.append("gems_history")
+
+        # All tables were attempted; now fail the run if any insert was lost so
+        # the workflow's Telegram failure alert fires. Before 2026-07-04 these
+        # failures were print-and-continue — silent holes in the measurement
+        # dataset (the KV upload above already succeeded and is unaffected).
+        if sb_failed:
+            print(f"[supabase] FAILED after retries: {', '.join(sb_failed)} — "
+                  "failing the run so the alert fires")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

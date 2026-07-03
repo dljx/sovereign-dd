@@ -8,8 +8,11 @@ on:
     - cron: "0 */4 * * *"
   workflow_dispatch: {}
 
+# Shared with analyze.yml's scheduled runs: both workflows end by POSTing
+# /api/dd/upload, whose KV board merges are read-modify-write — a concurrent
+# scout merge and analyze reconcile prune can silently drop fresh cards.
 concurrency:
-  group: scout
+  group: sovereign-pipeline
   cancel-in-progress: false  # queue, don't cancel — don't waste in-progress debates
 
 jobs:

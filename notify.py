@@ -1,6 +1,8 @@
 """Telegram notifications for sovereign-dd — routes to specific topics."""
 
 import os
+import time
+
 import requests
 from dotenv import load_dotenv
 
@@ -36,9 +38,21 @@ CONF_EMOJI = {"HIGH": "⭐⭐⭐", "MEDIUM": "⭐⭐", "LOW": "⭐"}
 
 _TG_MAX = 4096
 
+# Retry budget for a single sendMessage call. Backoff is a module constant so
+# tests can zero it. 429 waits use Telegram's own retry_after, capped so a
+# long flood-wait can't stall a CI run.
+_SEND_ATTEMPTS = 3
+_SEND_BACKOFF = (2.0, 5.0)
+_RETRY_AFTER_CAP = 15.0
+
 
 def _send(message: str, topic_id: str = "") -> bool:
-    """Send a single message to the Telegram bot (caller must ensure len ≤ 4096)."""
+    """Send a single message to the Telegram bot (caller must ensure len ≤ 4096).
+
+    Retries transient failures (network errors, 5xx, 429) — a BUY alert lost to
+    a blip is a missed trade. Other 4xx (e.g. malformed HTML) fail immediately
+    since retrying can't fix the payload.
+    """
     if not BOT_TOKEN or not CHAT_ID:
         print("  [notify] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping")
         return False
@@ -52,17 +66,29 @@ def _send(message: str, topic_id: str = "") -> bool:
             payload["message_thread_id"] = int(topic_id)
         except ValueError:
             print(f"  [notify] Invalid topic_id '{topic_id}' — sending to main chat")
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json=payload, timeout=15,
-        )
-        if not r.ok:
+
+    for attempt in range(_SEND_ATTEMPTS):
+        wait = _SEND_BACKOFF[min(attempt, len(_SEND_BACKOFF) - 1)]
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=payload, timeout=15,
+            )
+            if r.ok:
+                return True
             print(f"  [notify] Telegram error {r.status_code}: {r.text[:200]}")
-        return r.ok
-    except Exception as e:
-        print(f"  [notify] Telegram request failed: {e}")
-        return False
+            if r.status_code != 429 and r.status_code < 500:
+                return False
+            if r.status_code == 429:
+                try:
+                    wait = min(float(r.json()["parameters"]["retry_after"]), _RETRY_AFTER_CAP)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"  [notify] Telegram request failed: {e}")
+        if attempt < _SEND_ATTEMPTS - 1:
+            time.sleep(wait)
+    return False
 
 
 def _split_send(message: str, topic_id: str = "") -> bool:

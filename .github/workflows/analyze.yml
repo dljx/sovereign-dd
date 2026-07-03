@@ -13,6 +13,19 @@ on:
         default: ""
         type: string
 
+# Scheduled runs share scout.yml's concurrency group: both workflows end by
+# POSTing /api/dd/upload, whose KV board merges are read-modify-write. The
+# daily analyze sends reconcile_remove for every held ticker (prunes the
+# scout/gems/watchlist boards) while a long scout run (30–150 min, starts
+# 08:00 UTC) can be mid-upload at 10:00 UTC — a lost-update race that silently
+# drops fresh cards. Serializing the scheduled runs closes that window.
+# Manual dashboard-triggered runs keep a unique group so a single-ticker
+# analysis is never queued behind a 150-minute scout (the residual ms-scale
+# overlap risk on those rare runs is accepted).
+concurrency:
+  group: ${{ github.event_name == 'schedule' && 'sovereign-pipeline' || format('manual-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 jobs:
   analyze:
     name: Run analysis
