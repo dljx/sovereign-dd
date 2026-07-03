@@ -125,11 +125,12 @@ magnitude given §2's skew: sized so a zeroed thesis is survivable and a winner 
 | Momentum/quality adjustments inside `apply_adjustments` | Internal tuning without internal data = unfalsifiable bet (the shelved momentum overlay stays shelved) | Factor-stamped signals show mom/quality terciles predict excess return **within our own funnel** |
 | Reweighting debate score vs factor scores; grade-ladder / BUY-threshold moves | Same | Same |
 
-**The scoreboard (runs ~mid-July 2026, then periodically):** for every price-stamped signal —
-forward return at 1/4/12 weeks **minus VWRA.L** over the matched window; hit rate and average
-excess bucketed by grade, confirmed-vs-rejected (does the gate add edge?), BANGER, risk tier,
-momentum tercile, quality tercile, and methodology version (`factors.v`). Every deferred change
-above graduates or dies on those numbers.
+**The scoreboard (`signal_analysis.py`, added 2026-07-04 — runnable anytime; first meaningful
+multi-window read ~mid-July 2026):** for every price-stamped signal — forward return at 1/4/12
+weeks **minus VWRA.L** over the matched window; hit rate and average excess bucketed by grade,
+confirmed-vs-rejected (does the gate add edge?), verdict, momentum tercile, quality tercile,
+methodology version (`factors.v`), and source (scout/gems). Every deferred change above
+graduates or dies on those numbers.
 
 ## 7. Honest summary
 
