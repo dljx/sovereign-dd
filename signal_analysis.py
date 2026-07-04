@@ -47,6 +47,15 @@ _PAGE = 1000
 
 _DATA_NOTE = "pre-2026-07-03 entry prices are same-day-close backfills (approx)"
 
+# Mirror of the append-only register in docs/ADAPTATION_PROTOCOL.md §4 — keep
+# the two in sync (rule 5: a selection-affecting change bumps factors.v in the
+# same commit as its register row).
+_VERSION_REGISTER = {
+    None: "legacy ≤2026-07-02 — no factor stamp, backfilled entry prices",
+    2: "since 2026-07-03 — true momentum lens, anti-evidence removals, "
+       "quality composite, fail-closed gate",
+}
+
 
 # ── Supabase fetch ────────────────────────────────────────────────────
 
@@ -252,6 +261,8 @@ def compute_scoreboard(signals: list[dict], closes: dict, vwra: pd.Series,
         "n_scout": n_scout,
         "n_gems": len(signals) - n_scout,
         "note": _DATA_NOTE,
+        "versions": [{"v": ("unstamped" if v is None else f"v{v}"), "desc": desc}
+                     for v, desc in _VERSION_REGISTER.items()],
         "windows": out_windows,
     }
 
@@ -281,8 +292,10 @@ def render_report(sb: dict) -> list[str]:
         "excess = stock forward return − VWRA forward return.",
         f"note: {sb['note']};",
         "      daily-close granularity, dates matched within ±3 days.",
-        "═" * 64,
     ]
+    for ver in sb.get("versions", []):
+        lines.append(f"methodology {ver['v']}: {ver['desc']}")
+    lines.append("═" * 64)
     for win in sb["windows"]:
         lines += ["", f"── {win['weeks']}-week forward ──",
                   f"  measurable {win['measurable']} · pending {win['pending']} "

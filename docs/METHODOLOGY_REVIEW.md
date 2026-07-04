@@ -130,7 +130,10 @@ multi-window read ~mid-July 2026):** for every price-stamped signal — forward 
 weeks **minus VWRA.L** over the matched window; hit rate and average excess bucketed by grade,
 confirmed-vs-rejected (does the gate add edge?), verdict, momentum tercile, quality tercile,
 methodology version (`factors.v`), and source (scout/gems). Every deferred change above
-graduates or dies on those numbers.
+graduates or dies on those numbers. **How changes are allowed to happen — pre-registration,
+version bumps, cadence, kill criteria — is codified in
+[ADAPTATION_PROTOCOL.md](ADAPTATION_PROTOCOL.md): the scoreboard is the arbiter, that document
+is the law.**
 
 ## 7. Honest summary
 

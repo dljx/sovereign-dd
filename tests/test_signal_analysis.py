@@ -196,6 +196,9 @@ def test_compute_scoreboard_json_shape():
     gate_keys = {e["k"] for e in w1["buckets"]["gate"]}
     assert gate_keys == {"confirmed", "unknown"}
     assert w1["top"][0]["ticker"] == "AAA" and w1["bottom"][0]["ticker"] == "BBB"
+    # Version register rides along for the dashboard/report
+    assert {v["v"] for v in sb["versions"]} >= {"unstamped", "v2"}
+    assert all(v["desc"] for v in sb["versions"])
     # rounded floats, JSON-serializable end to end
     import json
     json.dumps(sb)
@@ -216,6 +219,7 @@ def test_render_report_consumes_computed_dict():
     text = "\n".join(sa.render_report(sb))
     assert "as of 2026-06-30" in text
     assert "measurable 1 · pending 0 · no-data 0" in text
+    assert "methodology v2:" in text
 
 
 def test_digest_due_mondays_only():
