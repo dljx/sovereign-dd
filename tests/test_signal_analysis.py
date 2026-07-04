@@ -170,6 +170,60 @@ def test_build_report_end_to_end_synthetic():
     assert "⚠ n<10" in text                               # small-sample marker
 
 
+def test_compute_scoreboard_json_shape():
+    closes = {"AAA": _series("2026-06-01", 30, 100, 2.0),
+              "BBB": _series("2026-06-01", 30, 100, -1.0)}
+    vwra = _series("2026-06-01", 30, 200, 0.5)
+    signals = sa.parse_rows([
+        {"ticker": "AAA", "discovered_at": "2026-06-10T12:00:00+00:00",
+         "price": 100.0, "grade": "BUY", "confirmed": True, "verdict": "CONFIRM",
+         "factors": {"v": 2, "mom_12_1": 0.5, "quality": 8.0}},
+        {"ticker": "BBB", "discovered_at": "2026-06-10T12:00:00+00:00",
+         "price": 100.0, "grade": "BUY", "confirmed": None, "verdict": None,
+         "factors": None},
+    ], "scout")
+    sb = sa.compute_scoreboard(signals, closes, vwra, windows=[1, 12],
+                               today=date(2026, 6, 30))
+    assert sb["v"] == 1 and sb["benchmark"] == "VWRA.L"
+    assert sb["n_signals"] == 2 and sb["n_scout"] == 2 and sb["n_gems"] == 0
+    assert sb["as_of"] == "2026-06-30" and sb["generated_at"]
+
+    w1, w12 = sb["windows"]
+    assert w1["weeks"] == 1 and w1["measurable"] == 2 and w1["pending"] == 0
+    assert w1["overall"]["n"] == 2
+    assert set(w1["buckets"]) == {"grade", "gate", "verdict", "mom_12_1",
+                                  "quality", "factors_v", "source"}
+    gate_keys = {e["k"] for e in w1["buckets"]["gate"]}
+    assert gate_keys == {"confirmed", "unknown"}
+    assert w1["top"][0]["ticker"] == "AAA" and w1["bottom"][0]["ticker"] == "BBB"
+    # rounded floats, JSON-serializable end to end
+    import json
+    json.dumps(sb)
+    assert w1["overall"]["hit"] == round(w1["overall"]["hit"], 4)
+
+    assert w12["measurable"] == 0 and w12["pending"] == 2
+    assert "overall" not in w12
+
+
+def test_render_report_consumes_computed_dict():
+    closes = {"AAA": _series("2026-06-01", 30, 100, 2.0)}
+    vwra = _series("2026-06-01", 30, 200, 0.5)
+    signals = sa.parse_rows([
+        {"ticker": "AAA", "discovered_at": "2026-06-10T12:00:00+00:00",
+         "price": 100.0, "grade": "BUY"},
+    ], "scout")
+    sb = sa.compute_scoreboard(signals, closes, vwra, [1], date(2026, 6, 30))
+    text = "\n".join(sa.render_report(sb))
+    assert "as of 2026-06-30" in text
+    assert "measurable 1 · pending 0 · no-data 0" in text
+
+
+def test_digest_due_mondays_only():
+    assert sa.digest_due(date(2026, 7, 6)) is True    # Monday
+    assert sa.digest_due(date(2026, 7, 4)) is False   # Saturday
+    assert sa.digest_due(date(2026, 7, 7)) is False   # Tuesday
+
+
 def test_build_report_pending_only_window():
     closes = {"AAA": _series("2026-06-01", 30)}
     vwra = _series("2026-06-01", 30)

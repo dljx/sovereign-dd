@@ -110,3 +110,25 @@ def test_missing_credentials_short_circuits(monkeypatch):
     monkeypatch.setattr(notify.requests, "post", lambda *a, **k: called.append(1))
     assert notify._send("hi") is False
     assert not called
+
+
+def test_scoreboard_digest_formats_and_routes(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    sb = {
+        "benchmark": "VWRA.L", "n_signals": 116,
+        "windows": [
+            {"weeks": 1, "pending": 23,
+             "overall": {"n": 93, "hit": 0.5591, "mean": 0.017, "median": 0.006},
+             "top": [{"ticker": "PAY", "excess": 0.262}],
+             "bottom": [{"ticker": "LEGN", "excess": -0.23}]},
+            {"weeks": 4, "pending": 116},
+        ],
+    }
+    assert notify.alert_scoreboard_digest(sb) is True
+    msg, topic = sent[0]
+    assert topic == notify.TOPIC_SCAN_RESULTS
+    assert "hit 56%" in msg and "+1.7%" in msg
+    assert "PAY" in msg and "LEGN" in msg
+    assert "nothing measurable yet (116 pending)" in msg

@@ -18,7 +18,8 @@ from scout import BUY_THRESHOLD
 SCOUT_UPLOAD_WINDOW_SECS = 2 * 3600
 
 # Filenames to skip in output/ — not ticker results
-_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json", "gems_history.json", "scout_seen.json"}
+_SKIP_FILENAMES = {"scout_history.json", "scout_notified.json", "gems_history.json",
+                   "scout_seen.json", "scoreboard.json"}
 
 UPLOAD_URL    = os.getenv("SOVEREIGN_EYE_URL", "https://sovereign-eye.pages.dev")
 UPLOAD_SECRET = os.getenv("DD_UPLOAD_SECRET", "")
@@ -479,6 +480,17 @@ def main():
     gems_history   = histories["gems_history"]
     scout_seen     = histories["scout_seen"]
 
+    # Scoreboard snapshot (written by `signal_analysis.py --json` in the analyze
+    # workflow) — uploaded wholesale to KV dd:scoreboard for the dashboard panel.
+    scoreboard = None
+    sb_path = output_dir / "scoreboard.json"
+    try:
+        if sb_path.exists():
+            scoreboard = json.loads(sb_path.read_text(encoding="utf-8"))
+            print(f"[upload] Scoreboard snapshot found ({sb_path})")
+    except Exception as e:
+        print(f"  [upload] Could not read scoreboard.json: {e}")
+
     # A 0-signal run still MUST upload: the dedup/notify histories grew this run,
     # and skipping the POST would leave the KV backup stale (a later cache miss
     # would then restore an old window → re-debates and possible re-alerts) and
@@ -486,7 +498,7 @@ def main():
     if (not portfolio_results and not index and not discoveries
             and not gems_discoveries and not reconcile_remove and not watchlist
             and not scout_history and not scout_notified and not gems_history
-            and not scout_seen):
+            and not scout_seen and not scoreboard):
         print("[upload] Nothing to upload.")
         return
 
@@ -505,6 +517,7 @@ def main():
         "scout_notified":   scout_notified,
         "gems_history":     gems_history,
         "scout_seen":       scout_seen,
+        "scoreboard":       scoreboard,
     }
 
     payload = _sanitize(payload)

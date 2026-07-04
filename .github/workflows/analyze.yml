@@ -78,6 +78,21 @@ jobs:
             LIVE_EVENTS=1 python main.py "$TICKER" --save
           fi
 
+      - name: Refresh signal scoreboard
+        # Derived, recomputable data — a yfinance/Supabase blip must not kill
+        # the run; continue-on-error keeps the failure visible in the Actions
+        # UI. The JSON lands in output/scoreboard.json, which the upload step
+        # ships to KV dd:scoreboard for the dashboard panel. The Telegram
+        # digest inside is Monday-gated by the script itself.
+        continue-on-error: true
+        env:
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
+        run: python signal_analysis.py --json output/scoreboard.json --digest-weekly
+
       - name: Upload results to Sovereign Eye
         env:
           DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}

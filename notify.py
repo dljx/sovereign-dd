@@ -116,6 +116,37 @@ def _split_send(message: str, topic_id: str = "") -> bool:
     return ok
 
 
+def alert_scoreboard_digest(sb: dict) -> bool:
+    """Weekly signal-scoreboard summary → Scan Results topic.
+
+    `sb` is the dict from signal_analysis.compute_scoreboard (also uploaded to
+    the dashboard as dd:scoreboard) — hit rate and mean/median excess vs the
+    benchmark per window, plus best/worst signals."""
+    lines = [
+        f"📊 <b>SIGNAL SCOREBOARD</b> — vs {sb.get('benchmark', 'VWRA.L')}",
+        f"{sb.get('n_signals', 0)} signals logged · excess = signal return − benchmark",
+    ]
+    for w in sb.get("windows", []):
+        o = w.get("overall")
+        if not o:
+            lines.append(f"\n<b>{w['weeks']}w</b>: nothing measurable yet "
+                         f"({w.get('pending', 0)} pending)")
+            continue
+        small = " ⚠" if o["n"] < 10 else ""
+        lines.append(
+            f"\n<b>{w['weeks']}w</b> · n={o['n']} ({w.get('pending', 0)} pending){small}\n"
+            f"hit {o['hit'] * 100:.0f}% · mean {o['mean'] * 100:+.1f}% "
+            f"· median {o['median'] * 100:+.1f}%"
+        )
+        top, bottom = w.get("top") or [], w.get("bottom") or []
+        if top and bottom:
+            lines.append(f"best {top[0]['ticker']} {top[0]['excess'] * 100:+.1f}% · "
+                         f"worst {bottom[0]['ticker']} {bottom[0]['excess'] * 100:+.1f}%")
+    lines.append("\n<i>Small samples read as noise — tuning waits for the "
+                 "pre-committed analysis.</i>")
+    return _split_send("\n".join(lines), TOPIC_SCAN_RESULTS)
+
+
 def alert_buy_signal(d: dict) -> bool:
     """Send a BUY signal alert for a scout discovery → Trade Alerts topic."""
     emoji = GRADE_EMOJI.get(d["grade"], "")

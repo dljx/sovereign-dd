@@ -7,6 +7,10 @@ forward return over the same window, then buckets by grade, gate outcome,
 verdict, momentum/quality terciles, factors version, and source. Every deferred
 methodology change graduates or dies on these numbers — never on vibes.
 
+Outputs: a text report (stdout / --markdown), a JSON snapshot for the dashboard
+panel (--json → uploaded to KV dd:scoreboard by upload_kv.py), and an optional
+Monday-only Telegram digest (--digest-weekly).
+
 Caveats printed in the report header:
   - Pre-2026-07-03 rows have backfilled same-day-close entry prices (approx).
   - Daily-close granularity; VWRA.L (LSE, USD-denominated) has its own trading
@@ -14,15 +18,17 @@ Caveats printed in the report header:
 
 Usage:
     python signal_analysis.py [--windows 1,4,12] [--markdown out.md]
+                              [--json out.json] [--digest-weekly]
 
 Env: SUPABASE_URL / SUPABASE_KEY (same convention as upload_kv.py).
 """
 
 import argparse
+import json
 import os
 import statistics
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import requests
@@ -38,6 +44,8 @@ BENCHMARK = "VWRA.L"
 # weekends/holidays on either exchange without silently stretching the window.
 _DATE_TOLERANCE_DAYS = 3
 _PAGE = 1000
+
+_DATA_NOTE = "pre-2026-07-03 entry prices are same-day-close backfills (approx)"
 
 
 # ── Supabase fetch ────────────────────────────────────────────────────
@@ -174,35 +182,30 @@ def bucket_stats(rows: list[dict], key_fn) -> dict:
     return out
 
 
-# ── Report ────────────────────────────────────────────────────────────
+# ── Scoreboard (data) ─────────────────────────────────────────────────
+
+# Bucket key → (json key, report title). Order is the report/panel order.
+_BUCKETS = [
+    ("grade",     "grade",            lambda r: r["grade"]),
+    ("gate",      "gate",             lambda r: {True: "confirmed", False: "rejected"}.get(r["confirmed"], "unknown")),
+    ("verdict",   "verdict",          lambda r: r["verdict"]),
+    ("mom_12_1",  "mom_12_1 tercile", lambda r: r["mom_bucket"] or "n/a"),
+    ("quality",   "quality tercile",  lambda r: r["quality_bucket"] or "n/a"),
+    ("factors_v", "factors.v",        lambda r: f"v{r['factors_v']}" if r["factors_v"] else "unstamped"),
+    ("source",    "source",           lambda r: r["src"]),
+]
 
 
-def _pct(x: float) -> str:
-    return f"{x * 100:+.1f}%"
+def _round_stats(s: dict) -> dict:
+    return {"n": s["n"], "hit": round(s["hit"], 4),
+            "mean": round(s["mean"], 4), "median": round(s["median"], 4)}
 
 
-def _bucket_lines(title: str, stats: dict) -> list[str]:
-    lines = [f"  {title}:"]
-    for k, s in stats.items():
-        flag = "  ⚠ n<10" if s["n"] < 10 else ""
-        lines.append(f"    {str(k):<14} n={s['n']:<3} hit {s['hit'] * 100:4.0f}%  "
-                     f"mean {_pct(s['mean']):>7}  median {_pct(s['median']):>7}{flag}")
-    return lines
-
-
-def build_report(signals: list[dict], closes: dict, vwra: pd.Series,
-                 windows: list[int], today: date) -> list[str]:
+def compute_scoreboard(signals: list[dict], closes: dict, vwra: pd.Series,
+                       windows: list[int], today: date) -> dict:
+    """The scoreboard as data — single source for the text report, the JSON
+    uploaded to the dashboard (KV dd:scoreboard), and the Telegram digest."""
     n_scout = sum(1 for s in signals if s["src"] == "scout")
-    lines = [
-        "═" * 64,
-        "SIGNAL SCOREBOARD — forward returns vs VWRA (matched windows)",
-        f"as of {today} · scout {n_scout} + gems {len(signals) - n_scout} signals "
-        f"· benchmark {BENCHMARK}",
-        "excess = stock forward return − VWRA forward return.",
-        "note: pre-2026-07-03 entry prices are same-day-close backfills (approx);",
-        "      daily-close granularity, dates matched within ±3 days.",
-        "═" * 64,
-    ]
 
     # Terciles are computed once across all signals (entry-time factor profile).
     mom_lab = tercile_labels([s["mom_12_1"] for s in signals])
@@ -210,6 +213,7 @@ def build_report(signals: list[dict], closes: dict, vwra: pd.Series,
     for s, m, q in zip(signals, mom_lab, qual_lab):
         s["mom_bucket"], s["quality_bucket"] = m, q
 
+    out_windows = []
     for weeks in windows:
         measured, pending, no_data = [], 0, 0
         for s in signals:
@@ -222,35 +226,88 @@ def build_report(signals: list[dict], closes: dict, vwra: pd.Series,
             if fr["status"] != "ok" or vf["status"] != "ok":
                 no_data += 1
                 continue
-            measured.append({**s, "ret": fr["ret"],
-                             "excess": fr["ret"] - vf["ret"]})
+            measured.append({**s, "excess": fr["ret"] - vf["ret"]})
 
-        lines += ["", f"── {weeks}-week forward ──",
-                  f"  measurable {len(measured)} · pending {pending} · no-data {no_data}"]
-        if not measured:
+        win: dict = {"weeks": weeks, "measurable": len(measured),
+                     "pending": pending, "no_data": no_data}
+        if measured:
+            win["overall"] = _round_stats(bucket_stats(measured, lambda r: "ALL")["ALL"])
+            win["buckets"] = {
+                key: [{"k": str(k), **_round_stats(s)}
+                      for k, s in bucket_stats(measured, fn).items()]
+                for key, _title, fn in _BUCKETS
+            }
+            ranked = sorted(measured, key=lambda r: r["excess"], reverse=True)
+            pick = lambda r: {"ticker": r["ticker"], "excess": round(r["excess"], 4)}
+            win["top"] = [pick(r) for r in ranked[:5]]
+            win["bottom"] = [pick(r) for r in ranked[-5:][::-1]]
+        out_windows.append(win)
+
+    return {
+        "v": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "as_of": str(today),
+        "benchmark": BENCHMARK,
+        "n_signals": len(signals),
+        "n_scout": n_scout,
+        "n_gems": len(signals) - n_scout,
+        "note": _DATA_NOTE,
+        "windows": out_windows,
+    }
+
+
+# ── Report (text rendering of the scoreboard) ─────────────────────────
+
+
+def _pct(x: float) -> str:
+    return f"{x * 100:+.1f}%"
+
+
+def _bucket_lines(title: str, entries: list[dict]) -> list[str]:
+    lines = [f"  {title}:"]
+    for s in entries:
+        flag = "  ⚠ n<10" if s["n"] < 10 else ""
+        lines.append(f"    {s['k']:<14} n={s['n']:<3} hit {s['hit'] * 100:4.0f}%  "
+                     f"mean {_pct(s['mean']):>7}  median {_pct(s['median']):>7}{flag}")
+    return lines
+
+
+def render_report(sb: dict) -> list[str]:
+    lines = [
+        "═" * 64,
+        "SIGNAL SCOREBOARD — forward returns vs VWRA (matched windows)",
+        f"as of {sb['as_of']} · scout {sb['n_scout']} + gems {sb['n_gems']} signals "
+        f"· benchmark {sb['benchmark']}",
+        "excess = stock forward return − VWRA forward return.",
+        f"note: {sb['note']};",
+        "      daily-close granularity, dates matched within ±3 days.",
+        "═" * 64,
+    ]
+    for win in sb["windows"]:
+        lines += ["", f"── {win['weeks']}-week forward ──",
+                  f"  measurable {win['measurable']} · pending {win['pending']} "
+                  f"· no-data {win['no_data']}"]
+        if not win.get("overall"):
             lines.append("  (nothing measurable in this window yet)")
             continue
-
-        overall = bucket_stats(measured, lambda r: "ALL")
-        lines += _bucket_lines("overall", overall)
-        lines += _bucket_lines("grade", bucket_stats(measured, lambda r: r["grade"]))
-        lines += _bucket_lines("gate", bucket_stats(
-            measured, lambda r: {True: "confirmed", False: "rejected"}.get(r["confirmed"], "unknown")))
-        lines += _bucket_lines("verdict", bucket_stats(measured, lambda r: r["verdict"]))
-        lines += _bucket_lines("mom_12_1 tercile", bucket_stats(
-            measured, lambda r: r["mom_bucket"] or "n/a"))
-        lines += _bucket_lines("quality tercile", bucket_stats(
-            measured, lambda r: r["quality_bucket"] or "n/a"))
-        lines += _bucket_lines("factors.v", bucket_stats(
-            measured, lambda r: f"v{r['factors_v']}" if r["factors_v"] else "unstamped"))
-        lines += _bucket_lines("source", bucket_stats(measured, lambda r: r["src"]))
-
-        ranked = sorted(measured, key=lambda r: r["excess"], reverse=True)
-        fmt = lambda r: f"{r['ticker']} {_pct(r['excess'])}"
-        lines.append("  top:    " + " · ".join(fmt(r) for r in ranked[:5]))
-        lines.append("  bottom: " + " · ".join(fmt(r) for r in ranked[-5:][::-1]))
-
+        lines += _bucket_lines("overall", [{"k": "ALL", **win["overall"]}])
+        for key, title, _fn in _BUCKETS:
+            lines += _bucket_lines(title, win["buckets"][key])
+        fmt = lambda e: f"{e['ticker']} {_pct(e['excess'])}"
+        lines.append("  top:    " + " · ".join(fmt(e) for e in win["top"]))
+        lines.append("  bottom: " + " · ".join(fmt(e) for e in win["bottom"]))
     return lines
+
+
+def build_report(signals: list[dict], closes: dict, vwra: pd.Series,
+                 windows: list[int], today: date) -> list[str]:
+    """Compute + render in one call (kept as the simple entry point for tests)."""
+    return render_report(compute_scoreboard(signals, closes, vwra, windows, today))
+
+
+def digest_due(today: date) -> bool:
+    """Weekly digest fires on Mondays only."""
+    return today.weekday() == 0
 
 
 # ── Orchestration ─────────────────────────────────────────────────────
@@ -289,7 +346,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--windows", default="1,4,12",
                     help="comma-separated forward windows in weeks (default 1,4,12)")
-    ap.add_argument("--markdown", default="", help="also write the report to this file")
+    ap.add_argument("--markdown", default="", help="also write the text report to this file")
+    ap.add_argument("--json", default="",
+                    help="write the scoreboard JSON snapshot to this file "
+                         "(picked up by upload_kv.py → KV dd:scoreboard)")
+    ap.add_argument("--digest-weekly", action="store_true",
+                    help="send the Telegram scoreboard digest (Mondays only)")
     args = ap.parse_args()
     windows = [int(w) for w in args.windows.split(",") if w.strip()]
 
@@ -321,13 +383,29 @@ def main() -> int:
         print(f"  no price data for {len(missing)}: {', '.join(missing[:10])}"
               + (" …" if len(missing) > 10 else ""))
 
-    report = build_report(signals, closes, vwra, windows, today)
+    sb = compute_scoreboard(signals, closes, vwra, windows, today)
+    report = render_report(sb)
     print("\n".join(report))
 
     if args.markdown:
         from pathlib import Path
         Path(args.markdown).write_text("\n".join(report) + "\n", encoding="utf-8")
         print(f"\n[analysis] Report written to {args.markdown}")
+
+    if args.json:
+        from pathlib import Path
+        Path(args.json).write_text(json.dumps(sb, separators=(",", ":")) + "\n",
+                                   encoding="utf-8")
+        print(f"[analysis] Scoreboard JSON written to {args.json}")
+
+    if args.digest_weekly:
+        if digest_due(today):
+            from notify import alert_scoreboard_digest
+            ok = alert_scoreboard_digest(sb)
+            print(f"[analysis] Weekly digest {'sent' if ok else 'FAILED'}")
+        else:
+            print("[analysis] --digest-weekly: not Monday — skipping digest")
+
     return 0
 
 
