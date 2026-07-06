@@ -233,9 +233,12 @@ async def _run_gems(save: bool = False, notify: bool = False):
 
     if notify:
         from notify import alert_buy_signal, alert_scout_summary, alert_dd_result, alert_watchlist
-        confirmed = [d for d in discoveries if d.get("confirmed", True)]
-        review    = [d for d in discoveries if not d.get("confirmed", True)]
-        for d in confirmed:
+        from verify import surfaces_on_board
+        # v3 (2026-07-07): a red-team DOWNGRADE surfaces flagged via alert_buy_signal
+        # instead of being routed to Under Review like a VETO — see surfaces_on_board.
+        on_board = [d for d in discoveries if surfaces_on_board(d)]
+        review   = [d for d in discoveries if not surfaces_on_board(d)]
+        for d in on_board:
             alert_buy_signal(d)
             if d.get("output_file"):
                 try:
@@ -246,9 +249,9 @@ async def _run_gems(save: bool = False, notify: bool = False):
                     console.print(f"[dim]  [notify] DD detail unavailable for {d.get('ticker','?')}: {e}[/dim]")
         for d in review:
             alert_watchlist(d)
-        # Always send — an empty gems scan is an affirmative "default: VWRA", not silence.
-        alert_scout_summary(confirmed, title="SOVEREIGN GEMS")
-        console.print(f"[dim]Gems alerts sent ({len(confirmed)} confirmed, {len(review)} under review)[/dim]")
+        # Always send — a heartbeat distinguishes "nothing qualified" from a stalled run.
+        alert_scout_summary(on_board, title="SOVEREIGN GEMS")
+        console.print(f"[dim]Gems alerts sent ({len(on_board)} on board, {len(review)} under review)[/dim]")
 
     return discoveries
 
@@ -262,18 +265,21 @@ async def _run_scout(save: bool = False, notify: bool = False):
 
     if notify:
         from notify import alert_scout_summary, alert_buy_signal, alert_dd_result, alert_watchlist
+        from verify import surfaces_on_board
 
         notified   = _load_notified()
         suppressed = _recently_notified(notified)
         alerted    = []
-        # Under-review BUYs go to the watchlist. We do NOT record them in the
+        # Under-review BUYs go to the watchlist; VETO/REJECTED_STAGE1/UNVERIFIED
+        # only (v3, 2026-07-07: a DOWNGRADE surfaces flagged below instead — see
+        # surfaces_on_board). We do NOT record true watchlist items in the
         # notified ledger: the 48h scout_history cooldown already prevents a
         # re-debate (and so re-alert) within that window, and recording them
         # would suppress a legitimate CONFIRMED alert if the ticker later clears.
-        review     = [d for d in discoveries if not d.get("confirmed", True)]
+        review     = [d for d in discoveries if not surfaces_on_board(d)]
 
         for d in discoveries:
-            if not d.get("confirmed", True):
+            if not surfaces_on_board(d):
                 continue  # routed to the watchlist loop below
             ticker = d["ticker"]
             if ticker in suppressed:

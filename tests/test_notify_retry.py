@@ -132,3 +132,60 @@ def test_scoreboard_digest_formats_and_routes(monkeypatch):
     assert "hit 56%" in msg and "+1.7%" in msg
     assert "PAY" in msg and "LEGN" in msg
     assert "nothing measurable yet (116 pending)" in msg
+
+
+# ── alert_buy_signal: v3 DOWNGRADEs surface flagged, not suppressed ────────────
+
+def _buy_signal_fixture(**over):
+    d = {
+        "ticker": "AAA", "score": 8.4, "grade": "STRONG BUY", "confidence": "HIGH",
+        "thesis": "Wide moat compounder.", "key_swing_factor": "Margin expansion.",
+        "catalyst": "", "asymmetry_ratio": "", "analyzed_at": "2026-07-07T00:00:00Z",
+        "matched_filters": [], "path": "A", "banger": {}, "position_guidance": {},
+        "cycle_position": {}, "verification": {},
+    }
+    d.update(over)
+    return d
+
+
+def test_buy_signal_confirm_header_unflagged(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    d = _buy_signal_fixture(verification={"verdict": "CONFIRM", "verification_score": 8.8})
+    assert notify.alert_buy_signal(d) is True
+    msg, topic = sent[0]
+    assert topic == notify.TOPIC_TRADE_ALERTS
+    assert "BUY SIGNAL — AAA" in msg
+    assert "FLAGGED" not in msg
+    assert "prosecutor CONFIRM" in msg and "8.8/10" in msg
+
+
+def test_buy_signal_downgrade_is_flagged_not_suppressed(monkeypatch):
+    """v3 (2026-07-07): a red-team DOWNGRADE surfaces in Trade Alerts, visibly
+    tagged with its score + bear point, instead of being routed to Under Review
+    like a VETO."""
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    d = _buy_signal_fixture(verification={
+        "verdict": "DOWNGRADE", "verification_score": 5.5,
+        "strongest_bear_point": "Margins peaking",
+    })
+    assert notify.alert_buy_signal(d) is True
+    msg, topic = sent[0]
+    assert topic == notify.TOPIC_TRADE_ALERTS  # still Trade Alerts, not Watchlist
+    assert "FLAGGED BUY — AAA" in msg
+    assert "red-team DOWNGRADE" in msg
+    assert "5.5/10" in msg and "Margins peaking" in msg
+
+
+def test_buy_signal_unverified_unchanged(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    d = _buy_signal_fixture(verification={"verdict": "UNVERIFIED"})
+    notify.alert_buy_signal(d)
+    msg, _ = sent[0]
+    assert "BUY SIGNAL — AAA" in msg and "FLAGGED" not in msg
+    assert "Unverified" in msg

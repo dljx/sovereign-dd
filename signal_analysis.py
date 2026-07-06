@@ -17,7 +17,7 @@ Caveats printed in the report header:
     calendar, so entry/exit dates are matched within a ±3-day tolerance.
 
 Usage:
-    python signal_analysis.py [--windows 1,4,12] [--markdown out.md]
+    python signal_analysis.py [--windows 1,4,12,26,52] [--markdown out.md]
                               [--json out.json] [--digest-weekly]
 
 Env: SUPABASE_URL / SUPABASE_KEY (same convention as upload_kv.py).
@@ -47,6 +47,12 @@ _PAGE = 1000
 
 _DATA_NOTE = "pre-2026-07-03 entry prices are same-day-close backfills (approx)"
 
+# Default forward-return windows, in weeks. 26/52 (added 2026-07-07) read as
+# "pending" until signals age into them — but the buckets must exist to ever
+# measure Daryl's stated "in any given year" horizon (n≥30 4-week reads are
+# pre-registered ~2026-08-15; 26/52-week reads follow as of ~Dec 2026/Jun 2027).
+_DEFAULT_WINDOWS = "1,4,12,26,52"
+
 # Mirror of the append-only register in docs/ADAPTATION_PROTOCOL.md §4 — keep
 # the two in sync (rule 5: a selection-affecting change bumps factors.v in the
 # same commit as its register row).
@@ -54,6 +60,9 @@ _VERSION_REGISTER = {
     None: "legacy ≤2026-07-02 — no factor stamp, backfilled entry prices",
     2: "since 2026-07-03 — true momentum lens, anti-evidence removals, "
        "quality composite, fail-closed gate",
+    3: "since 2026-07-07 — gate grades not gates: R:R divergence is red-team "
+       "input not an auto-reject, DOWNGRADE surfaces flagged, calm-window "
+       "re-verification of UNVERIFIED holds",
 }
 
 
@@ -357,8 +366,11 @@ def main() -> int:
         pass
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--windows", default="1,4,12",
-                    help="comma-separated forward windows in weeks (default 1,4,12)")
+    ap.add_argument("--windows", default=_DEFAULT_WINDOWS,
+                    help=f"comma-separated forward windows in weeks (default {_DEFAULT_WINDOWS} — "
+                         "26/52 read as 'pending' until signals age into them, ~Dec 2026 / "
+                         "~Jun 2027, but the buckets must exist to ever measure Daryl's stated "
+                         "'in any given year' horizon)")
     ap.add_argument("--markdown", default="", help="also write the text report to this file")
     ap.add_argument("--json", default="",
                     help="write the scoreboard JSON snapshot to this file "

@@ -11,6 +11,7 @@ from pathlib import Path
 import requests
 
 from scout import BUY_THRESHOLD
+from verify import surfaces_on_board
 
 # Only upload scout files written in the last 2 hours — prevents re-uploading
 # the entire accumulated history on every run (each run adds 12 files; without
@@ -106,6 +107,21 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
+def _clip(s: str | None, n: int) -> str:
+    """Truncate to at most n chars, breaking at the last whole word so a long
+    thesis never ends mid-word. Adds an ellipsis only when text was actually
+    cut. n is now generous (see callers) — this is a safety net, not the
+    primary limiter."""
+    s = s or ""
+    if len(s) <= n:
+        return s
+    cut = s[:n]
+    sp = cut.rfind(" ")
+    if sp > n * 0.6:  # don't sacrifice most of the budget hunting for a space
+        cut = cut[:sp]
+    return cut.rstrip() + "…"
+
+
 def _slim_verification(v: dict | None) -> dict:
     """Compact confirmation-gate verdict for a card — enough to audit a confirmed
     BUY (verdict, score, top bear point) without bloating the board blob. The
@@ -117,7 +133,7 @@ def _slim_verification(v: dict | None) -> dict:
     return {
         "verdict":              v.get("verdict"),
         "verification_score":   v.get("verification_score"),
-        "strongest_bear_point": (v.get("strongest_bear_point") or "")[:300],
+        "strongest_bear_point": _clip(v.get("strongest_bear_point"), 400),
     }
 
 
@@ -132,7 +148,7 @@ def _scout_history_row(s: dict) -> dict:
         "sector":        s.get("sector"),
         "path":          s.get("path"),
         "filters":       s.get("matched_filters", []),
-        "thesis":        (s.get("thesis") or "")[:300],
+        "thesis":        _clip(s.get("thesis"), 1000),
         "price":         s.get("price"),
         "confirmed":     s.get("confirmed"),
         "verdict":       (s.get("verification") or {}).get("verdict"),
@@ -147,8 +163,8 @@ def _gems_history_row(g: dict) -> dict:
         "ticker":        g["ticker"],
         "score":         g.get("score"),
         "grade":         g.get("grade"),
-        "thesis":        (g.get("thesis") or "")[:300],
-        "catalyst":      (g.get("catalyst") or "")[:300],
+        "thesis":        _clip(g.get("thesis"), 1000),
+        "catalyst":      _clip(g.get("catalyst"), 1000),
         "fair_value":    g.get("fair_value_composite"),
         "price":         g.get("price"),
         "confirmed":     g.get("confirmed"),
@@ -158,13 +174,17 @@ def _gems_history_row(g: dict) -> dict:
     }
 
 
-def _factor_stamp(dossier: dict | None) -> dict | None:
+def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | None:
     """Evidence-factor profile at signal time, built from the output file's
-    dossier. upload_kv is the ONLY producer of the Supabase signal rows, so the
-    stamp lives here — a field added upstream in scout.py's in-memory discovery
-    dict never reaches Supabase (that mistake cost 2026-06-26→07-03 of price
-    data). ``v`` versions the methodology: 2 = post the 2026-07-03 changes
-    (true momentum lens, analyst-gap removal)."""
+    dossier (+ light debate-quality signals from `result`). upload_kv is the
+    ONLY producer of the Supabase signal rows, so the stamp lives here — a
+    field added upstream in scout.py's in-memory discovery dict never reaches
+    Supabase (that mistake cost 2026-06-26→07-03 of price data). ``v`` versions
+    the methodology (see docs/ADAPTATION_PROTOCOL.md §4 register).
+
+    `score_spread`/`confidence` (added 2026-07-07) are additive, non-selection
+    fields — they don't affect the gate or any score. They exist so a future
+    scoreboard bucket can test whether panel dissent predicts worse outcomes."""
     if not dossier:
         return None
     try:
@@ -174,15 +194,18 @@ def _factor_stamp(dossier: dict | None) -> dict | None:
             return None
     tech = dossier.get("technicals") or {}
     ratios = (dossier.get("financials") or {}).get("ratios_ttm") or {}
+    result = result or {}
     return {
-        "v":           2,
-        "mom_12_1":    tech.get("mom_12_1"),
-        "mom_6m":      tech.get("mom_6m"),
-        "mom_1m":      tech.get("mom_1m"),
-        "quality":     quality_composite(ratios),
-        "eps_rev_mom": ratios.get("eps_revision_momentum"),
-        "fcf_yield":   ratios.get("fcf_yield"),
-        "roic":        ratios.get("roic"),
+        "v":            3,
+        "mom_12_1":     tech.get("mom_12_1"),
+        "mom_6m":       tech.get("mom_6m"),
+        "mom_1m":       tech.get("mom_1m"),
+        "quality":      quality_composite(ratios),
+        "eps_rev_mom":  ratios.get("eps_revision_momentum"),
+        "fcf_yield":    ratios.get("fcf_yield"),
+        "roic":         ratios.get("roic"),
+        "score_spread": result.get("score_spread"),
+        "confidence":   result.get("confidence"),
     }
 
 
@@ -202,8 +225,8 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None,
         "score":             round(result.get("consensus_score", 0), 2),
         "grade":             result.get("consensus_grade", "?"),
         "conf":              result.get("confidence", ""),
-        "thesis":            result.get("majority_thesis", "")[:200],
-        "key_swing":         result.get("key_swing_factor", "")[:150],
+        "thesis":            _clip(result.get("majority_thesis"), 1000),
+        "key_swing":         _clip(result.get("key_swing_factor"), 400),
         "analyzed_at":       result.get("built_at", ""),
         "catalyst":          result.get("catalyst", ""),
         "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
@@ -219,7 +242,7 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None,
         "price":             (dossier.get("quote") or {}).get("price"),
         "confirmed":         result.get("confirmed", True),
         "fair_value_composite": result.get("fair_value_composite"),
-        "factors":           _factor_stamp(dossier) if dossier else None,
+        "factors":           _factor_stamp(dossier, result) if dossier else None,
     }
 
 
@@ -275,7 +298,7 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
         # stale scout cards for held tickers so the board stays clean.
         if result.get("mode") == "hold":
             reconcile_remove.append(ticker)
-        elif result.get("consensus_score", 0) >= BUY_THRESHOLD and result.get("confirmed", True):
+        elif result.get("consensus_score", 0) >= BUY_THRESHOLD and surfaces_on_board(result):
             scout_cards.append(_scout_card(ticker, result, data.get("meta", {}), data.get("dossier")))
         else:
             # Below threshold OR failed the confirmation gate — keep off the Scout board.
@@ -314,7 +337,7 @@ def collect_scout_results(scout_dir: Path) -> list:
         score  = result.get("consensus_score", 0)
         grade  = result.get("consensus_grade", "?")
 
-        if score >= BUY_THRESHOLD and result.get("confirmed", True):
+        if score >= BUY_THRESHOLD and surfaces_on_board(result):
             discoveries.append(_scout_card(ticker, result, data.get("meta", {}), data.get("dossier")))
 
     return discoveries
@@ -352,15 +375,15 @@ def collect_gems_results(gems_dir: Path) -> list:
         score  = result.get("consensus_score", 0)
         grade  = result.get("consensus_grade", "?")
 
-        if score >= BUY_THRESHOLD and result.get("confirmed", True):
+        if score >= BUY_THRESHOLD and surfaces_on_board(result):
             _dossier = data.get("dossier") or {}
             discoveries.append({
                 "ticker":            ticker,
                 "score":             round(score, 2),
                 "grade":             grade,
                 "conf":              result.get("confidence", ""),
-                "thesis":            result.get("majority_thesis", "")[:200],
-                "key_swing":         result.get("key_swing_factor", "")[:150],
+                "thesis":            _clip(result.get("majority_thesis"), 1000),
+                "key_swing":         _clip(result.get("key_swing_factor"), 400),
                 "analyzed_at":       result.get("built_at", ""),
                 "catalyst":          result.get("catalyst", ""),
                 "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
@@ -374,7 +397,7 @@ def collect_gems_results(gems_dir: Path) -> list:
                 "verification":      _slim_verification(result.get("verification")),
                 "price":             (_dossier.get("quote") or {}).get("price"),
                 "confirmed":         result.get("confirmed", True),
-                "factors":           _factor_stamp(_dossier),
+                "factors":           _factor_stamp(_dossier, result),
             })
 
     return discoveries
@@ -382,8 +405,11 @@ def collect_gems_results(gems_dir: Path) -> list:
 
 def collect_watchlist_results(output_dir: Path) -> list:
     """Collect BUYs that crossed BUY_THRESHOLD but FAILED the confirmation gate
-    (confirmed is False), from both the scouts and gems output dirs. These are the
-    'Under Review' cards for dd:watchlist.
+    (confirmed is False) AND are not surfaced elsewhere, from both the scouts
+    and gems output dirs. These are the 'Under Review' cards for dd:watchlist:
+    VETO, REJECTED_STAGE1, and UNVERIFIED holds. A red-team DOWNGRADE is
+    excluded here since v3 (2026-07-07) — it surfaces flagged on the main
+    board instead (see surfaces_on_board).
 
     Uses the same recency windows as the confirmed collectors so a stale reject
     ages off the board naturally; dedupes to the newest file per ticker.
@@ -409,8 +435,8 @@ def collect_watchlist_results(output_dir: Path) -> list:
             # Only true confirmation-gate rejects: scored a BUY but confirmed is False.
             if result.get("consensus_score", 0) < BUY_THRESHOLD:
                 continue
-            if result.get("confirmed", True):
-                continue
+            if surfaces_on_board(result):
+                continue  # CONFIRM or v3 flagged-DOWNGRADE — lives on the main board instead
             card = _scout_card(ticker, result, data.get("meta", {}), data.get("dossier"))
             card["verification"] = result.get("verification", {})
             # Source tag so the Supabase insert can route rejects to the right

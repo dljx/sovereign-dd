@@ -148,7 +148,12 @@ def alert_scoreboard_digest(sb: dict) -> bool:
 
 
 def alert_buy_signal(d: dict) -> bool:
-    """Send a BUY signal alert for a scout discovery → Trade Alerts topic."""
+    """Send a BUY signal alert for a scout discovery → Trade Alerts topic.
+
+    v3 (2026-07-07): a red-team DOWNGRADE ("real concerns, not fatal") is no
+    longer suppressed identically to a VETO — it surfaces here too, visibly
+    tagged with the prosecutor's score and strongest bear point, so risk-reward
+    gets graded rather than binary-gated. See docs/ADAPTATION_PROTOCOL.md."""
     emoji = GRADE_EMOJI.get(d["grade"], "")
     conf  = CONF_EMOJI.get(d.get("confidence", ""), "")
     lens      = d.get("scout_lens", "")
@@ -171,20 +176,30 @@ def alert_buy_signal(d: dict) -> bool:
     filter_line = f"<b>Filters met:</b> {' · '.join(filters)}\n" if filters else ""
 
     # Confirmation-gate verdict line — a clean CONFIRM shows the prosecutor's score;
-    # a fail-open (UNVERIFIED) BUY is now visibly flagged instead of silently passed.
+    # a fail-open (UNVERIFIED) BUY is now visibly flagged instead of silently passed;
+    # a DOWNGRADE surfaces too (v3) with its score + strongest bear point front and
+    # center, since it's graded evidence, not a reason to suppress the signal.
     v = d.get("verification", {}) or {}
     vverdict = str(v.get("verdict", "")).upper()
     vscore   = v.get("verification_score")
+    bear     = v.get("strongest_bear_point", "")
+    _vs = f" · {vscore:.1f}/10" if isinstance(vscore, (int, float)) else ""
     if vverdict == "CONFIRM":
-        _vs = f" · {vscore:.1f}/10" if isinstance(vscore, (int, float)) else ""
         verify_line = f"🛡️ <b>Verified:</b> prosecutor CONFIRM{_vs}\n"
+        header = f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}"
+    elif vverdict == "DOWNGRADE":
+        verify_line = (f"⚠️ <b>Red-team DOWNGRADE{_vs}:</b> <i>{bear[:350]}</i>\n"
+                       if bear else f"⚠️ <b>Red-team DOWNGRADE{_vs}</b>\n")
+        header = f"⚠️ <b>FLAGGED BUY — {d['ticker']}</b>{path_tag}{lens_tag} <i>(red-team DOWNGRADE)</i>"
     elif vverdict == "UNVERIFIED":
         verify_line = "🛡️ <i>Unverified — red-team unavailable, auto-passed</i>\n"
+        header = f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}"
     else:
         verify_line = ""
+        header = f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}"
 
     msg = (
-        f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}\n"
+        f"{header}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
         + verify_line
         + filter_line
@@ -303,16 +318,16 @@ def alert_portfolio_summary(results: list[dict]) -> bool:
 def alert_scout_summary(discoveries: list[dict], title: str = "SOVEREIGN SCOUT") -> bool:
     """Send scout/gems run summary → Scan Results topic.
 
-    Abstention is a first-class recommendation: an empty scan affirmatively says
-    the default allocation is the index (VWRA), not silence — a pick has to beat
-    that alternative to be worth surfacing at all.
+    An empty scan still sends — a heartbeat that distinguishes "nothing
+    qualified today" from a silently stalled pipeline. It does NOT repeat
+    investment advice (changed 2026-07-07, Daryl's request): VWRA is his own
+    baseline allocation, not something this system needs to recommend every
+    time it has nothing to say. Silence on a pick simply means no pick.
     """
     if not discoveries:
         msg = (
             f"🔍 <b>{title}</b>\n\n"
-            "No new opportunities cleared the bar this scan.\n"
-            "📥 Default allocation: <b>VWRA</b> — when nothing shows an edge over "
-            "the index, the index is the position."
+            "No new opportunities cleared the bar this scan."
         )
     else:
         lines = [f"🔍 <b>{title} — {len(discoveries)} signal(s) found</b>\n"]

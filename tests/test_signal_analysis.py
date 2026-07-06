@@ -197,7 +197,7 @@ def test_compute_scoreboard_json_shape():
     assert gate_keys == {"confirmed", "unknown"}
     assert w1["top"][0]["ticker"] == "AAA" and w1["bottom"][0]["ticker"] == "BBB"
     # Version register rides along for the dashboard/report
-    assert {v["v"] for v in sb["versions"]} >= {"unstamped", "v2"}
+    assert {v["v"] for v in sb["versions"]} >= {"unstamped", "v2", "v3"}
     assert all(v["desc"] for v in sb["versions"])
     # rounded floats, JSON-serializable end to end
     import json
@@ -220,6 +220,14 @@ def test_render_report_consumes_computed_dict():
     assert "as of 2026-06-30" in text
     assert "measurable 1 · pending 0 · no-data 0" in text
     assert "methodology v2:" in text
+    assert "methodology v3:" in text
+
+
+def test_default_windows_include_year_scale():
+    """2026-07-07: Daryl's stated horizon is 'in any given year' — the default
+    windows must include 26/52-week reads, not just short-horizon ones."""
+    weeks = {int(w) for w in sa._DEFAULT_WINDOWS.split(",")}
+    assert {1, 4, 12, 26, 52} <= weeks
 
 
 def test_digest_due_mondays_only():

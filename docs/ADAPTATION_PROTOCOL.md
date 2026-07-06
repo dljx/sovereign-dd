@@ -64,7 +64,8 @@ propose (scoreboard evidence, external literature)
 |---|---|---|---|
 | *(unstamped)* | ≤ 2026-07-02 | Legacy: most_actives "momentum" lens, day_losers contrarian lens, analyst-gap ±0.3 in scoring, fail-open red-team gate. Entry prices backfilled with same-day closes (approx). | baseline / superseded |
 | **v2** | 2026-07-03 | True 52-wk relative-strength momentum lens; day_losers lens removed; analyst-consensus-gap adjustment removed; quality composite + canonical momentum stamped in dossier; red-team gate un-starved (300s) and **fail-closed** (selection-affecting: fewer auto-passed BUYs). | live — first 4-wk read ≈ 2026-08-15 |
-| v3 | *(reserved)* | Next pre-registered change only. | — |
+| **v3** | 2026-07-07 | The gate grades instead of gates: R:R cross-check divergence (agents' bull/bear targets vs the computed R:R) demoted from a Stage-1 auto-reject to red-team input — a Stage-2 lead, not proof of a problem. A red-team DOWNGRADE ("real concerns, not fatal") now surfaces ⚠️-tagged on the main board + Trade Alerts instead of being suppressed identically to a VETO (VETO / REJECTED_STAGE1 / UNVERIFIED still route to Under Review). Calm-window re-verification (reliability, not selection — noted here per rule 3) gives UNVERIFIED holds one more attempt once a run's debates finish, keys idle. Shakedown correction of a gate that was only operative since 2026-07-03 (before that, ~95% of BUYs auto-passed UNVERIFIED, so this is a first calibration, not a tune on outcome data); cadence exception (rule 3) approved by Daryl. | live — first 4-wk read ≈ 2026-09-15 |
+| v4 | *(reserved)* | Next pre-registered change only. | — |
 
 ## 5. Currently pre-registered experiments (from METHODOLOGY_REVIEW §6)
 
@@ -75,9 +76,26 @@ propose (scoreboard evidence, external literature)
 | Remove analyst 0.30 blend in R:R upside | confirmed-BUY excess bucketed by `upside_source` | blend-influenced picks underperform | blend-influenced picks outperform | first quarterly review |
 | Momentum/quality adjustments in scoring | mom/quality tercile buckets predict excess within our funnel | monotone tercile ordering at n≥30/bucket | no ordering after 2 quarters | first quarterly review |
 | Numeric hurdle gate (excess ≥ X%) | measured FV error + hit-rate-by-upside-bucket | bucket with P(beat VWRA) ≥55–60% identifiable | FV error too wide to bucket | needs ~1 quarter of data |
+| v3: divergence → red-team input; DOWNGRADE surfaces flagged | verdict bucket, 4-wk excess: CONFIRM vs DOWNGRADE | DOWNGRADE mean excess ≥ 0 and not materially below CONFIRM's | DOWNGRADE mean excess < 0 AND materially below CONFIRM's, each at n≥30 | ~2026-09-15 |
 
 Each row that graduates ships as its own version bump with its own register entry. Each row
 that dies gets its status recorded here — negative results are results.
+
+**Candidates raised by the 2026-07-07 picking-logic/agentic-architecture review — NOT
+pre-registered, NOT shipped.** They need their own graduate/kill thresholds and Daryl's
+sign-off before they earn a §4 row:
+- **Benchmark-anchored scoring rubric.** Today's consensus score is mostly LLM debate
+  judgment shaped by durability/cycle multipliers; the deterministic R:R layer contributes
+  at most ±1.0 of 10. A candidate fix: one calibration line in the agent prompts stating that
+  a 7.0 means "expected to beat a global index fund, risk-adjusted, over 6–12 months" — makes
+  the score closer to a literal graded-R:R-vs-VWRA ranking instead of a quality composite that
+  merely correlates with one.
+- **Horizon unification.** Agents currently reason across mixed 3–12 month framings
+  (`ROUND1_TEMPLATE`, `CatalystHunter`'s cycle/catalyst timelines); Daryl's stated objective is
+  annual ("in any given year"). Unifying the horizon language across `agents.py` is deferred
+  until the new `_DEFAULT_WINDOWS` 26/52-week buckets (added alongside v3) have enough signal
+  to show whether today's shorter-horizon framing already tracks annual outcomes well enough
+  to leave alone.
 
 ## 6. What this protocol refuses to do
 

@@ -6,6 +6,7 @@ cost-saving short-circuit (no LLM call on a Stage-1 reject) and fail-open.
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -93,10 +94,44 @@ def test_quality_gate_high_risk_index_fails(monkeypatch):
     assert not ok and any("risk index" in r for r in reasons)
 
 
-def test_quality_gate_divergent_rr_fails():
-    rr = _good_result()["risk_reward"] | {"llm_cross_check": {"divergent": True}}
+def test_quality_gate_divergent_rr_passes_but_is_flagged():
+    """Since v3 (2026-07-07): a R:R cross-check divergence no longer auto-rejects
+    at Stage 1 — it's not adverse evidence, just an estimator disagreement. It
+    rides into Stage 2 as a lead instead (see _rr_divergence)."""
+    rr = _good_result()["risk_reward"] | {"llm_cross_check": {"divergent": True, "llm_rr": 6.0}}
     ok, reasons = quality_gate(_good_result(risk_reward=rr))
-    assert not ok and any("diverge" in r for r in reasons)
+    assert ok and reasons == []
+
+
+def test_rr_divergence_extracts_flagged_disagreement():
+    rr = _good_result()["risk_reward"] | {"llm_cross_check": {"divergent": True, "llm_rr": 6.0}}
+    div = verify._rr_divergence(_good_result(risk_reward=rr))
+    assert div == {"llm_rr": 6.0, "computed_rr": rr["rr_ratio"]}
+
+
+def test_rr_divergence_none_when_not_divergent():
+    assert verify._rr_divergence(_good_result()) is None
+    assert verify._rr_divergence(_good_result(risk_reward={"applied": False})) is None
+
+
+# ── surfaces_on_board: the shared routing contract (upload_kv + main.py) ────────
+
+def test_surfaces_on_board_true_for_confirmed():
+    assert verify.surfaces_on_board({"confirmed": True, "verification": {"verdict": "CONFIRM"}})
+
+
+def test_surfaces_on_board_true_for_downgrade_despite_not_confirmed():
+    assert verify.surfaces_on_board({"confirmed": False, "verification": {"verdict": "DOWNGRADE"}})
+
+
+def test_surfaces_on_board_false_for_veto_stage1_unverified():
+    for verdict in ("VETO", "REJECTED_STAGE1", "UNVERIFIED"):
+        assert not verify.surfaces_on_board({"confirmed": False, "verification": {"verdict": verdict}})
+
+
+def test_surfaces_on_board_defaults_true_when_confirmed_absent():
+    # Old/degraded rows without a `confirmed` field default to True (pre-gate shape).
+    assert verify.surfaces_on_board({})
 
 
 def test_quality_gate_low_data_confidence_fails():
@@ -108,6 +143,22 @@ def test_quality_gate_no_rr_still_passes():
     # Missing R:R is not a disqualifier on its own.
     ok, reasons = quality_gate(_good_result(risk_reward={"applied": False}))
     assert ok and reasons == []
+
+
+# ── Stage 2 prompt: divergence rides in as a lead, not a verdict ────────────────
+
+def test_prompt_includes_divergence_flag_when_present():
+    rr = _good_result()["risk_reward"] | {
+        "llm_cross_check": {"divergent": True, "llm_rr": 6.0}
+    }
+    prompt = verify._build_user_prompt("AAA", _good_result(risk_reward=rr), _DOSSIER)
+    assert "CROSS-CHECK FLAG" in prompt
+    assert "6.0:1" in prompt and f"{rr['rr_ratio']:.1f}:1" in prompt
+
+
+def test_prompt_omits_divergence_flag_when_absent():
+    prompt = verify._build_user_prompt("AAA", _good_result(), _DOSSIER)
+    assert "CROSS-CHECK FLAG" not in prompt
 
 
 # ── verify_buy orchestration / routing ──────────────────────────────────────────
@@ -346,3 +397,112 @@ def test_gems_card_includes_slim_verification(tmp_path):
     assert gems[0]["verification"]["verdict"] == "CONFIRM"
     assert gems[0]["verification"]["verification_score"] == 9.2
     assert "falsification_findings" not in gems[0]["verification"]  # slim, not full blob
+
+
+# ── reverify_held: calm-window re-verification sweep (2026-07-07) ──────────────
+
+def _write_output(tmp_path, ticker, result, dossier=None):
+    path = tmp_path / f"{ticker}_20260707_000000.json"
+    path.write_text(json.dumps({"result": result, "dossier": dossier or _DOSSIER}, default=str),
+                    encoding="utf-8")
+    return path
+
+
+def test_reverify_held_noop_when_nothing_held():
+    d = {"ticker": "AAA", "confirmed": True, "verification": {"verdict": "CONFIRM"}}
+    stats = _run(verify.reverify_held([d]))
+    assert stats == {"held": 0, "recovered": 0}
+
+
+def test_reverify_held_skips_non_unverified(monkeypatch, tmp_path):
+    calls = []
+    _patch_llm(monkeypatch, raises=AssertionError("must not call"), track=calls)
+    path = _write_output(tmp_path, "AAA", _good_result())
+    d = {"ticker": "AAA", "verification": {"verdict": "CONFIRM"}, "confirmed": True,
+         "output_file": str(path)}
+    stats = _run(verify.reverify_held([d]))
+    assert stats == {"held": 0, "recovered": 0}
+    assert calls == []
+
+
+def test_reverify_held_recovers_unverified(monkeypatch, tmp_path):
+    _patch_llm(monkeypatch, returns='{"verdict":"CONFIRM","verification_score":8.5,'
+                                    '"confirms_buy":true,"strongest_bear_point":"none material",'
+                                    '"falsification_findings":[]}')
+    path = _write_output(tmp_path, "AAA", _good_result(
+        verification={"verdict": "UNVERIFIED"}, confirmed=False))
+    d = {"ticker": "AAA", "verification": {"verdict": "UNVERIFIED"}, "confirmed": False,
+         "output_file": str(path)}
+
+    stats = _run(verify.reverify_held([d]))
+
+    assert stats == {"held": 1, "recovered": 1}
+    # in-memory discovery updated (main.py alerts/routes from this same list)
+    assert d["verification"]["verdict"] == "CONFIRM" and d["confirmed"] is True
+    # output file on disk updated too (upload_kv reads files, not this list)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["result"]["verification"]["verdict"] == "CONFIRM"
+    assert saved["result"]["confirmed"] is True
+
+
+def test_reverify_held_repeat_failure_stays_fail_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFY_RED_TEAM_ATTEMPTS", "1")
+    monkeypatch.delenv("VERIFY_FAIL_OPEN", raising=False)
+    _patch_llm(monkeypatch, raises=RuntimeError("still down"))
+    path = _write_output(tmp_path, "AAA", _good_result(
+        verification={"verdict": "UNVERIFIED"}, confirmed=False))
+    d = {"ticker": "AAA", "verification": {"verdict": "UNVERIFIED"}, "confirmed": False,
+         "output_file": str(path)}
+
+    stats = _run(verify.reverify_held([d]))
+
+    assert stats == {"held": 1, "recovered": 0}
+    assert d["verification"]["verdict"] == "UNVERIFIED" and d["confirmed"] is False
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["result"]["verification"]["verdict"] == "UNVERIFIED"
+
+
+def test_reverify_held_skips_missing_output_file():
+    d = {"ticker": "AAA", "verification": {"verdict": "UNVERIFIED"}, "confirmed": False}
+    stats = _run(verify.reverify_held([d]))
+    assert stats == {"held": 1, "recovered": 0}  # counted as held, but nothing to reload
+    assert d["verification"]["verdict"] == "UNVERIFIED"  # untouched
+
+
+def test_reverify_held_skips_unreadable_output_file(tmp_path):
+    bad_path = tmp_path / "AAA_bad.json"
+    bad_path.write_text("not valid json", encoding="utf-8")
+    d = {"ticker": "AAA", "verification": {"verdict": "UNVERIFIED"}, "confirmed": False,
+         "output_file": str(bad_path)}
+    stats = _run(verify.reverify_held([d]))
+    assert stats == {"held": 1, "recovered": 0}
+
+
+def test_reverify_held_mixed_batch_only_recovers_relevant(monkeypatch, tmp_path):
+    """A confirmed discovery in the same batch must not spend an LLM call —
+    only UNVERIFIED holds are re-verified."""
+    calls = []
+
+    async def stub(system, user, **kwargs):
+        calls.append(1)
+        return ('{"verdict":"DOWNGRADE","verification_score":5.0,"confirms_buy":false,'
+                '"strongest_bear_point":"margins peaking","falsification_findings":[]}')
+    monkeypatch.setattr(llm, "call_gemini_async", stub)
+
+    confirmed_path = _write_output(tmp_path, "BBB", _good_result(
+        verification={"verdict": "CONFIRM"}, confirmed=True))
+    held_path = _write_output(tmp_path, "AAA", _good_result(
+        verification={"verdict": "UNVERIFIED"}, confirmed=False))
+    discoveries = [
+        {"ticker": "BBB", "verification": {"verdict": "CONFIRM"}, "confirmed": True,
+         "output_file": str(confirmed_path)},
+        {"ticker": "AAA", "verification": {"verdict": "UNVERIFIED"}, "confirmed": False,
+         "output_file": str(held_path)},
+    ]
+
+    stats = _run(verify.reverify_held(discoveries))
+
+    assert stats == {"held": 1, "recovered": 1}
+    assert len(calls) == 1  # only the held ticker spent a call
+    assert discoveries[0]["verification"]["verdict"] == "CONFIRM"  # untouched
+    assert discoveries[1]["verification"]["verdict"] == "DOWNGRADE"  # recovered (as a grade)

@@ -1,6 +1,9 @@
-"""The empty scan must be an affirmative recommendation (default: VWRA), not
-silence — abstention is the system's most common correct output (see
-docs/METHODOLOGY_REVIEW.md §1)."""
+"""The empty scan must still send a heartbeat, not go silent — abstention is
+the system's most common correct output (see docs/METHODOLOGY_REVIEW.md §1).
+
+Changed 2026-07-07 (Daryl's request): the message no longer repeats "invest in
+VWRA" — that's his own baseline, not advice this system needs to restate every
+time it has no pick. Silence on a pick means no pick, nothing more."""
 
 import notify
 
@@ -17,18 +20,18 @@ def _capture(monkeypatch):
     return sent
 
 
-def test_empty_scan_recommends_vwra(monkeypatch):
+def test_empty_scan_still_sends_a_heartbeat(monkeypatch):
     sent = _capture(monkeypatch)
     assert notify.alert_scout_summary([]) is True
-    assert "VWRA" in sent["msg"]
     assert "SOVEREIGN SCOUT" in sent["msg"]
+    assert "VWRA" not in sent["msg"]
 
 
 def test_gems_title_flows_through(monkeypatch):
     sent = _capture(monkeypatch)
     notify.alert_scout_summary([], title="SOVEREIGN GEMS")
     assert "SOVEREIGN GEMS" in sent["msg"]
-    assert "VWRA" in sent["msg"]
+    assert "VWRA" not in sent["msg"]
 
 
 def test_signals_present_no_abstention_text(monkeypatch):

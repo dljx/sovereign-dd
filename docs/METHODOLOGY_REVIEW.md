@@ -26,8 +26,10 @@ can't), estimation error in our own fair-value math, and trading/tax drag.
 Three honest consequences:
 
 1. **Abstention is a recommendation.** A scan that surfaces nothing is the system working, not
-   failing. As of 2026-07-03 an empty scan affirmatively reports "default: VWRA"
-   (`notify.alert_scout_summary`).
+   failing — VWRA is the default when nothing clears the bar. An empty scan still sends a
+   Telegram heartbeat (distinguishing "nothing today" from a stalled pipeline), but as of
+   2026-07-07 it no longer spells out "default: VWRA" every time (`notify.alert_scout_summary`)
+   — that's Daryl's own baseline, not advice the system needs to repeat on every silent run.
 2. **Nothing makes a single pick "very likely" to outperform.** The best-documented selection
    tilts (§3) historically put roughly **55–60%** 12-month odds on a well-profiled stock beating
    the market — a real edge over the ~48–50% base rate of a random stock (returns are skewed:
@@ -138,7 +140,7 @@ is the law.**
 ## 7. Honest summary
 
 - Most active strategies lose to the index; most stocks lose to the index. The default position
-  is VWRA, and the system now says so out loud.
+  is VWRA — the system stays quiet about it and only speaks up when it has a pick to add.
 - The funnel's quantitative ingredients are now aligned with the handful of premia that have
   survived a century of data — momentum, profitability/quality, insider buying, revision
   momentum — and stripped of two documented noise sources (analyst targets, falling-knife

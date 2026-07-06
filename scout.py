@@ -788,6 +788,11 @@ async def run_scout(
     results = await asyncio.gather(*[_debate_one(p) for p in picks])
     discoveries = [r for r in results if r is not None]
 
+    # Calm-window re-verification: keys are idle now that every ticker in this
+    # run has finished debating, so a held UNVERIFIED often clears on retry.
+    from verify import reverify_held
+    await reverify_held(discoveries, label="scout", verbose=verbose)
+
     if verbose:
         _n_conf = sum(1 for d in discoveries if d.get("confirmed", True))
         _n_unver = sum(1 for d in discoveries
