@@ -189,3 +189,53 @@ def test_buy_signal_unverified_unchanged(monkeypatch):
     msg, _ = sent[0]
     assert "BUY SIGNAL — AAA" in msg and "FLAGGED" not in msg
     assert "Unverified" in msg
+
+
+# ── clip integration: long text must not end mid-word in Telegram (2026-07-07) ─
+# Regression coverage for a code-review finding: the thesis-cutoff fix (upload_kv's
+# clip()) didn't originally reach notify.py, which still raw-sliced with [:N] —
+# including the brand-new v3 DOWNGRADE line, reproducing the exact bug it fixed
+# elsewhere. These assert the old raw-slice fragment is gone, not just "shorter".
+
+def test_buy_signal_thesis_not_cut_mid_word(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    thesis = "Compounder " * 100  # 1100 chars, no break point near the 600-char cap
+    d = _buy_signal_fixture(thesis=thesis,
+                            verification={"verdict": "CONFIRM", "verification_score": 8.0})
+    notify.alert_buy_signal(d)
+    msg, _ = sent[0]
+    assert thesis[:600] not in msg  # the old raw-slice bug's exact mid-word fragment
+    assert "…" in msg               # confirms clipping actually engaged
+
+
+def test_buy_signal_downgrade_bear_point_not_cut_mid_word(monkeypatch):
+    """The v3 DOWNGRADE line is brand-new code — must use the same word-boundary
+    clip as everything else, not a fresh raw slice."""
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    bear = "Deteriorating " * 40  # 560 chars, no break point near the 350-char cap
+    d = _buy_signal_fixture(verification={
+        "verdict": "DOWNGRADE", "verification_score": 5.0,
+        "strongest_bear_point": bear,
+    })
+    notify.alert_buy_signal(d)
+    msg, _ = sent[0]
+    assert bear[:350] not in msg
+    assert "…" in msg
+
+
+def test_watchlist_thesis_not_cut_mid_word(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    thesis = "Overextended " * 40  # 520 chars, no break point near the 450-char cap
+    d = _buy_signal_fixture(thesis=thesis, verification={
+        "verdict": "REJECTED_STAGE1", "stage": 1, "reasons": ["risk index 7 > 6"],
+    })
+    notify.alert_watchlist(d)
+    msg, _ = sent[0]
+    assert thesis[:450] not in msg
+    assert "…" in msg

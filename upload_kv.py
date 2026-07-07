@@ -11,6 +11,7 @@ from pathlib import Path
 import requests
 
 from scout import BUY_THRESHOLD
+from text_utils import clip
 from verify import surfaces_on_board
 
 # Only upload scout files written in the last 2 hours — prevents re-uploading
@@ -107,21 +108,6 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
-def _clip(s: str | None, n: int) -> str:
-    """Truncate to at most n chars, breaking at the last whole word so a long
-    thesis never ends mid-word. Adds an ellipsis only when text was actually
-    cut. n is now generous (see callers) — this is a safety net, not the
-    primary limiter."""
-    s = s or ""
-    if len(s) <= n:
-        return s
-    cut = s[:n]
-    sp = cut.rfind(" ")
-    if sp > n * 0.6:  # don't sacrifice most of the budget hunting for a space
-        cut = cut[:sp]
-    return cut.rstrip() + "…"
-
-
 def _slim_verification(v: dict | None) -> dict:
     """Compact confirmation-gate verdict for a card — enough to audit a confirmed
     BUY (verdict, score, top bear point) without bloating the board blob. The
@@ -133,7 +119,7 @@ def _slim_verification(v: dict | None) -> dict:
     return {
         "verdict":              v.get("verdict"),
         "verification_score":   v.get("verification_score"),
-        "strongest_bear_point": _clip(v.get("strongest_bear_point"), 400),
+        "strongest_bear_point": clip(v.get("strongest_bear_point"), 400),
     }
 
 
@@ -148,7 +134,7 @@ def _scout_history_row(s: dict) -> dict:
         "sector":        s.get("sector"),
         "path":          s.get("path"),
         "filters":       s.get("matched_filters", []),
-        "thesis":        _clip(s.get("thesis"), 1000),
+        "thesis":        clip(s.get("thesis"), 1000),
         "price":         s.get("price"),
         "confirmed":     s.get("confirmed"),
         "verdict":       (s.get("verification") or {}).get("verdict"),
@@ -163,8 +149,8 @@ def _gems_history_row(g: dict) -> dict:
         "ticker":        g["ticker"],
         "score":         g.get("score"),
         "grade":         g.get("grade"),
-        "thesis":        _clip(g.get("thesis"), 1000),
-        "catalyst":      _clip(g.get("catalyst"), 1000),
+        "thesis":        clip(g.get("thesis"), 1000),
+        "catalyst":      clip(g.get("catalyst"), 1000),
         "fair_value":    g.get("fair_value_composite"),
         "price":         g.get("price"),
         "confirmed":     g.get("confirmed"),
@@ -225,8 +211,8 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None,
         "score":             round(result.get("consensus_score", 0), 2),
         "grade":             result.get("consensus_grade", "?"),
         "conf":              result.get("confidence", ""),
-        "thesis":            _clip(result.get("majority_thesis"), 1000),
-        "key_swing":         _clip(result.get("key_swing_factor"), 400),
+        "thesis":            clip(result.get("majority_thesis"), 1000),
+        "key_swing":         clip(result.get("key_swing_factor"), 400),
         "analyzed_at":       result.get("built_at", ""),
         "catalyst":          result.get("catalyst", ""),
         "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
@@ -382,8 +368,8 @@ def collect_gems_results(gems_dir: Path) -> list:
                 "score":             round(score, 2),
                 "grade":             grade,
                 "conf":              result.get("confidence", ""),
-                "thesis":            _clip(result.get("majority_thesis"), 1000),
-                "key_swing":         _clip(result.get("key_swing_factor"), 400),
+                "thesis":            clip(result.get("majority_thesis"), 1000),
+                "key_swing":         clip(result.get("key_swing_factor"), 400),
                 "analyzed_at":       result.get("built_at", ""),
                 "catalyst":          result.get("catalyst", ""),
                 "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
@@ -597,8 +583,8 @@ def main():
                 "confidence":   result.get("confidence"),
                 "archetype":    _extract_archetype(dossier),
                 "agent_scores": result.get("agent_final_scores", {}),
-                "thesis":       (result.get("majority_thesis") or "")[:500],
-                "swing":        (result.get("key_swing_factor") or "")[:300],
+                "thesis":       clip(result.get("majority_thesis"), 500),
+                "swing":        clip(result.get("key_swing_factor"), 300),
                 "is_banger":    bool(result.get("banger", {}).get("is_banger")),
                 "full_result":  {k: v for k, v in result.items() if k != "transcript"},
             }))
