@@ -1,0 +1,50 @@
+name: FIRE Assumption Checkup
+
+# Quarterly: 1st of Jan/Apr/Jul/Oct at 09:00 UTC (~17:00 SGT). One grounded
+# Gemma call reviews the FIRE-tab assumptions (SG inflation, CPF rates, CPF
+# Life, SWR) and Telegrams suggestions. It never modifies settings.
+on:
+  schedule:
+    - cron: "0 9 1 1,4,7,10 *"
+  workflow_dispatch:
+
+jobs:
+  fire-check:
+    name: Review FIRE assumptions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run checkup
+        env:
+          GEMINI_API_KEYS:    ${{ secrets.GEMINI_API_KEYS }}
+          DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
+          SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
+        run: python fire_check.py
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC:     ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d message_thread_id="${TELEGRAM_TOPIC}" \
+            -d text="FIRE assumption checkup FAILED (run ${GITHUB_RUN_ID}). Check GitHub Actions." || true

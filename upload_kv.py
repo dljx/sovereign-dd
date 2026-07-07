@@ -108,6 +108,27 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
+def _stamp_nav_snapshot() -> None:
+    """Hit /api/nav-history with the upload bearer so the daily NAV snapshot is
+    recorded even on days nobody opens the dashboard (the endpoint's once/day
+    gate dedupes the 6 cron hits). Best-effort: the FIRE chart wants gap-free
+    history, but a miss must never fail the run."""
+    if not UPLOAD_URL or not UPLOAD_SECRET:
+        return
+    try:
+        r = requests.get(
+            f"{UPLOAD_URL}/api/nav-history",
+            headers={"Authorization": f"Bearer {UPLOAD_SECRET}"},
+            timeout=20,
+        )
+        if r.ok:
+            print("  [nav] daily NAV snapshot stamped")
+        else:
+            print(f"  [nav] snapshot skipped (HTTP {r.status_code})")
+    except Exception as e:
+        print(f"  [nav] snapshot skipped ({e})")
+
+
 def _slim_verification(v: dict | None) -> dict:
     """Compact confirmation-gate verdict for a card — enough to audit a confirmed
     BUY (verdict, score, top bear point) without bloating the board blob. The
@@ -547,6 +568,8 @@ def main():
     except Exception as e:
         print(f"  [upload] Request failed: {e}")
         sys.exit(1)
+
+    _stamp_nav_snapshot()
 
     # ── Supabase: persist DD history ──────────────────────────────
     if SUPABASE_URL and SUPABASE_KEY:

@@ -137,6 +137,36 @@ def alert_ops(msg: str) -> bool:
     return _split_send(f"🔧 <b>PIPELINE HEALTH</b>\n\n{msg}", TOPIC_SCAN_RESULTS)
 
 
+def alert_fire_review(rows: list[dict]) -> bool:
+    """Quarterly FIRE-assumption checkup result → Scan Results topic.
+
+    `rows` from fire_check.parse_review. Flagged (REVIEW) parameters lead with
+    stored-vs-current + source; when everything is OK a short all-clear is sent
+    (so a silent quarter is distinguishable from a checkup that never ran).
+    The checkup NEVER edits settings — this message asks the human to."""
+    from text_utils import clip
+    flagged = [r for r in rows if r.get("verdict") == "REVIEW"]
+    if not flagged:
+        msg = ("🔥 <b>FIRE CHECKUP</b> — quarterly review\n\n"
+               "All stored assumptions still look current "
+               f"({len(rows)} checked: " + ", ".join(r["parameter"] for r in rows) + ").")
+        return _split_send(msg, TOPIC_SCAN_RESULTS)
+    lines = [f"🔥 <b>FIRE CHECKUP</b> — {len(flagged)} assumption(s) worth reviewing\n"]
+    for r in flagged:
+        lines.append(f"⚠️ <b>{r['parameter']}</b>: stored <code>{r['stored']}</code> "
+                     f"vs current <code>{r['current']}</code>")
+        if r.get("note"):
+            lines.append(f"   <i>{clip(r['note'], 200)}</i>")
+        if r.get("source"):
+            lines.append(f"   src: {clip(r['source'], 80)}")
+    ok = [r["parameter"] for r in rows if r.get("verdict") == "OK"]
+    if ok:
+        lines.append(f"\n✓ unchanged: {', '.join(ok)}")
+    lines.append("\nUpdate any of these yourself in the dashboard's FIRE tab — "
+                 "nothing is changed automatically.")
+    return _split_send("\n".join(lines), TOPIC_SCAN_RESULTS)
+
+
 def alert_scoreboard_digest(sb: dict) -> bool:
     """Weekly signal-scoreboard summary → Scan Results topic.
 
