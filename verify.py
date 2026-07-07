@@ -446,6 +446,32 @@ async def verify_buy(ticker: str, result: dict, dossier: dict) -> dict:
     }
 
 
+def alert_verifier_health(discoveries: list[dict], label: str = "scout") -> bool:
+    """Telegram ops-alert when the red-team verifier looks starved or down.
+
+    The failure mode this watches for is the pre-2026-07-03 incident: ~95% of
+    BUYs silently UNVERIFIED for weeks, visible only in CI logs nobody reads.
+    Fires when UNVERIFIED holds number ≥2 AND make up at least half of all
+    gate-checked BUYs in this run (after retries AND the calm-window sweep, so
+    a single transient blip that recovers never pages)."""
+    checked = [d for d in discoveries if (d.get("verification") or {}).get("verdict")]
+    unver   = [d for d in checked
+               if d["verification"]["verdict"] == "UNVERIFIED"]
+    if len(unver) < 2 or len(unver) * 2 < len(checked):
+        return False
+    try:
+        from notify import alert_ops
+    except Exception:
+        return False
+    tickers = ", ".join(sorted(d.get("ticker", "?") for d in unver))
+    return alert_ops(
+        f"Red-team verifier may be down: {len(unver)}/{len(checked)} BUY(s) in this "
+        f"{label} run are UNVERIFIED after retries + calm-window re-verification "
+        f"({tickers}). They are held in Under Review (fail-closed), but if this "
+        f"repeats across runs, check Gemini key quota/availability."
+    )
+
+
 # ── Calm-window re-verification (reliability fix, 2026-07-07) ──────────────────
 
 async def reverify_held(discoveries: list[dict], label: str = "scout", verbose: bool = True) -> dict:

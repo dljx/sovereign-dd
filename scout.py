@@ -47,14 +47,30 @@ def _atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _load_history() -> dict:
-    """Load {ticker: {ts, score, grade}} from disk. Returns {} if missing or corrupt."""
+def _load_ledger(path: Path, label: str) -> dict:
+    """Load a dedup/notify ledger. Missing file → {} (legit first run). A file
+    that EXISTS but is corrupt or the wrong shape raises instead of silently
+    starting fresh — a truncated CI cache or bad restore used to load as {}
+    and re-debate + re-alert the entire rotation window in one run. Failing
+    loud turns that into a workflow alert; delete the file to reset on purpose."""
+    if not path.exists():
+        return {}
     try:
-        if SCOUT_HISTORY_FILE.exists():
-            return json.loads(SCOUT_HISTORY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise RuntimeError(
+            f"{label} ledger at {path} is corrupt ({e}) — refusing to silently "
+            f"start fresh; delete the file to reset deliberately") from e
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{label} ledger at {path} parsed to {type(data).__name__}, expected "
+            f"dict — refusing to silently start fresh")
+    return data
+
+
+def _load_history() -> dict:
+    """Load {ticker: {ts, score, grade}} from disk (see _load_ledger contract)."""
+    return _load_ledger(SCOUT_HISTORY_FILE, "scout history")
 
 
 def _save_history(history: dict) -> None:
@@ -72,13 +88,9 @@ def _recently_scouted(history: dict) -> set[str]:
 
 
 def _load_notified() -> dict:
-    """Load {ticker: {ts, score, grade}} Telegram notification history. Returns {} if missing."""
-    try:
-        if SCOUT_NOTIFIED_FILE.exists():
-            return json.loads(SCOUT_NOTIFIED_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
+    """Load {ticker: {ts, score, grade}} Telegram notification history
+    (see _load_ledger contract — a corrupt file must not re-alert everything)."""
+    return _load_ledger(SCOUT_NOTIFIED_FILE, "scout notify")
 
 
 def _save_notified(notified: dict) -> None:
@@ -96,13 +108,9 @@ def _recently_notified(notified: dict) -> set[str]:
 
 
 def _load_seen() -> dict:
-    """Load the triage rotation ledger {ticker: {last_shown, shown, picked}}."""
-    try:
-        if SCOUT_SEEN_FILE.exists():
-            return json.loads(SCOUT_SEEN_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
+    """Load the triage rotation ledger {ticker: {last_shown, shown, picked}}
+    (see _load_ledger contract)."""
+    return _load_ledger(SCOUT_SEEN_FILE, "scout rotation")
 
 
 def _save_seen(seen: dict) -> None:
@@ -274,11 +282,30 @@ def _fetch_universe() -> list[dict] | None:
         if len(out) < 500:
             print(f"  [scout] Universe fetch returned only {len(out)} names — "
                   f"falling back to predefined lenses")
+            _warn_universe_fallback(f"only {len(out)} names returned")
             return None
         return out
     except Exception as e:
         print(f"  [scout] Universe fetch failed ({e}) — falling back to predefined lenses")
+        _warn_universe_fallback(str(e))
         return None
+
+
+def _warn_universe_fallback(reason: str) -> None:
+    """Ops-alert when scout degrades to the legacy lens-union candidate pool.
+
+    An extended Yahoo screener outage used to run scout in a materially worse
+    candidate-quality mode indefinitely, visible only as a print() in CI logs.
+    notify no-ops cleanly when Telegram isn't configured (local runs)."""
+    try:
+        from text_utils import clip
+        from notify import alert_ops
+        alert_ops(f"Scout universe screener failed ({clip(reason, 200)}) — this run "
+                  "used the legacy predefined-lens candidate pool instead of the "
+                  "full universe. A one-off is fine; repeated runs mean the Yahoo "
+                  "screener API changed.")
+    except Exception:
+        pass
 
 
 def _yf_screen(lens: dict) -> tuple[dict, list[dict]]:
@@ -790,8 +817,9 @@ async def run_scout(
 
     # Calm-window re-verification: keys are idle now that every ticker in this
     # run has finished debating, so a held UNVERIFIED often clears on retry.
-    from verify import reverify_held
+    from verify import reverify_held, alert_verifier_health
     await reverify_held(discoveries, label="scout", verbose=verbose)
+    alert_verifier_health(discoveries, label="scout")
 
     if verbose:
         _n_conf = sum(1 for d in discoveries if d.get("confirmed", True))

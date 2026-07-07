@@ -118,6 +118,16 @@ def _split_send(message: str, topic_id: str = "") -> bool:
     return ok
 
 
+def alert_ops(msg: str) -> bool:
+    """Operational health warning → Scan Results topic.
+
+    For pipeline conditions a human should actually see (verifier starvation,
+    degraded candidate universe, alert-flood cap) — the class of failure that
+    previously lived only in CI logs nobody reads and once ran silently for
+    weeks (the pre-2026-07-03 UNVERIFIED incident)."""
+    return _split_send(f"🔧 <b>PIPELINE HEALTH</b>\n\n{msg}", TOPIC_SCAN_RESULTS)
+
+
 def alert_scoreboard_digest(sb: dict) -> bool:
     """Weekly signal-scoreboard summary → Scan Results topic.
 

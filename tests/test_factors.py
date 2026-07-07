@@ -82,3 +82,16 @@ def test_quality_bounded_zero_to_ten():
     q = quality_composite({"roic": 1000.0, "gross_margin": 100.0,
                            "fcf_yield": 5.0, "debt_equity": -50.0})
     assert q is not None and 0.0 <= q <= 10.0
+
+
+def test_factor_stamp_version_matches_scoreboard_register():
+    """ADAPTATION_PROTOCOL rule 5 says factors.v and signal_analysis's
+    _VERSION_REGISTER move in the same commit — previously enforced only by a
+    comment. This test makes the drift impossible to ship."""
+    import signal_analysis as sa
+    from upload_kv import _factor_stamp
+    stamped = _factor_stamp({"technicals": {}, "financials": {}}, {})["v"]
+    latest_registered = max(k for k in sa._VERSION_REGISTER if isinstance(k, int))
+    assert stamped == latest_registered, (
+        f"upload_kv stamps v{stamped} but the register's latest is v{latest_registered} — "
+        "bump both in the same commit (ADAPTATION_PROTOCOL rule 5)")

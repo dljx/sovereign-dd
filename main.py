@@ -60,6 +60,17 @@ def _live_tickers() -> list[str]:
         return []
 
 
+def _alert_cap() -> int:
+    """Max individual BUY alerts per run — a scoring regression must not flood
+    Telegram (nothing else caps alert volume; the debate-count cap only limits
+    tickers debated). Capped tickers are NOT ledger-recorded, so they alert on
+    a later run once volume normalizes."""
+    try:
+        return max(1, int(os.getenv("ALERT_MAX_PER_RUN", "8")))
+    except ValueError:
+        return 8
+
+
 def _portfolio_tickers() -> list[str]:
     """Live dashboard holdings, falling back to the PORTFOLIO_TICKERS env var."""
     live = _live_tickers()
@@ -232,13 +243,29 @@ async def _run_gems(save: bool = False, notify: bool = False):
     discoveries = await run_gems(verbose=True)
 
     if notify:
-        from notify import alert_buy_signal, alert_scout_summary, alert_dd_result, alert_watchlist
+        from notify import alert_buy_signal, alert_scout_summary, alert_dd_result, alert_watchlist, alert_ops
         from verify import surfaces_on_board
+        from scout import _load_notified, _save_notified, _recently_notified
         # v3 (2026-07-07): a red-team DOWNGRADE surfaces flagged via alert_buy_signal
         # instead of being routed to Under Review like a VETO — see surfaces_on_board.
         on_board = [d for d in discoveries if surfaces_on_board(d)]
         review   = [d for d in discoveries if not surfaces_on_board(d)]
+
+        # Same suppression ledger as scout (shared file, shared cooldown): a
+        # persistent gems BUY used to re-alert every ~3 days forever, and a
+        # ticker surfaced by both pipelines double-alerted. Cap guards floods.
+        notified   = _load_notified()
+        suppressed = _recently_notified(notified)
+        cap        = _alert_cap()
+        sent, capped = [], []
         for d in on_board:
+            ticker = d["ticker"]
+            if ticker in suppressed:
+                console.print(f"[dim]  [notify] {ticker} already alerted within cooldown — skipping[/dim]")
+                continue
+            if len(sent) >= cap:
+                capped.append(ticker)
+                continue
             alert_buy_signal(d)
             if d.get("output_file"):
                 try:
@@ -247,11 +274,23 @@ async def _run_gems(save: bool = False, notify: bool = False):
                     alert_dd_result(data["result"])
                 except Exception as e:
                     console.print(f"[dim]  [notify] DD detail unavailable for {d.get('ticker','?')}: {e}[/dim]")
+            notified[ticker] = {
+                "ts":    datetime.now(timezone.utc).timestamp(),
+                "score": d.get("score"),
+                "grade": d.get("grade"),
+            }
+            _save_notified(notified)
+            sent.append(d)
         for d in review:
             alert_watchlist(d)
+        if capped:
+            alert_ops(f"Alert cap ({cap}/run) hit in gems — {len(capped)} more BUY signal(s) "
+                      f"not sent individually: {', '.join(capped)}. They stay on the board "
+                      f"and re-alert next run; if volume looks legitimate, raise ALERT_MAX_PER_RUN.")
         # Always send — a heartbeat distinguishes "nothing qualified" from a stalled run.
         alert_scout_summary(on_board, title="SOVEREIGN GEMS")
-        console.print(f"[dim]Gems alerts sent ({len(on_board)} on board, {len(review)} under review)[/dim]")
+        console.print(f"[dim]Gems alerts sent ({len(sent)} alerted of {len(on_board)} on board, "
+                      f"{len(review)} under review)[/dim]")
 
     return discoveries
 
@@ -264,12 +303,14 @@ async def _run_scout(save: bool = False, notify: bool = False):
     discoveries = await run_scout(portfolio=portfolio, verbose=True)
 
     if notify:
-        from notify import alert_scout_summary, alert_buy_signal, alert_dd_result, alert_watchlist
+        from notify import alert_scout_summary, alert_buy_signal, alert_dd_result, alert_watchlist, alert_ops
         from verify import surfaces_on_board
 
         notified   = _load_notified()
         suppressed = _recently_notified(notified)
         alerted    = []
+        capped     = []
+        cap        = _alert_cap()
         # Under-review BUYs go to the watchlist; VETO/REJECTED_STAGE1/UNVERIFIED
         # only (v3, 2026-07-07: a DOWNGRADE surfaces flagged below instead — see
         # surfaces_on_board). We do NOT record true watchlist items in the
@@ -287,6 +328,9 @@ async def _run_scout(save: bool = False, notify: bool = False):
                     f"[dim]  [notify] {ticker} already alerted within "
                     f"{os.getenv('SCOUT_NOTIFY_COOLDOWN_HOURS', '168')}h cooldown — skipping[/dim]"
                 )
+                continue
+            if len(alerted) >= cap:
+                capped.append(ticker)  # not ledger-recorded — re-alerts next run
                 continue
             alert_buy_signal(d)
             if d.get("output_file"):
@@ -307,8 +351,13 @@ async def _run_scout(save: bool = False, notify: bool = False):
         for d in review:
             alert_watchlist(d)
 
+        if capped:
+            alert_ops(f"Alert cap ({cap}/run) hit in scout — {len(capped)} more BUY signal(s) "
+                      f"not sent individually: {', '.join(capped)}. They stay on the board "
+                      f"and re-alert next run; if volume looks legitimate, raise ALERT_MAX_PER_RUN.")
+
         alert_scout_summary(alerted)
-        console.print(f"[dim]Scout alerts sent ({len(alerted)} confirmed BUY(s), "
+        console.print(f"[dim]Scout alerts sent ({len(alerted)} BUY alert(s), "
                       f"{len(review)} under review)[/dim]")
 
     return discoveries

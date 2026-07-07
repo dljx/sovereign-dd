@@ -23,7 +23,7 @@ if not _keys:
 _key_cycle = cycle(_keys)
 _key_lock  = threading.Lock()       # thread-safe rotation for concurrent async calls
 _clients: dict[str, genai.Client] = {}
-_model_ids: dict[str, str] = {}     # key -> verified model ID string
+_model_ids: dict[tuple[str, str], str] = {}  # (key, model) -> verified model ID string
 
 # Hard timeouts. Without them a stalled HTTP connection blocks generate_content
 # FOREVER — on 2026-06-10 a moderator call hung 5.5h until GitHub killed the job
@@ -120,22 +120,26 @@ def _exhaust_key(key: str) -> None:
 
 
 def _resolve_model(client: genai.Client, key: str, model: str) -> str:
-    """Return the working model ID string for this key (cached after first call)."""
-    if key in _model_ids:
-        return _model_ids[key]
+    """Return the working model ID string for this (key, model) pair (cached).
+
+    Probes via the models METADATA endpoint (models.get) — the old probe issued
+    a real generate_content("hi") per key per process, burning free-tier RPD
+    budget just to learn whether the ID needs a "models/" prefix. The cache is
+    keyed by (key, model), not key alone: keyed by key, any second model in the
+    same process (e.g. an A/B eval run) silently resolved to the FIRST model's
+    ID and both arms ran the same model."""
+    ck = (key, model)
+    if ck in _model_ids:
+        return _model_ids[ck]
     for candidate in [model, f"models/{model}"]:
         try:
-            client.models.generate_content(
-                model=candidate,
-                contents="hi",
-                config=types.GenerateContentConfig(max_output_tokens=1),
-            )
-            _model_ids[key] = candidate
+            client.models.get(model=candidate)
+            _model_ids[ck] = candidate
             return candidate
         except Exception:
             continue
     # Both probes failed (likely transient 429/auth). Return a default WITHOUT caching
-    # so a transient failure doesn't poison this key's model ID for the whole process.
+    # so a transient failure doesn't poison this pair's model ID for the whole process.
     return model
 
 

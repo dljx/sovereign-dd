@@ -526,6 +526,20 @@ def main():
         data = r.json()
         if data.get("ok"):
             print(f"  Success — {len(data.get('written', []))} key(s) written")
+            # KV write-budget observability: the endpoint reports its own KV op
+            # count (free tier: 1,000 writes+deletes/day). ~6 scheduled runs/day
+            # means a per-run count near 150 would blow the budget — warn early
+            # instead of discovering a 403 after the fact.
+            kv_ops = data.get("kvWrites")
+            if isinstance(kv_ops, (int, float)):
+                print(f"  KV ops this upload: {kv_ops:.0f}")
+                if kv_ops >= 120:
+                    try:
+                        from notify import alert_ops
+                        alert_ops(f"KV write volume high: {kv_ops:.0f} ops in one upload "
+                                  f"(free tier: 1,000/day across ~6 runs). Check what grew.")
+                    except Exception:
+                        pass
         else:
             print(f"  Partial/failed: {data}")
             if data.get("failed"):

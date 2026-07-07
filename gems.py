@@ -33,13 +33,11 @@ GEMS_MAX_LOOPS      = int(os.getenv("GEMS_MAX_LOOPS", "3"))
 # ── History helpers ────────────────────────────────────────────────────────────
 
 def _load_history() -> dict:
-    """Load {ticker: {ts, score, grade}} from disk. Returns {} if missing or corrupt."""
-    try:
-        if GEMS_HISTORY_FILE.exists():
-            return json.loads(GEMS_HISTORY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
+    """Load {ticker: {ts, score, grade}} from disk. Missing → {} (first run);
+    corrupt-but-present raises via scout._load_ledger — a truncated CI cache
+    must not silently re-debate the whole window."""
+    from scout import _load_ledger
+    return _load_ledger(GEMS_HISTORY_FILE, "gems history")
 
 
 def _save_history(history: dict) -> None:
@@ -423,8 +421,9 @@ async def run_gems(
 
     # Calm-window re-verification: keys are idle now that every ticker in this
     # run has finished debating, so a held UNVERIFIED often clears on retry.
-    from verify import reverify_held
+    from verify import reverify_held, alert_verifier_health
     await reverify_held(discoveries, label="gems", verbose=verbose)
+    alert_verifier_health(discoveries, label="gems")
 
     if verbose:
         _n_conf = sum(1 for d in discoveries if d.get("confirmed", True))

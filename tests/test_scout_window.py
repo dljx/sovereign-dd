@@ -80,11 +80,16 @@ def test_save_and_load_seen_roundtrip(tmp_path, monkeypatch):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_load_seen_corrupt_returns_empty(tmp_path, monkeypatch):
+def test_load_seen_corrupt_fails_loud(tmp_path, monkeypatch):
+    """Changed 2026-07-07 (audit batch B): a corrupt-but-present ledger used to
+    load as {} and silently re-debate/re-alert the whole rotation window — now
+    it raises so the workflow alert fires instead (see scout._load_ledger)."""
+    import pytest
     path = tmp_path / "scout_seen.json"
     path.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(scout, "SCOUT_SEEN_FILE", path)
-    assert scout._load_seen() == {}
+    with pytest.raises(RuntimeError, match="corrupt"):
+        scout._load_seen()
 
 
 # ── Triage failure must not burn the window (504 zombie of 2026-06-11) ─────────
