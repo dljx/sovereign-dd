@@ -32,6 +32,39 @@ def _live_scores(scores: dict, results: dict) -> dict:
     return live if live else dict(scores)
 
 
+def _r2_pairing(scores: dict, results: dict) -> dict:
+    """Assign each agent its R2 cross-examination target: most-bullish challenges
+    most-bearish, working inward; an odd agent out challenges whichever extreme
+    sits further from the mean.
+
+    Pairing considers LIVE agents only (same rule as _live_scores — a failed
+    agent's fabricated 5.0 is not a position worth challenging, and sorting on
+    it used to pair a live agent against an empty thesis, wasting the round).
+    Failed agents still run R2 so the round stays symmetric — they're pointed
+    at the most extreme live view instead of at each other.
+    """
+    live = [a for a in scores if not (results.get(a) or {}).get("_failed")] or list(scores)
+    _sorted = sorted(live, key=lambda a: scores[a])
+    n = len(_sorted)
+    targets: dict = {}
+    for i in range(n // 2):
+        targets[_sorted[i]] = _sorted[n - 1 - i]
+        targets[_sorted[n - 1 - i]] = _sorted[i]
+    if n % 2 == 1:
+        mid = _sorted[n // 2]
+        if n == 1:
+            targets[mid] = mid  # degenerate: sole live agent has no one to challenge
+        else:
+            _mean = sum(scores[a] for a in _sorted) / n
+            _bull_dist = scores[_sorted[-1]] - _mean
+            _bear_dist = _mean - scores[_sorted[0]]
+            targets[mid] = _sorted[-1] if _bull_dist >= _bear_dist else _sorted[0]
+    for a in scores:
+        if a not in targets:  # failed agent — challenge the strongest live claim
+            targets[a] = _sorted[-1]
+    return targets
+
+
 # â"€â"€ Per-agent async helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str, is_holding: bool = False) -> tuple[str, dict]:
@@ -234,18 +267,9 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             print(f"|  ({len(AGENTS)} agents running in parallel)              |")
             print(f"+----------------------------------------------+")
 
-        _sorted = sorted(AGENTS, key=lambda a: scores[a])
-        n = len(_sorted)
-        r2_targets = {}
-        for i in range(n // 2):
-            r2_targets[_sorted[i]] = _sorted[n - 1 - i]
-            r2_targets[_sorted[n - 1 - i]] = _sorted[i]
-        if n % 2 == 1:
-            mid = _sorted[n // 2]
-            _mean = sum(scores[a] for a in AGENTS) / n
-            _bull_dist = scores[_sorted[-1]] - _mean
-            _bear_dist = _mean - scores[_sorted[0]]
-            r2_targets[mid] = _sorted[-1] if _bull_dist >= _bear_dist else _sorted[0]
+        # Pair on live positions only — loop 1 pairs off R1 results, later loops
+        # off the previous loop's R3 results (where fresh failures may have occurred).
+        r2_targets = _r2_pairing(scores, r3_results or r1_results)
 
         r2_pairs = await asyncio.gather(
             *[_r2_emit(a, ticker, scores, all_r1, loop, r2_targets[a]) for a in AGENTS]

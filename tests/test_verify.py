@@ -506,3 +506,27 @@ def test_reverify_held_mixed_batch_only_recovers_relevant(monkeypatch, tmp_path)
     assert len(calls) == 1  # only the held ticker spent a call
     assert discoveries[0]["verification"]["verdict"] == "CONFIRM"  # untouched
     assert discoveries[1]["verification"]["verdict"] == "DOWNGRADE"  # recovered (as a grade)
+
+
+# ── _parse_red_team: source text is never truncated (2026-07-07 audit) ─────────
+
+def test_parse_red_team_preserves_full_bear_point_and_findings():
+    """The verdict parser is the SOURCE of bear-point/findings text — slicing here
+    corrupted every downstream word-boundary clip() (an already-cut 400-char string
+    made upload_kv's clip(bear, 400) a no-op). Truncation is display-layer-only."""
+    bear = "word " * 200                       # 1000 chars, way past the old [:400]
+    findings = ["finding " + "y" * 400, "z"]   # past the old [:300]
+    parsed = verify._parse_red_team({
+        "verdict": "DOWNGRADE", "verification_score": 5.5,
+        "strongest_bear_point": bear, "falsification_findings": findings,
+    })
+    assert parsed["strongest_bear_point"] == bear
+    assert parsed["falsification_findings"][0] == findings[0]
+
+
+def test_parse_red_team_still_caps_findings_count():
+    parsed = verify._parse_red_team({
+        "verdict": "CONFIRM", "verification_score": 8.0,
+        "strongest_bear_point": "", "falsification_findings": [str(i) for i in range(10)],
+    })
+    assert len(parsed["falsification_findings"]) == 6  # list cap is not text truncation

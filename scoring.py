@@ -384,6 +384,12 @@ def portfolio_overlap_adjust(
     """Adjust score based on portfolio sector overlap.
 
     Returns (adjusted_score, details_dict).
+
+    NOTE (2026-07-07 audit): currently UNWIRED in production — debate.run()
+    never passes portfolio_sectors, so this only executes in tests. Kept
+    (not deleted) because it's plumbed through apply_adjustments; actually
+    wiring it in would change selection and needs ADAPTATION_PROTOCOL
+    pre-registration first.
     """
     if not portfolio_sectors:
         return score, {"applied": False}

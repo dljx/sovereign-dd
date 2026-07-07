@@ -32,7 +32,10 @@ FLOOR_FUNDAMENTAL_WEIGHT = 0.50  # blend weight: most conservative fundamental F
 FLOOR_MARKET_WEIGHT      = 0.50  # blend weight: 52-week-low market floor
 DOWNSIDE_MIN = 0.08   # nothing is riskless — floor the downside estimate at 8%
 DOWNSIDE_MAX = 0.80   # beyond -80% the floor estimate is noise
-FV_SANITY_LO = 0.05   # discard FVs below 5% of price (ratio-not-price guard, mirrors debate._sanitize_fv)
+FV_SANITY_LO = 0.05   # discard FVs below 5% of price (ratio-not-price guard). Deliberately
+                      # STRICTER than debate._sanitize_fv's 1% lower bound: the R:R downside
+                      # floor must never anchor on a near-zero FV, while the debate composite
+                      # keeps legitimate distressed/turnaround FVs (see its docstring).
 FV_SANITY_HI = 20.0   # discard FVs above 20x price
 
 # ── Risk tiers (risk_index 0-10) ──

@@ -67,6 +67,14 @@ propose (scoreboard evidence, external literature)
 | **v3** | 2026-07-07 | The gate grades instead of gates: R:R cross-check divergence (agents' bull/bear targets vs the computed R:R) demoted from a Stage-1 auto-reject to red-team input — a Stage-2 lead, not proof of a problem. A red-team DOWNGRADE ("real concerns, not fatal") now surfaces ⚠️-tagged on the main board + Trade Alerts instead of being suppressed identically to a VETO (VETO / REJECTED_STAGE1 / UNVERIFIED still route to Under Review). Calm-window re-verification (reliability, not selection — noted here per rule 3) gives UNVERIFIED holds one more attempt once a run's debates finish, keys idle. Shakedown correction of a gate that was only operative since 2026-07-03 (before that, ~95% of BUYs auto-passed UNVERIFIED, so this is a first calibration, not a tune on outcome data); cadence exception (rule 3) approved by Daryl. | live — first 4-wk read ≈ 2026-09-15 |
 | v4 | *(reserved)* | Next pre-registered change only. | — |
 
+**Defect fixes folded into v3, same-day (2026-07-07, before any v3 signal aged into a read
+— no comparison is contaminated):** R2 cross-examination pairing now excludes failed agents
+(`debate._r2_pairing`) — pairing used to sort on a failed agent's fabricated 5.0/empty
+thesis, so a live agent could burn its challenge round on an empty position; the fix
+restores the behavior `_live_scores` already enforced for the convergence statistics.
+These are documented here per the no-silent-drift rule, not as new versions: they correct
+unintended behavior rather than change any intended criterion.
+
 ## 5. Currently pre-registered experiments (from METHODOLOGY_REVIEW §6)
 
 | Change | Metric | Graduate if | Kill if | Earliest read |

@@ -97,9 +97,14 @@ def cached(key: str, ttl_hours: float, fn, *args, **kwargs):
     """Return a cached result or call fn(*args, **kwargs) and cache the result.
 
     Thread-safe for reads; concurrent cache misses may double-fetch (harmless
-    for idempotent API reads — last write wins on upsert). Empty / falsy
-    responses (rate-limit messages, network errors) are not cached so the
-    next call retries the real API.
+    for idempotent API reads — last write wins on upsert).
+
+    What gets cached: truthy results, and empty LISTS. The dossier fetchers
+    (e.g. _fh) return an empty DICT on any failure, so `{}` is ambiguous
+    (failure vs. empty) and stays uncached — the next run retries the API.
+    An empty list can only be a successful "nothing here" response (no news,
+    no insider transactions), which used to be refetched from rate-limited
+    APIs on every single run forever; now it caches like any other answer.
     """
     global _HITS, _MISSES
     hit = _sb_get(key, ttl_hours)
@@ -110,6 +115,6 @@ def cached(key: str, ttl_hours: float, fn, *args, **kwargs):
     with _stats_lock:
         _MISSES += 1
     result = fn(*args, **kwargs)
-    if result:
+    if result or result == []:
         _sb_set(key, result)
     return result

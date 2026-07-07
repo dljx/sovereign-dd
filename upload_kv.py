@@ -362,29 +362,13 @@ def collect_gems_results(gems_dir: Path) -> list:
         grade  = result.get("consensus_grade", "?")
 
         if score >= BUY_THRESHOLD and surfaces_on_board(result):
-            _dossier = data.get("dossier") or {}
-            discoveries.append({
-                "ticker":            ticker,
-                "score":             round(score, 2),
-                "grade":             grade,
-                "conf":              result.get("confidence", ""),
-                "thesis":            clip(result.get("majority_thesis"), 1000),
-                "key_swing":         clip(result.get("key_swing_factor"), 400),
-                "analyzed_at":       result.get("built_at", ""),
-                "catalyst":          result.get("catalyst", ""),
-                "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
-                "rr":                (result.get("risk_reward") or {}).get("rr_ratio"),
-                "risk":              (result.get("risk_reward") or {}).get("risk_tier"),
-                "banger":            result.get("banger", {}),
-                "position_guidance": result.get("position_guidance", {}),
-                "cycle_position":    result.get("cycle_position", {}),
-                "fair_value_composite": result.get("fair_value_composite"),
-                "entry_assessment":  result.get("entry_assessment", ""),
-                "verification":      _slim_verification(result.get("verification")),
-                "price":             (_dossier.get("quote") or {}).get("price"),
-                "confirmed":         result.get("confirmed", True),
-                "factors":           _factor_stamp(_dossier, result),
-            })
+            # Reuse _scout_card — a hand-copied field list here had already
+            # drifted (gems cards silently lost `sector`), exactly the failure
+            # _scout_card's docstring warns about. Gems-specific deltas only:
+            card = _scout_card(ticker, result, data.get("meta", {}), data.get("dossier"))
+            card["entry_assessment"] = result.get("entry_assessment", "")
+            card["path"] = ""  # gems have no A/B/C valuation path — falsy renders as "—"
+            discoveries.append(card)
 
     return discoveries
 

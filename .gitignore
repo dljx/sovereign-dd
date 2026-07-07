@@ -5,3 +5,5 @@ __pycache__/
 .wrangler/
 *.egg-info/
 .pytest_cache/
+*.log
+_ab_model_test.py

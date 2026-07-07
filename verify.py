@@ -323,8 +323,12 @@ def _parse_red_team(raw) -> dict:
         "verdict": verdict,
         "verification_score": vscore,
         "confirms_buy": verdict == "CONFIRM",
-        "strongest_bear_point": str(raw.get("strongest_bear_point", ""))[:400],
-        "falsification_findings": [str(f)[:300] for f in findings[:6]],
+        # Full text, deliberately un-truncated: display surfaces (notify.py,
+        # upload_kv.py) word-boundary-clip at render time via text_utils.clip.
+        # Slicing here corrupted the source of truth — an already-cut string
+        # made every downstream clip() a no-op (2026-07-07 review finding).
+        "strongest_bear_point": str(raw.get("strongest_bear_point", "")),
+        "falsification_findings": [str(f) for f in findings[:6]],
     }
 
 

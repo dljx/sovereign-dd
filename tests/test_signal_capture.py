@@ -113,6 +113,20 @@ def test_collect_gems_results_stamps_price_and_factors(tmp_path):
     assert c["fair_value_composite"] == 150.0
 
 
+def test_gems_card_shares_scout_card_shape(tmp_path):
+    """2026-07-07 audit: the gems collector hand-copied _scout_card's field list
+    and drifted (cards silently lost `sector`). It must reuse _scout_card so the
+    two can never diverge again — plus its two gems-only deltas."""
+    gems_dir = tmp_path / "gems"
+    _write(gems_dir, "BBB_20260703_120000.json", _output_file(ticker="BBB", price=50.0))
+    c = collect_gems_results(gems_dir)[0]
+    assert c["sector"] == "Technology"          # the field that had drifted away
+    assert c["path"] == ""                      # gems: no A/B/C path — renders as "—"
+    assert "entry_assessment" in c              # gems-only field preserved
+    ref = _scout_card("BBB", _output_file()["result"], {}, _output_file()["dossier"])
+    assert set(ref) <= set(c)                   # every scout-card field present on gems
+
+
 def test_watchlist_rejects_are_tagged_by_source(tmp_path):
     _write(tmp_path / "scouts", "CCC_20260703_120000.json",
            _output_file(ticker="CCC", confirmed=False, verdict="VETO"))
