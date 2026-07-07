@@ -34,18 +34,17 @@ GEMS_MAX_LOOPS      = int(os.getenv("GEMS_MAX_LOOPS", "3"))
 
 def _load_history() -> dict:
     """Load {ticker: {ts, score, grade}} from disk. Missing → {} (first run);
-    corrupt-but-present raises via scout._load_ledger — a truncated CI cache
-    must not silently re-debate the whole window."""
-    from scout import _load_ledger
-    return _load_ledger(GEMS_HISTORY_FILE, "gems history")
+    corrupt-but-present raises (pipeline_io.load_ledger) — a truncated CI
+    cache must not silently re-debate the whole window."""
+    from pipeline_io import load_ledger
+    return load_ledger(GEMS_HISTORY_FILE, "gems history")
 
 
 def _save_history(history: dict) -> None:
-    """Persist gems history to disk (atomic — a corrupt file loads as {} and
-    would re-debate everything, same failure mode the scout helper guards)."""
-    from scout import _atomic_write_text
+    """Persist gems history to disk (atomic, shared pipeline_io helper)."""
+    from pipeline_io import atomic_write_text
     try:
-        _atomic_write_text(GEMS_HISTORY_FILE, json.dumps(history, indent=2))
+        atomic_write_text(GEMS_HISTORY_FILE, json.dumps(history, indent=2))
     except Exception as e:
         print(f"  [gems] Warning: could not save history: {e}")
 
