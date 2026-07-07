@@ -40,6 +40,15 @@ CONF_EMOJI = {"HIGH": "⭐⭐⭐", "MEDIUM": "⭐⭐", "LOW": "⭐"}
 
 _TG_MAX = 4096
 
+# Dashboard base URL for deep links in alerts (the eye's #dd/TICKER hash route
+# opens the full DD modal). Falls back to the production dashboard.
+_DASH_URL = (os.getenv("SOVEREIGN_EYE_URL", "") or "https://sovereign-eye.pages.dev").rstrip("/")
+
+
+def _dash_link(ticker: str) -> str:
+    """One-tap dashboard line for an alert — mobile page, #dd deep link."""
+    return f'\n📊 <a href="{_DASH_URL}/mobile.html#dd/{ticker}">Open in dashboard</a>'
+
 # Retry budget for a single sendMessage call. Backoff is a module constant so
 # tests can zero it. 429 waits use Telegram's own retry_after, capped so a
 # long flood-wait can't stall a CI run.
@@ -226,6 +235,7 @@ def alert_buy_signal(d: dict) -> bool:
         + (f"<b>Position:</b> {pos.get('range','?')} ({clip(pos.get('reasoning'), 200)})\n" if isinstance(pos, dict) and pos.get("range") else "")
         + banger_tag
         + f"\n⏰ {d['analyzed_at']}"
+        + _dash_link(d["ticker"])
     )
     return _split_send(msg, TOPIC_TRADE_ALERTS)
 
@@ -267,6 +277,7 @@ def alert_watchlist(d: dict) -> bool:
         + (f"<b>R/R:</b> {d['rr']:.1f}:1 ({d.get('risk','?')} risk)\n" if d.get("rr") is not None else "")
         + f"\n<b>Bull case (unconfirmed):</b> <i>{clip(d.get('thesis'), 450)}</i>\n"
         + f"\n⏰ {d.get('analyzed_at','')}"
+        + _dash_link(d["ticker"])
     )
     return _split_send(msg, TOPIC_WATCHLIST)
 

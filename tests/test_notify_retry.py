@@ -239,3 +239,23 @@ def test_watchlist_thesis_not_cut_mid_word(monkeypatch):
     msg, _ = sent[0]
     assert thesis[:450] not in msg
     assert "…" in msg
+
+
+def test_buy_signal_includes_dashboard_deep_link(monkeypatch):
+    """Alerts link to the eye's #dd/TICKER deep link (2026-07-07 batch C)."""
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    d = _buy_signal_fixture(verification={"verdict": "CONFIRM", "verification_score": 8.0})
+    notify.alert_buy_signal(d)
+    assert "#dd/AAA" in sent[0][0]
+
+
+def test_watchlist_includes_dashboard_deep_link(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    d = _buy_signal_fixture(verification={"verdict": "VETO", "stage": 2,
+                                          "strongest_bear_point": "x"})
+    notify.alert_watchlist(d)
+    assert "#dd/AAA" in sent[0][0]
