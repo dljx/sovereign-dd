@@ -107,9 +107,13 @@ def _parse_flex(xml_text: str) -> dict:
     """Parse a Flex XML statement into {rows, cash, unmapped}."""
     root = ET.fromstring(xml_text)
     rows, unmapped = [], []
+    elements = 0
     for pos in root.iter("OpenPosition"):
+        elements += 1
         if (pos.get("assetCategory") or "STK") not in ("STK", ""):
             continue
+        # `position` (share count) requires the "Quantity" field ticked in the
+        # Flex query's Open Positions section — see the structural guard below.
         qty = float(pos.get("position") or 0)
         if qty <= 0:
             continue
@@ -120,6 +124,17 @@ def _parse_flex(xml_text: str) -> dict:
             unmapped.append(ticker)
         rows.append({"ticker": ticker, "qty": qty, "avg": round(avg, 4),
                      "name": (pos.get("description") or ticker).title()})
+
+    # Structural guard: position elements EXIST but none parsed into a row →
+    # the query is misconfigured (e.g. missing the Quantity field), NOT a
+    # genuinely emptied account. Returning [] here would tell the merge
+    # endpoint "all IBKR positions sold" and wipe the dashboard rows — refuse
+    # instead (fetch_ibkr treats None as broker-unavailable; rows untouched).
+    if elements > 0 and not rows:
+        print(f"  [sync] IBKR: {elements} position element(s) but 0 parseable rows — "
+              "Flex query likely missing the 'Quantity' field; refusing to sync IBKR")
+        return None
+
     cash = None
     for c in root.iter("CashReportCurrency"):
         if (c.get("currency") or "").upper() == "BASE_SUMMARY":

@@ -160,3 +160,34 @@ def test_alert_portfolio_sync_reports_changes(monkeypatch):
     assert "IBKR:MSFT" in msg and "IBKR:GOOG" in msg and "Tiger:NU" in msg
     assert "4,321.99" in msg
     assert "WEIRD" in msg and "Tiger" in msg
+
+
+def test_parse_flex_refuses_quantityless_statement():
+    """Live finding (2026-07-08, Daryl's first real statement): the Flex query
+    had 'Position Value' but not 'Quantity', so every element lacked the
+    `position` attribute. Parsing that into [] would read as "all sold" and
+    wipe the broker's dashboard rows — it must refuse (None → broker skipped)."""
+    xml = """<FlexQueryResponse queryName="sovereign-eye" type="AF">
+     <FlexStatements count="1"><FlexStatement accountId="U1">
+      <OpenPositions>
+       <OpenPosition currency="USD" symbol="AMZN" description="AMAZON.COM INC"
+         listingExchange="NASDAQ" positionValue="7324.8" costBasisPrice="242.7" />
+       <OpenPosition currency="USD" symbol="ANET" description="ARISTA"
+         listingExchange="NYSE" positionValue="13862.4" costBasisPrice="143.6" />
+      </OpenPositions>
+     </FlexStatement></FlexStatements></FlexQueryResponse>"""
+    assert broker_sync._parse_flex(xml) is None
+
+
+def test_parse_flex_true_empty_account_is_not_refused():
+    """Zero OpenPosition ELEMENTS (a genuinely emptied account) still returns
+    rows=[] so a real full exit can sync through."""
+    xml = """<FlexQueryResponse queryName="q" type="AF">
+     <FlexStatements count="1"><FlexStatement accountId="U1">
+      <OpenPositions></OpenPositions>
+      <CashReport>
+       <CashReportCurrency currency="BASE_SUMMARY" endingCash="5000" />
+      </CashReport>
+     </FlexStatement></FlexStatements></FlexQueryResponse>"""
+    out = broker_sync._parse_flex(xml)
+    assert out is not None and out["rows"] == [] and out["cash"] == 5000.0
