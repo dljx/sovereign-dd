@@ -137,6 +137,33 @@ def alert_ops(msg: str) -> bool:
     return _split_send(f"🔧 <b>PIPELINE HEALTH</b>\n\n{msg}", TOPIC_SCAN_RESULTS)
 
 
+def alert_portfolio_sync(resp: dict, cash: dict, failed_brokers: list[str],
+                         unmapped: list[str]) -> bool:
+    """Broker-sync result → Scan Results topic. Silent when nothing changed and
+    nothing needs attention — a no-change daily sync isn't news."""
+    added   = resp.get("added") or []
+    removed = resp.get("removed") or []
+    updated = resp.get("updated") or []
+    if not (added or removed or updated or unmapped or failed_brokers):
+        return False
+    lines = ["💼 <b>PORTFOLIO SYNC</b>"]
+    if added:
+        lines.append("➕ " + ", ".join(added))
+    if removed:
+        lines.append("➖ " + ", ".join(removed))
+    if updated:
+        lines.append("♻️ " + ", ".join(updated))
+    if cash:
+        lines.append("💵 cash: " + " · ".join(f"{b} {v:,.2f}" for b, v in cash.items()))
+    if unmapped:
+        lines.append(f"⚠️ verify ticker mapping: {', '.join(sorted(set(unmapped)))} "
+                     "(non-US listing kept as raw symbol)")
+    if failed_brokers:
+        lines.append(f"⚠️ {', '.join(failed_brokers)} unavailable — rows untouched")
+    lines.append(f"\n{resp.get('total', '?')} position(s) on the dashboard")
+    return _split_send("\n".join(lines), TOPIC_SCAN_RESULTS)
+
+
 def alert_fire_review(rows: list[dict]) -> bool:
     """Quarterly FIRE-assumption checkup result → Scan Results topic.
 

@@ -1,0 +1,162 @@
+"""broker_sync — Flex XML parsing, symbol mapping, failure isolation, dry-run.
+
+All synthetic: no network, no SDK. Locks the read-only sync's data contract
+and that a single broker failure never empties the payload of the other.
+"""
+
+import json
+from types import SimpleNamespace
+
+import broker_sync
+import notify
+
+
+_FLEX_XML = """<FlexQueryResponse queryName="positions" type="AF">
+ <FlexStatements count="1">
+  <FlexStatement accountId="U1234567" fromDate="2026-07-07" toDate="2026-07-07">
+   <OpenPositions>
+    <OpenPosition assetCategory="STK" symbol="AMZN" description="AMAZON.COM INC"
+      position="12" costBasisPrice="151.25" currency="USD" listingExchange="NASDAQ" />
+    <OpenPosition assetCategory="STK" symbol="HPQ" description="HOPEFUL VENTURES"
+      position="1000" costBasisPrice="0.52" currency="CAD" listingExchange="TSXV" />
+    <OpenPosition assetCategory="STK" symbol="WEIRD" description="MYSTERY AG"
+      position="5" costBasisPrice="10" currency="EUR" listingExchange="IBIS" />
+    <OpenPosition assetCategory="OPT" symbol="AMZN 260117C00200000" description="CALL"
+      position="1" costBasisPrice="5" currency="USD" listingExchange="" />
+    <OpenPosition assetCategory="STK" symbol="GONE" description="SOLD OUT"
+      position="0" costBasisPrice="9" currency="USD" listingExchange="NYSE" />
+   </OpenPositions>
+   <CashReport>
+    <CashReportCurrency currency="BASE_SUMMARY" endingCash="4321.987" />
+    <CashReportCurrency currency="USD" endingCash="4000" />
+   </CashReport>
+  </FlexStatement>
+ </FlexStatements>
+</FlexQueryResponse>"""
+
+
+def test_parse_flex_rows_cash_and_mapping():
+    out = broker_sync._parse_flex(_FLEX_XML)
+    by = {r["ticker"]: r for r in out["rows"]}
+    assert by["AMZN"]["qty"] == 12 and by["AMZN"]["avg"] == 151.25
+    assert by["AMZN"]["name"] == "Amazon.Com Inc"          # title-cased description
+    assert "HPQ.V" in by                                    # TSXV → .V suffix
+    assert "WEIRD" in by and out["unmapped"] == ["WEIRD"]   # unknown venue flagged
+    assert "GONE" not in by                                 # zero qty dropped
+    assert not any("260117C" in t for t in by)              # options excluded
+    assert out["cash"] == 4321.99                           # BASE_SUMMARY only
+
+
+def test_map_symbol_rules():
+    assert broker_sync.map_symbol("AMZN", "NASDAQ", "USD") == ("AMZN", True)
+    assert broker_sync.map_symbol("HPQ", "TSXV", "CAD") == ("HPQ.V", True)
+    assert broker_sync.map_symbol("RY", "TSE", "CAD") == ("RY.TO", True)
+    assert broker_sync.map_symbol("0700", "SEHK", "HKD") == ("0700.HK", True)
+    assert broker_sync.map_symbol("BRK B", "NYSE", "USD") == ("BRK.B", True)
+    sym, ok = broker_sync.map_symbol("XYZ", "IBIS", "EUR")
+    assert sym == "XYZ" and ok is False
+
+
+def test_map_tiger_objects():
+    pos = [
+        SimpleNamespace(contract=SimpleNamespace(symbol="NU", currency="USD", market="US"),
+                        quantity=50, average_cost=11.2),
+        SimpleNamespace(contract=SimpleNamespace(symbol="SOLD", currency="USD", market="US"),
+                        quantity=0, average_cost=1),
+    ]
+    assets = [SimpleNamespace(summary=SimpleNamespace(cash=1234.567))]
+    out = broker_sync._map_tiger(pos, assets)
+    assert out["rows"] == [{"ticker": "NU", "qty": 50.0, "avg": 11.2}]
+    assert out["cash"] == 1234.57
+
+
+def test_fetch_ibkr_skips_without_config(monkeypatch):
+    monkeypatch.delenv("IBKR_FLEX_TOKEN", raising=False)
+    monkeypatch.delenv("IBKR_FLEX_QUERY_ID", raising=False)
+    assert broker_sync.fetch_ibkr() is None
+
+
+def test_fetch_tiger_skips_without_config(monkeypatch):
+    for k in ("TIGER_ID", "TIGER_ACCOUNT", "TIGER_PRIVATE_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    assert broker_sync.fetch_tiger() is None
+
+
+def _quiet_telegram(monkeypatch):
+    monkeypatch.setattr(notify, "alert_portfolio_sync", lambda *a, **k: True)
+    monkeypatch.setattr(notify, "alert_ops", lambda *a, **k: True)
+
+
+def test_run_isolates_a_failed_broker(monkeypatch):
+    """IBKR down → payload contains ONLY Tiger; its rows are what gets pushed."""
+    _quiet_telegram(monkeypatch)
+    monkeypatch.setattr(broker_sync, "fetch_ibkr", lambda: None)
+    monkeypatch.setattr(broker_sync, "fetch_tiger",
+                        lambda: {"rows": [{"ticker": "NU", "qty": 50, "avg": 11.2}],
+                                 "cash": 100.0, "unmapped": []})
+    pushed = []
+    monkeypatch.setattr(broker_sync, "push_payload",
+                        lambda payload: pushed.append(payload) or
+                        {"ok": True, "added": [], "removed": [], "updated": [], "total": 5})
+    assert broker_sync.run() == 0
+    assert list(pushed[0]["brokers"].keys()) == ["Tiger"]
+    assert "IBKR" not in (pushed[0]["cash"] or {})
+
+
+def test_run_both_brokers_down_exits_nonzero(monkeypatch):
+    _quiet_telegram(monkeypatch)
+    monkeypatch.setattr(broker_sync, "fetch_ibkr", lambda: None)
+    monkeypatch.setattr(broker_sync, "fetch_tiger", lambda: None)
+    pushed = []
+    monkeypatch.setattr(broker_sync, "push_payload", lambda p: pushed.append(p))
+    assert broker_sync.run() == 1
+    assert not pushed
+
+
+def test_dry_run_never_pushes(monkeypatch):
+    _quiet_telegram(monkeypatch)
+    monkeypatch.setenv("SYNC_DRY_RUN", "1")
+    monkeypatch.setattr(broker_sync, "fetch_ibkr",
+                        lambda: {"rows": [{"ticker": "AMZN", "qty": 1, "avg": 1}],
+                                 "cash": None, "unmapped": []})
+    monkeypatch.setattr(broker_sync, "fetch_tiger", lambda: None)
+    pushed = []
+    monkeypatch.setattr(broker_sync, "push_payload", lambda p: pushed.append(p))
+    assert broker_sync.run() == 0
+    assert not pushed
+
+
+def test_push_failure_exits_nonzero(monkeypatch):
+    _quiet_telegram(monkeypatch)
+    monkeypatch.delenv("SYNC_DRY_RUN", raising=False)
+    monkeypatch.setattr(broker_sync, "fetch_ibkr",
+                        lambda: {"rows": [], "cash": 1.0, "unmapped": []})
+    monkeypatch.setattr(broker_sync, "fetch_tiger", lambda: None)
+    monkeypatch.setattr(broker_sync, "push_payload", lambda p: None)
+    assert broker_sync.run() == 1
+
+
+# ── alert formatting ────────────────────────────────────────────────────────────
+
+def test_alert_portfolio_sync_silent_when_no_changes(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append(msg) or True)
+    assert notify.alert_portfolio_sync(
+        {"added": [], "removed": [], "updated": [], "total": 16}, {}, [], []) is False
+    assert not sent
+
+
+def test_alert_portfolio_sync_reports_changes(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    notify.alert_portfolio_sync(
+        {"added": ["IBKR:MSFT"], "removed": ["IBKR:GOOG"], "updated": ["Tiger:NU"],
+         "total": 17},
+        {"IBKR": 4321.99}, ["Tiger"], ["WEIRD"])
+    msg, topic = sent[0]
+    assert topic == notify.TOPIC_SCAN_RESULTS
+    assert "IBKR:MSFT" in msg and "IBKR:GOOG" in msg and "Tiger:NU" in msg
+    assert "4,321.99" in msg
+    assert "WEIRD" in msg and "Tiger" in msg
