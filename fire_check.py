@@ -38,15 +38,28 @@ _USER_TEMPLATE = """\
 Stored FIRE-plan assumptions (keyed in by the user, SGD):
   - inflation: {inflation}% per year (compare against: latest Singapore CORE inflation
     trend and MAS's medium-term outlook)
-  - cpf_growth_rate: {cpf_growth}% per year (compare against: current CPF Ordinary and
-    Special Account interest rates, including extra interest tiers)
-  - cpf_life_monthly: S${cpf_life}/month expected from age 65 (compare against: current
-    CPF LIFE estimated payout ranges for a member born in {birth_year} under the
-    Standard plan, if determinable)
+  - cpf_life_monthly: S${cpf_life}/month expected from age 65 (0 means auto-estimated
+    by the dashboard's CPF simulation; compare against: current CPF LIFE estimated
+    payout ranges for a member born in {birth_year} under the Standard plan, if
+    determinable)
   - swr: {swr}% safe withdrawal rate (compare against: the mainstream research range for
     a 40+ year early-retirement horizon)
   - expected_return: {expected_return}% nominal per year on a global equity portfolio
     (compare against: commonly cited long-run global equity return expectations)
+
+The dashboard's CPF simulation also hardcodes these model constants (verify each
+against CPF Board announcements):
+  - cpf_interest_floors: OA 2.5% / SMRA 4.0% per year (compare against: current CPF
+    interest rates and whether the 4% SMRA floor extension still holds)
+  - frs_anchor: Full Retirement Sum S$220,400 in 2026, escalating 3.5%/year (compare
+    against: announced FRS values for coming cohorts)
+  - bhs_anchor: Basic Healthcare Sum S$79,000 in 2026, escalating 4.6%/year (compare
+    against: the announced BHS for the current year)
+  - cpf_life_anchor: FRS set aside at 55 pays about S$1,780/month from 65 under the
+    Standard plan for the 2026 cohort (compare against: CPF LIFE payout estimates)
+  - cpf_allocation_2026: contribution split by age per the Jan 2026 allocation table,
+    e.g. 62.17% OA / 16.21% SA / 21.62% MA at age 35 and below (compare against: any
+    announced allocation changes since)
 
 Return ONLY a JSON array, one object per parameter above:
 [{{"parameter": "...", "stored": "...", "current": "<figure you found, with year>",
@@ -75,10 +88,8 @@ def fetch_settings() -> dict | None:
 
 
 def build_prompt(s: dict) -> str:
-    cpf = s.get("cpf") or {}
     return _USER_TEMPLATE.format(
         inflation=s.get("inflation", "?"),
-        cpf_growth=cpf.get("growthRate", "?"),
         cpf_life=s.get("cpfLifeMonthly", "?"),
         birth_year=s.get("birthYear", "?"),
         swr=s.get("swr", "?"),

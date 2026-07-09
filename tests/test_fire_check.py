@@ -12,13 +12,23 @@ import notify
 def _settings():
     return {"monthlyExpenses": 4000, "swr": 3.5, "inflation": 2.5,
             "expectedReturn": 6.0, "birthYear": 1997, "cpfLifeMonthly": 1500,
-            "cpf": {"balance": 80000, "growthRate": 4.0, "includeAsAsset": False}}
+            "cpf": {"oa": 50000, "sa": 20000, "ma": 10000,
+                    "monthlyContribution": 1500, "includeInPlan": True}}
 
 
 def test_prompt_carries_all_stored_assumptions():
     p = fire_check.build_prompt(_settings())
-    for frag in ("2.5%", "4.0%", "S$1500/month", "1997", "3.5%", "6.0%"):
+    for frag in ("2.5%", "S$1500/month", "1997", "3.5%", "6.0%"):
         assert frag in p
+
+
+def test_prompt_carries_cpf_model_constants():
+    """The dashboard hardcodes the CPF simulation constants — the quarterly
+    grounded check is the ONLY thing watching them go stale, so the prompt
+    must name each one."""
+    p = fire_check.build_prompt(_settings())
+    for frag in ("220,400", "79,000", "1,780", "62.17%", "OA 2.5% / SMRA 4.0%"):
+        assert frag in p, frag
 
 
 def test_parse_review_normalizes_and_drops_junk():
