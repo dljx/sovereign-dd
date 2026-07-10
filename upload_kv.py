@@ -141,6 +141,7 @@ def _slim_verification(v: dict | None) -> dict:
         "verdict":              v.get("verdict"),
         "verification_score":   v.get("verification_score"),
         "strongest_bear_point": clip(v.get("strongest_bear_point"), 400),
+        "checked_at":           v.get("checked_at"),
     }
 
 
@@ -234,7 +235,11 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None,
         "conf":              result.get("confidence", ""),
         "thesis":            clip(result.get("majority_thesis"), 1000),
         "key_swing":         clip(result.get("key_swing_factor"), 400),
-        "analyzed_at":       result.get("built_at", ""),
+        # built_at lives on the DOSSIER (dossier.py), not the result — reading it
+        # off the result shipped analyzed_at="" on every card for weeks, which is
+        # why the boards could never age anything out (found 2026-07-11).
+        "analyzed_at":       dossier.get("built_at") or result.get("built_at")
+                             or datetime.now(timezone.utc).isoformat(),
         "catalyst":          result.get("catalyst", ""),
         "asymmetry_ratio":   result.get("asymmetry_ratio", ""),
         "rr":                (result.get("risk_reward") or {}).get("rr_ratio"),
@@ -292,7 +297,9 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
             "score":   result.get("consensus_score", 0),
             "grade":   result.get("consensus_grade", "?"),
             "conf":    result.get("confidence", ""),
-            "updated": result.get("built_at", ""),
+            # Same built_at-lives-on-the-dossier trap as _scout_card above.
+            "updated": data.get("dossier", {}).get("built_at")
+                       or result.get("built_at", ""),
             "loops":   result.get("loops_run", 0),
             "spread":  result.get("score_spread", 0),
             "rr":      (result.get("risk_reward") or {}).get("rr_ratio"),

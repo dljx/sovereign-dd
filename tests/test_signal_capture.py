@@ -218,3 +218,42 @@ def test_missing_fields_degrade_to_none_not_crash():
     gems = _gems_history_row({"ticker": "FFF"})
     assert gems["price"] is None
     assert gems["factors"] is None
+
+
+# ── card dates (2026-07-11): boards can only age out what is stamped ──────────
+
+def test_scout_card_analyzed_at_from_dossier_built_at():
+    """built_at lives on the DOSSIER; reading it off the result shipped
+    analyzed_at="" on every card for weeks (the boards' stale-fossil incident)."""
+    f = _output_file()
+    f["dossier"]["built_at"] = "2026-07-11T08:00:00+00:00"
+    card = _scout_card("AAA", f["result"], f["meta"], f["dossier"])
+    assert card["analyzed_at"] == "2026-07-11T08:00:00+00:00"
+
+
+def test_scout_card_analyzed_at_never_empty():
+    # result-level built_at honored as fallback; no date at all → stamped now.
+    card = _scout_card("AAA", {"consensus_score": 7.1, "built_at": "2026-07-10T00:00:00Z"}, {}, None)
+    assert card["analyzed_at"] == "2026-07-10T00:00:00Z"
+    bare = _scout_card("BBB", {"consensus_score": 7.1}, {}, None)
+    assert bare["analyzed_at"].startswith("202")  # ISO now(), never ""
+
+
+def test_slim_verification_carries_checked_at():
+    from upload_kv import _slim_verification
+    slim = _slim_verification({
+        "verdict": "CONFIRM", "verification_score": 8.4,
+        "strongest_bear_point": "x", "checked_at": "2026-07-11T09:00:00+00:00",
+        "falsification_findings": ["a"],
+    })
+    assert slim["checked_at"] == "2026-07-11T09:00:00+00:00"
+    assert "falsification_findings" not in slim  # still slim
+
+
+def test_portfolio_index_updated_from_dossier(tmp_path):
+    from upload_kv import collect_portfolio_results
+    f = _output_file()
+    f["dossier"]["built_at"] = "2026-07-11T08:00:00+00:00"
+    _write(tmp_path, "AAA_20260711_080000.json", f)
+    _, index, _, _ = collect_portfolio_results(tmp_path)
+    assert index["AAA"]["updated"] == "2026-07-11T08:00:00+00:00"

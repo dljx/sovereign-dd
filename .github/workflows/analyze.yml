@@ -70,6 +70,12 @@ jobs:
           if [ -z "$TICKER" ]; then
             echo "=== Portfolio scan (unattended — live events off) ==="
             python main.py --portfolio --save --notify
+          elif [[ "$TICKER" == *" "* ]]; then
+            # Space-separated list → main.py concurrent batch mode. Unattended
+            # (nobody watches N parallel debates) so LIVE_EVENTS stays off —
+            # N tickers streaming events would blow the KV free-tier budget.
+            echo "=== Batch: $TICKER (live events off) ==="
+            python main.py $TICKER --save
           else
             # Single-ticker runs are user-triggered from the dashboard and watched
             # live, so stream debate events to KV. Scheduled runs leave LIVE_EVENTS
