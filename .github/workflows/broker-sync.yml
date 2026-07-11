@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      probe:
+        description: "Read-only API capability probe (prints only, no writes)"
+        required: false
+        default: false
+        type: boolean
 
 # The merge endpoint does a KV read-modify-write on positions:daryl — share
 # the pipeline group so it can't race scout/analyze uploads.
@@ -45,6 +50,7 @@ jobs:
         env:
           IBKR_FLEX_TOKEN:    ${{ secrets.IBKR_FLEX_TOKEN }}
           IBKR_FLEX_QUERY_ID: ${{ secrets.IBKR_FLEX_QUERY_ID }}
+          IBKR_FLEX_QUERY_ID_NAV: ${{ secrets.IBKR_FLEX_QUERY_ID_NAV }}
           TIGER_ID:           ${{ secrets.TIGER_ID }}
           TIGER_ACCOUNT:      ${{ secrets.TIGER_ACCOUNT }}
           TIGER_PRIVATE_KEY:  ${{ secrets.TIGER_PRIVATE_KEY }}
@@ -54,7 +60,7 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           SYNC_DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
-        run: python broker_sync.py
+        run: python broker_sync.py ${{ github.event.inputs.probe == 'true' && '--probe' || '' }}
 
       - name: Notify on failure
         if: failure()

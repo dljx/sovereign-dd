@@ -191,3 +191,48 @@ def test_parse_flex_true_empty_account_is_not_refused():
      </FlexStatement></FlexStatements></FlexQueryResponse>"""
     out = broker_sync._parse_flex(xml)
     assert out is not None and out["rows"] == [] and out["cash"] == 5000.0
+
+
+# ── probe mode (2026-07-11): pure logic only — network sections are try/except ──
+
+def _days(n, start_day=1):
+    return [f"2024-05-{d:02d}" for d in range(start_day, start_day + n)]
+
+
+def test_bars_adjustment_verdict_adjusted_parity():
+    """Tiger closes tracking yfinance adjusted closes within dividend drift."""
+    t = {d: 100.0 + i for i, d in enumerate(_days(25))}
+    y = {d: (100.0 + i) * 1.02 for i, d in enumerate(_days(25))}
+    assert broker_sync.bars_adjustment_verdict(t, y) == "adjusted"
+
+
+def test_bars_adjustment_verdict_detects_unadjusted_split():
+    """Pre-split Tiger closes 10x the adjusted series → unadjusted → never
+    swap the technicals source onto it."""
+    days = _days(30)
+    y = {d: 100.0 for d in days}
+    t = {d: (1000.0 if i < 15 else 100.0) for i, d in enumerate(days)}
+    assert broker_sync.bars_adjustment_verdict(t, y) == "unadjusted"
+
+
+def test_bars_adjustment_verdict_thin_overlap_is_inconclusive():
+    t = {d: 100.0 for d in _days(10)}
+    y = {d: 100.0 for d in _days(10)}
+    assert broker_sync.bars_adjustment_verdict(t, y) == "inconclusive"
+
+
+def test_bars_adjustment_verdict_no_overlap_is_inconclusive():
+    assert broker_sync.bars_adjustment_verdict({"2024-05-01": 1.0}, {}) == "inconclusive"
+
+
+def test_probe_without_credentials_never_pushes(monkeypatch, capsys):
+    """--probe with nothing configured: reports and exits 0, and structurally
+    cannot POST (push_payload would blow up if reached)."""
+    for k in ("TIGER_ID", "TIGER_ACCOUNT", "TIGER_PRIVATE_KEY",
+              "IBKR_FLEX_TOKEN", "IBKR_FLEX_QUERY_ID_NAV"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(broker_sync, "push_payload",
+                        lambda p: (_ for _ in ()).throw(AssertionError("probe pushed!")))
+    assert broker_sync.probe() == 0
+    out = capsys.readouterr().out
+    assert "read-only" in out and "not configured" in out

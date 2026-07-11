@@ -15,11 +15,13 @@ READ-ONLY CONTRACT
     get_assets). Never add a trade import here; the key lives in GitHub
     secrets and this file is the only consumer.
 
-Env: IBKR_FLEX_TOKEN, IBKR_FLEX_QUERY_ID, TIGER_ID, TIGER_ACCOUNT,
-TIGER_PRIVATE_KEY, SOVEREIGN_EYE_URL, DD_UPLOAD_SECRET, TELEGRAM_*.
+Env: IBKR_FLEX_TOKEN, IBKR_FLEX_QUERY_ID, IBKR_FLEX_QUERY_ID_NAV (probe/NAV),
+TIGER_ID, TIGER_ACCOUNT, TIGER_PRIVATE_KEY, SOVEREIGN_EYE_URL,
+DD_UPLOAD_SECRET, TELEGRAM_*.
 SYNC_DRY_RUN=1 fetches + reports without POSTing (first supervised run).
 
-Usage: python broker_sync.py
+Usage: python broker_sync.py            # daily positions/cash sync
+       python broker_sync.py --probe    # read-only API capability probe
 """
 
 from __future__ import annotations
@@ -65,6 +67,31 @@ def map_symbol(symbol: str, exchange: str = "", currency: str = "USD") -> tuple[
 
 # ── IBKR: Flex Web Service (two-step, statement-download-only token) ──────────
 
+def _flex_download(token: str, query_id: str) -> str | None:
+    """Two-step Flex fetch: SendRequest → poll GetStatement. XML text or None."""
+    r = requests.get(f"{FLEX_BASE}/SendRequest",
+                     params={"t": token, "q": query_id, "v": "3"},
+                     headers={"User-Agent": "sovereign-dd"}, timeout=30)
+    root = ET.fromstring(r.text)
+    if (root.findtext("Status") or "").strip() != "Success":
+        print(f"  [sync] IBKR: SendRequest failed: {root.findtext('ErrorMessage') or r.text[:200]}")
+        return None
+    ref = (root.findtext("ReferenceCode") or "").strip()
+    stmt_url = (root.findtext("Url") or f"{FLEX_BASE}/GetStatement").strip()
+
+    for attempt in range(_FLEX_POLL_ATTEMPTS):
+        r2 = requests.get(stmt_url, params={"t": token, "q": ref, "v": "3"},
+                          headers={"User-Agent": "sovereign-dd"}, timeout=60)
+        # A not-ready statement comes back as a small FlexStatementResponse
+        # with an error code; the real thing is a FlexQueryResponse.
+        if "<FlexQueryResponse" in r2.text:
+            return r2.text
+        print(f"  [sync] IBKR: statement not ready (attempt {attempt + 1}) — waiting {_FLEX_POLL_WAIT}s")
+        time.sleep(_FLEX_POLL_WAIT)
+    print("  [sync] IBKR: statement never became ready")
+    return None
+
+
 def fetch_ibkr() -> dict | None:
     """{rows: [...], cash: float|None, unmapped: [...]} or None (skip broker)."""
     token = os.getenv("IBKR_FLEX_TOKEN", "").strip()
@@ -73,29 +100,8 @@ def fetch_ibkr() -> dict | None:
         print("  [sync] IBKR: no Flex token/query configured — skipping")
         return None
     try:
-        r = requests.get(f"{FLEX_BASE}/SendRequest",
-                         params={"t": token, "q": query_id, "v": "3"},
-                         headers={"User-Agent": "sovereign-dd"}, timeout=30)
-        root = ET.fromstring(r.text)
-        if (root.findtext("Status") or "").strip() != "Success":
-            print(f"  [sync] IBKR: SendRequest failed: {root.findtext('ErrorMessage') or r.text[:200]}")
-            return None
-        ref = (root.findtext("ReferenceCode") or "").strip()
-        stmt_url = (root.findtext("Url") or f"{FLEX_BASE}/GetStatement").strip()
-
-        xml_text = None
-        for attempt in range(_FLEX_POLL_ATTEMPTS):
-            r2 = requests.get(stmt_url, params={"t": token, "q": ref, "v": "3"},
-                              headers={"User-Agent": "sovereign-dd"}, timeout=60)
-            # A not-ready statement comes back as a small FlexStatementResponse
-            # with an error code; the real thing is a FlexQueryResponse.
-            if "<FlexQueryResponse" in r2.text:
-                xml_text = r2.text
-                break
-            print(f"  [sync] IBKR: statement not ready (attempt {attempt + 1}) — waiting {_FLEX_POLL_WAIT}s")
-            time.sleep(_FLEX_POLL_WAIT)
+        xml_text = _flex_download(token, query_id)
         if xml_text is None:
-            print("  [sync] IBKR: statement never became ready")
             return None
         return _parse_flex(xml_text)
     except Exception as e:
@@ -202,6 +208,178 @@ def _map_tiger(positions, assets) -> dict:
     return {"rows": rows, "cash": cash, "unmapped": unmapped}
 
 
+# ── Probe mode: read-only capability diagnostics (prints only, no POSTs) ──────
+#
+# `python broker_sync.py --probe` reports what the Tiger/IBKR credentials can
+# actually access — quote permissions, delayed quotes, kline quota, whether
+# Tiger bars are split-adjusted, get_analytics_asset (NAV history) shape,
+# funding history, earnings calendar, short interest. Results gate the
+# NAV-history and quote-source-ranking phases (plan 2026-07-11).
+
+def bars_adjustment_verdict(tiger_closes: dict, yf_adj_closes: dict) -> str:
+    """Compare Tiger daily closes to yfinance ADJUSTED closes over a window
+    spanning a known split (NVDA 2024-06-10 10:1). 'adjusted' → Tiger tracks
+    the split-adjusted series (safe to source technicals from it);
+    'unadjusted' → raw prices (must NOT swap — momentum would break across
+    splits); 'inconclusive' → not enough overlap to judge."""
+    ratios = []
+    for d in sorted(set(tiger_closes) & set(yf_adj_closes)):
+        y = yf_adj_closes[d]
+        if y:
+            ratios.append(tiger_closes[d] / y)
+    if len(ratios) < 20:
+        return "inconclusive"
+    lo, hi = min(ratios), max(ratios)
+    if 0.93 <= lo and hi <= 1.07:  # tolerance for dividend-adjustment drift
+        return "adjusted"
+    if hi / max(lo, 1e-9) >= 1.5:  # ratio jumps across the split boundary
+        return "unadjusted"
+    return "inconclusive"
+
+
+def _show(name: str, value) -> None:
+    """Print one probe result compactly, whatever shape tigeropen returned."""
+    try:
+        if hasattr(value, "columns"):  # pandas DataFrame
+            print(f"  [probe] {name}: {len(value)} row(s) · columns={list(value.columns)}")
+            print(value.head(3).to_string())
+        elif isinstance(value, (list, tuple)):
+            print(f"  [probe] {name}: {len(value)} item(s)")
+            for item in value[:3]:
+                print(f"    {item!r}"[:400])
+        else:
+            print(f"  [probe] {name}: {value!r}"[:1200])
+    except Exception as e:  # printing must never kill the probe
+        print(f"  [probe] {name}: <unprintable: {e}>")
+
+
+def _probe_section(name: str, fn) -> None:
+    print(f"\n-- {name} " + "-" * max(0, 62 - len(name)))
+    try:
+        fn()
+    except Exception as e:
+        print(f"  [probe] {name} FAILED: {type(e).__name__}: {e}")
+
+
+def _probe_ibkr_nav() -> None:
+    from collections import Counter
+    token = os.getenv("IBKR_FLEX_TOKEN", "").strip()
+    nav_qid = os.getenv("IBKR_FLEX_QUERY_ID_NAV", "").strip()
+    if not token or not nav_qid:
+        print("  [probe] IBKR_FLEX_QUERY_ID_NAV not configured — manual step pending "
+              "(Client Portal → Performance & Reports → Flex Queries → create "
+              "'sovereign-nav' with Change in NAV + Cash Transactions, last 365 days, "
+              "XML; add its ID as a repo secret)")
+        return
+    xml_text = _flex_download(token, nav_qid)
+    if xml_text is None:
+        return
+    root = ET.fromstring(xml_text)
+    tags = Counter(el.tag for el in root.iter())
+    print(f"  [probe] NAV statement elements: {dict(tags.most_common(15))}")
+    for tag in ("ChangeInNAV", "CashTransaction", "EquitySummaryByReportDateInBase"):
+        el = next(root.iter(tag), None)
+        if el is not None:
+            print(f"  [probe] sample <{tag}>: {dict(list(el.attrib.items())[:14])}")
+
+
+def probe() -> int:
+    """Read-only capability probe — prints findings, never POSTs anything."""
+    from datetime import datetime, timedelta, timezone
+
+    print("[probe] broker API capability probe — read-only, nothing is written")
+    today = datetime.now(timezone.utc).date()
+
+    tiger_id = os.getenv("TIGER_ID", "").strip()
+    account = os.getenv("TIGER_ACCOUNT", "").strip()
+    private_key = os.getenv("TIGER_PRIVATE_KEY", "").strip()
+    if tiger_id and account and private_key:
+        try:
+            from tigeropen.common.consts import Market
+            from tigeropen.quote.quote_client import QuoteClient
+            from tigeropen.tiger_open_config import TigerOpenClientConfig
+            from tigeropen.trade.trade_client import TradeClient
+
+            cfg = TigerOpenClientConfig()
+            cfg.tiger_id = tiger_id
+            cfg.account = account
+            cfg.private_key = private_key
+            # NEVER default-construct QuoteClient: is_grab_permission defaults
+            # to True, which SEIZES the quote entitlement from the owner's
+            # Tiger app session. Every QuoteClient here must pass False.
+            qc = QuoteClient(cfg, is_grab_permission=False)
+            tc = TradeClient(cfg)
+        except Exception as e:
+            print(f"  [probe] Tiger client construction FAILED: {type(e).__name__}: {e}")
+            qc = tc = None
+
+        if qc is not None:
+            _probe_section("quote permissions (no grab)",
+                           lambda: (_show("permissions", qc.get_quote_permission()),
+                                    _show("addon entitlement", qc.get_addon_entitlement())))
+            _probe_section("delayed briefs AAPL/NVDA",
+                           lambda: _show("delay briefs", qc.get_stock_delay_briefs(["AAPL", "NVDA"])))
+            _probe_section("kline quota",
+                           lambda: _show("quota", qc.get_kline_quota(with_details=True)))
+
+            def _bars_parity():
+                bars = qc.get_bars(["NVDA"], begin_time="2024-05-01",
+                                   end_time="2024-08-01", limit=80)
+                tiger_closes = {
+                    datetime.fromtimestamp(row["time"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d"):
+                        float(row["close"])
+                    for _, row in bars.iterrows()
+                }
+                import yfinance as yf
+                hist = yf.Ticker("NVDA").history(start="2024-05-01", end="2024-08-01")
+                yf_closes = {idx.strftime("%Y-%m-%d"): float(c)
+                             for idx, c in hist["Close"].items()}
+                common = sorted(set(tiger_closes) & set(yf_closes))
+                ratios = [tiger_closes[d] / yf_closes[d] for d in common if yf_closes[d]]
+                print(f"  [probe] bars: tiger={len(tiger_closes)} yf={len(yf_closes)} "
+                      f"overlap={len(common)}")
+                if ratios:
+                    print(f"  [probe] tiger/yf close ratio: min={min(ratios):.4f} "
+                          f"max={max(ratios):.4f}")
+                print(f"  [probe] ADJUSTMENT VERDICT: "
+                      f"{bars_adjustment_verdict(tiger_closes, yf_closes)} "
+                      f"(window spans NVDA 2024-06-10 10:1 split)")
+
+            _probe_section("bars adjustment parity (NVDA across 2024 split)", _bars_parity)
+            _probe_section("earnings calendar US next 14d",
+                           lambda: _show("calendar", qc.get_corporate_earnings_calendar(
+                               Market.US, str(today), str(today + timedelta(days=14)))))
+            _probe_section("short interest AAPL",
+                           lambda: _show("short interest", qc.get_short_interest(["AAPL"])))
+
+        if tc is not None:
+            def _analytics():
+                r = tc.get_analytics_asset(
+                    start_date=str(today - timedelta(days=365)), end_date=str(today))
+                if isinstance(r, dict):
+                    hist = r.get("history") or []
+                    print(f"  [probe] analytics keys: {list(r.keys())}")
+                    print(f"  [probe] history: {len(hist)} point(s)")
+                    if hist:
+                        print(f"  [probe] first: {hist[0]!r}"[:400])
+                        print(f"  [probe] last:  {hist[-1]!r}"[:400])
+                        dts = [h.get("dt") for h in hist if isinstance(h, dict) and h.get("dt")]
+                        if dts:
+                            print(f"  [probe] span {dts[0]} → {dts[-1]} ({len(dts)} dated)")
+                else:
+                    _show("analytics result", r)
+
+            _probe_section("NAV analytics (get_analytics_asset, 365d)", _analytics)
+            _probe_section("funding history (deposits/withdrawals)",
+                           lambda: _show("funding", tc.get_funding_history()))
+    else:
+        print("  [probe] Tiger credentials not configured — skipping Tiger sections")
+
+    _probe_section("IBKR NAV Flex query", _probe_ibkr_nav)
+    print("\n[probe] done — no writes were made anywhere")
+    return 0
+
+
 # ── Push + report ──────────────────────────────────────────────────────────────
 
 def push_payload(payload: dict) -> dict | None:
@@ -266,4 +444,4 @@ def run() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(probe() if "--probe" in sys.argv[1:] else run())
