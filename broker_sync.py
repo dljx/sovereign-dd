@@ -318,6 +318,32 @@ def tiger_daily_bars(symbol: str, days: int = 365):
         return None
 
 
+def tiger_earnings_dates(days_ahead: int = 30) -> dict:
+    """{SYMBOL: 'YYYY-MM-DD'} from Tiger's market-wide US earnings calendar —
+    ONE call covers every ticker (609 rows/14d at probe time, incl. small caps
+    Finnhub's free calendar misses). {} when unavailable. NB: get_short_interest
+    is NOT supported on this account tier (probe 2026-07-11) — don't add it."""
+    qc = tiger_quote_client()
+    if qc is None:
+        return {}
+    try:
+        from datetime import date, timedelta
+        from tigeropen.common.consts import Market
+        today = date.today()
+        df = qc.get_corporate_earnings_calendar(
+            Market.US, str(today), str(today + timedelta(days=days_ahead)))
+        out = {}
+        for _, row in df.iterrows():
+            sym = str(row.get("symbol") or "").upper()
+            d = str(row.get("report_date") or "")
+            if sym and d and (sym not in out or d < out[sym]):  # keep earliest
+                out[sym] = d
+        return out
+    except Exception as e:
+        print(f"  [quotes] Tiger earnings calendar failed: {e}")
+        return {}
+
+
 # ── NAV history: Tiger analytics + IBKR Flex NAV query (2026-07-11) ───────────
 #
 # Probe-confirmed shapes: Tiger get_analytics_asset history carries

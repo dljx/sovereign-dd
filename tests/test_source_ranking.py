@@ -85,3 +85,45 @@ def test_technicals_falls_back_to_yfinance(monkeypatch):
     out = dossier._technicals("HPQ.V")
     assert out["price"] == round(float(hist["Close"].iloc[-1]), 2)
     assert "error" not in out
+
+
+# ── earnings calendar ranking (Finnhub primary, Tiger date-only gap-filler) ────
+
+def _passthrough_cached(key, ttl, fn, *a, **k):
+    return fn(*a, **k)
+
+
+def test_earnings_upcoming_finnhub_primary(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(broker_sync, "tiger_earnings_dates",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("Tiger called")))
+    raw = {"earningsCalendar": [
+        {"date": "2026-07-20", "hour": "amc", "epsEstimate": 1.2, "epsActual": None},
+        {"date": "2026-04-20", "hour": "amc", "epsEstimate": 1.0, "epsActual": 1.1},  # reported
+    ]}
+    up = dossier._earnings_upcoming("AAPL", raw)
+    assert len(up) == 1 and up[0]["date"] == "2026-07-20" and up[0]["eps_estimate"] == 1.2
+
+
+def test_earnings_upcoming_tiger_fills_finnhub_gap(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(broker_sync, "tiger_earnings_dates",
+                        lambda *a: {"ENVHF": "2026-07-11"})
+    up = dossier._earnings_upcoming("ENVHF", {"earningsCalendar": []})
+    assert up == [{"date": "2026-07-11", "hour": None, "eps_estimate": None,
+                   "revenue_estimate": None, "quarter": None, "year": None,
+                   "src": "tiger"}]
+
+
+def test_earnings_upcoming_suffixed_skips_tiger(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(broker_sync, "tiger_earnings_dates",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("Tiger called")))
+    assert dossier._earnings_upcoming("HPQ.V", {}) == []
+
+
+def test_earnings_upcoming_tiger_failure_is_silent(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(broker_sync, "tiger_earnings_dates",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("down")))
+    assert dossier._earnings_upcoming("AAPL", None) == []

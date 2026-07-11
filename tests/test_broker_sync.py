@@ -454,3 +454,25 @@ def test_tiger_daily_bars_skips_suffixed_and_unavailable(monkeypatch):
     assert fake.bar_calls == []                             # never called
     monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
     assert broker_sync.tiger_daily_bars("NVDA") is None
+
+
+def test_tiger_earnings_dates_keeps_earliest(monkeypatch):
+    import pandas as pd
+    df = pd.DataFrame([
+        {"symbol": "AERO", "report_date": "2026-07-13"},
+        {"symbol": "aero", "report_date": "2026-07-20"},   # dup, later → ignored
+        {"symbol": "FBK",  "report_date": "2026-07-13"},
+        {"symbol": "",     "report_date": "2026-07-14"},   # blank symbol dropped
+    ])
+
+    class _Cal:
+        def get_corporate_earnings_calendar(self, market, b, e):
+            return df
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: _Cal())
+    out = broker_sync.tiger_earnings_dates()
+    assert out == {"AERO": "2026-07-13", "FBK": "2026-07-13"}
+
+
+def test_tiger_earnings_dates_unavailable_is_empty(monkeypatch):
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
+    assert broker_sync.tiger_earnings_dates() == {}

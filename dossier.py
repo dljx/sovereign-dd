@@ -322,6 +322,40 @@ def _quote(ticker: str) -> dict:
     return _fh("/quote", {"symbol": ticker})
 
 
+def _earnings_upcoming(ticker: str, earnings_cal_raw) -> list:
+    """Upcoming earnings rows. Finnhub primary (has EPS/revenue estimates);
+    Tiger's market-wide calendar as a date-only gap-filler — Finnhub's free
+    calendar misses many small caps (2026-07-11: Tiger had 609 rows/14d).
+    The Tiger call is one request cached 6h and shared across every ticker
+    in the run."""
+    ec = (earnings_cal_raw.get("earningsCalendar", [])
+          if isinstance(earnings_cal_raw, dict) else [])
+    upcoming = [
+        {
+            "date":             e.get("date"),
+            "hour":             e.get("hour"),   # "bmo" or "amc"
+            "eps_estimate":     e.get("epsEstimate"),
+            "revenue_estimate": e.get("revenueEstimate"),
+            "quarter":          e.get("quarter"),
+            "year":             e.get("year"),
+        }
+        for e in [x for x in ec if x.get("epsActual") is None][:3]
+    ]
+    if upcoming:
+        return upcoming
+    try:
+        from broker_sync import tiger_earnings_dates, tiger_symbol_ok
+        if tiger_symbol_ok(ticker):
+            d = (cached("tiger:earnings_cal:v1", 6, tiger_earnings_dates) or {}).get(ticker)
+            if d:
+                return [{"date": d, "hour": None, "eps_estimate": None,
+                         "revenue_estimate": None, "quarter": None, "year": None,
+                         "src": "tiger"}]
+    except Exception:
+        pass
+    return []
+
+
 def _technicals(ticker: str) -> dict:
     try:
         # Tiger adjusted daily bars primary (probe-verified split-adjustment
@@ -1274,21 +1308,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     }
 
     # â"€â"€ Upcoming earnings calendar â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    _ec_list = (earnings_cal_raw.get("earningsCalendar", [])
-                if isinstance(earnings_cal_raw, dict) else [])
-    _ec_upcoming = [e for e in _ec_list if e.get("epsActual") is None][:3]
     dossier["earnings_calendar"] = {
-        "upcoming": [
-            {
-                "date":             e.get("date"),
-                "hour":             e.get("hour"),   # "bmo" or "amc"
-                "eps_estimate":     e.get("epsEstimate"),
-                "revenue_estimate": e.get("revenueEstimate"),
-                "quarter":          e.get("quarter"),
-                "year":             e.get("year"),
-            }
-            for e in _ec_upcoming
-        ],
+        "upcoming": _earnings_upcoming(ticker, earnings_cal_raw),
     }
 
     # â"€â"€ SEC filing â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€

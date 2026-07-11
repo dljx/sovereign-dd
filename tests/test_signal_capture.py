@@ -257,3 +257,24 @@ def test_portfolio_index_updated_from_dossier(tmp_path):
     _write(tmp_path, "AAA_20260711_080000.json", f)
     _, index, _, _ = collect_portfolio_results(tmp_path)
     assert index["AAA"]["updated"] == "2026-07-11T08:00:00+00:00"
+
+
+def test_scout_card_earnings_in_days_within_window():
+    from datetime import datetime, timedelta, timezone
+    d5 = (datetime.now(timezone.utc) + timedelta(days=5)).strftime("%Y-%m-%d")
+    dossier = {"earnings_calendar": {"upcoming": [{"date": d5}]}}
+    card = upload_kv._scout_card("AAPL", {"consensus_score": 8.0}, dossier=dossier)
+    assert card["earnings_in_days"] in (4, 5)   # date-only arithmetic truncates
+
+
+def test_scout_card_earnings_in_days_outside_window_is_none():
+    from datetime import datetime, timedelta, timezone
+    d30 = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+    dossier = {"earnings_calendar": {"upcoming": [{"date": d30}]}}
+    assert upload_kv._scout_card("AAPL", {}, dossier=dossier)["earnings_in_days"] is None
+
+
+def test_scout_card_earnings_in_days_handles_garbage():
+    assert upload_kv._scout_card("AAPL", {}, dossier={})["earnings_in_days"] is None
+    bad = {"earnings_calendar": {"upcoming": [{"date": "soon™"}]}}
+    assert upload_kv._scout_card("AAPL", {}, dossier=bad)["earnings_in_days"] is None

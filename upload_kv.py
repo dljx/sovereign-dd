@@ -217,6 +217,19 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
     }
 
 
+def _earnings_in_days(dossier: dict) -> int | None:
+    """Days until the next earnings report, only when 0–14 (the window where
+    a fresh BUY is really a pre-earnings bet); None otherwise/unknown."""
+    try:
+        upcoming = (dossier.get("earnings_calendar") or {}).get("upcoming") or []
+        d = (upcoming[0] or {}).get("date")
+        days = (datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                - datetime.now(timezone.utc)).days
+        return days if 0 <= days <= 14 else None
+    except Exception:
+        return None
+
+
 def _scout_card(ticker: str, result: dict, meta: dict | None = None,
                 dossier: dict | None = None) -> dict:
     """Build the dd:scouts card shape from a debate result. Shared by scout
@@ -255,6 +268,7 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None,
         "confirmed":         result.get("confirmed", True),
         "fair_value_composite": result.get("fair_value_composite"),
         "factors":           _factor_stamp(dossier, result) if dossier else None,
+        "earnings_in_days":  _earnings_in_days(dossier),
     }
 
 
