@@ -69,14 +69,15 @@ _VERSION_REGISTER = {
 # ── Supabase fetch ────────────────────────────────────────────────────
 
 
-def _fetch_rows(table: str) -> list[dict]:
+def _fetch_rows(table: str, select: str = "*",
+                order: str = "discovered_at.asc") -> list[dict]:
     """All rows from a history table, paginated via PostgREST Range headers."""
     rows: list[dict] = []
     start = 0
     while True:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/{table}",
-            params={"select": "*", "order": "discovered_at.asc"},
+            params={"select": select, "order": order},
             headers={
                 "apikey": SUPABASE_KEY,
                 "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -405,6 +406,110 @@ def compute_behavior_gap(signals: list[dict], closes: dict, vwra: pd.Series,
     }
 
 
+# ── Holdings archive analysis (2026-07-11): dd_history was write-only ──
+#
+# Every daily portfolio debate has been archived to dd_history since May
+# and never read by any analysis (audit: the richest table, write-only).
+# This asks it the calibration question: whose scores actually predict
+# forward excess — which AGENT's tilt, which archetype, which margin-of-
+# safety band. Measurement only; no methodology change.
+
+_TILT_THRESHOLD = 0.5  # an agent ≥0.5 above/below panel mean is a real tilt
+
+
+def parse_dd_rows(rows: list[dict]) -> list[dict]:
+    """dd_history rows → one observation per ticker per ISO week (daily
+    re-analyses of the same holding are autocorrelated; keeping them all
+    would let one name's streak masquerade as n=60)."""
+    seen: set = set()
+    out = []
+    for r in rows:
+        ticker = (r.get("ticker") or "").strip().upper()
+        try:
+            run = datetime.fromisoformat(str(r["run_at"])).date()
+        except Exception:
+            continue
+        iso = run.isocalendar()
+        key = (ticker, iso[0], iso[1])
+        if not ticker or key in seen:
+            continue
+        seen.add(key)
+        agents = r.get("agent_scores") or {}
+        out.append({
+            "ticker":       ticker,
+            "discovered":   run,           # named like signals so forward_return applies
+            "entry_price":  r.get("price"),
+            "score":        r.get("score"),
+            "archetype":    r.get("archetype") or "(none)",
+            "mos":          r.get("mos"),
+            "agent_scores": agents if isinstance(agents, dict) else {},
+        })
+    return out
+
+
+def compute_holdings_analysis(obs: list[dict], closes: dict, vwra: pd.Series,
+                              windows: list[int], today: date) -> dict | None:
+    """Per-agent tilt calibration + archetype/MOS buckets over dd_history.
+    Same window/bucket shape as the signal scoreboard so the dashboard
+    heatmap renderer can be reused."""
+    if not obs:
+        return None
+    mos_labels = tercile_labels([o["mos"] for o in obs])
+    for o, m in zip(obs, mos_labels):
+        o["mos_bucket"] = m
+
+    def _tilts(o) -> list[str]:
+        agents = o["agent_scores"]
+        vals = [v for v in agents.values() if isinstance(v, (int, float))]
+        if len(vals) < 2:
+            return []
+        mean_score = sum(vals) / len(vals)
+        out = []
+        for agent, v in agents.items():
+            if not isinstance(v, (int, float)):
+                continue
+            dev = v - mean_score
+            if dev >= _TILT_THRESHOLD:
+                out.append(f"{agent}:bullish")
+            elif dev <= -_TILT_THRESHOLD:
+                out.append(f"{agent}:bearish")
+        return out
+
+    out_windows = []
+    for weeks in windows:
+        measured = []
+        for o in obs:
+            fr = forward_return(closes.get(o["ticker"]), o["entry_price"],
+                                o["discovered"], weeks, today)
+            if fr["status"] != "ok":
+                continue
+            vf = forward_return(vwra, None, o["discovered"], weeks, today)
+            if vf["status"] != "ok":
+                continue
+            measured.append({**o, "excess": fr["ret"] - vf["ret"]})
+        win: dict = {"weeks": weeks, "measurable": len(measured)}
+        if measured:
+            # agent tilt: one row can appear in several agent buckets — that's
+            # the point (each agent's calibration is scored independently)
+            tilt_rows = [{**m, "_tilt": t} for m in measured for t in _tilts(m)]
+            win["buckets"] = {
+                "agent_tilt": [{"k": str(k), **_round_stats(s)}
+                               for k, s in bucket_stats(tilt_rows, lambda r: r["_tilt"]).items()] if tilt_rows else [],
+                "archetype":  [{"k": str(k), **_round_stats(s)}
+                               for k, s in bucket_stats(measured, lambda r: r["archetype"]).items()],
+                "mos":        [{"k": str(k), **_round_stats(s)}
+                               for k, s in bucket_stats(measured, lambda r: r["mos_bucket"] or "n/a").items()],
+            }
+        out_windows.append(win)
+    return {
+        "n_obs": len(obs),
+        "note": ("dd_history holdings re-analyses, deduped to one obs per ticker "
+                 "per ISO week. agent_tilt = that agent scored ≥0.5 above/below "
+                 "the panel mean. Calibration read, not a lever — small n."),
+        "windows": out_windows,
+    }
+
+
 # ── Report (text rendering of the scoreboard) ─────────────────────────
 
 
@@ -463,6 +568,16 @@ def render_report(sb: dict) -> list[str]:
                else "n/a (no broker NAV series)"),
             f"  note: {bg['note']}",
         ]
+
+    ha = sb.get("holdings_analysis")
+    if ha:
+        lines += ["", f"── holdings archive (dd_history · {ha['n_obs']} weekly obs) ──"]
+        for win in ha["windows"]:
+            if not win.get("buckets"):
+                continue
+            lines.append(f"  {win['weeks']}-week · measurable {win['measurable']}")
+            lines += _bucket_lines("agent tilt", win["buckets"]["agent_tilt"][:10])
+        lines.append(f"  note: {ha['note']}")
     return lines
 
 
@@ -557,6 +672,27 @@ def main() -> int:
     bg = compute_behavior_gap(signals, closes, vwra, today, real=fetch_real_nav())
     if bg:
         sb["behavior_gap"] = bg
+
+    # Holdings archive (dd_history) — isolated: a failure here must never
+    # cost the signal scoreboard.
+    try:
+        dd_rows = _fetch_rows(
+            "dd_history",
+            select="ticker,run_at,price,score,agent_scores,archetype,mos",
+            order="run_at.asc")
+        obs = parse_dd_rows(dd_rows)
+        extra = sorted({o["ticker"] for o in obs} - set(closes))
+        if extra and obs:
+            closes.update(_download_closes(
+                extra, min(o["discovered"] for o in obs) - timedelta(days=7)))
+        ha = compute_holdings_analysis(obs, closes, vwra, windows, today)
+        if ha:
+            sb["holdings_analysis"] = ha
+            print(f"[analysis] holdings archive: {ha['n_obs']} weekly obs "
+                  f"from {len(dd_rows)} dd_history rows")
+    except Exception as e:
+        print(f"[analysis] holdings analysis skipped ({e})")
+
     report = render_report(sb)
     print("\n".join(report))
 

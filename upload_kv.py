@@ -161,6 +161,7 @@ def _scout_history_row(s: dict) -> dict:
         "confirmed":     s.get("confirmed"),
         "verdict":       (s.get("verification") or {}).get("verdict"),
         "factors":       s.get("factors"),
+        "debate_digest": s.get("debate_digest"),
         "discovered_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -178,6 +179,7 @@ def _gems_history_row(g: dict) -> dict:
         "confirmed":     g.get("confirmed"),
         "verdict":       (g.get("verification") or {}).get("verdict"),
         "factors":       g.get("factors"),
+        "debate_digest": g.get("debate_digest"),
         "discovered_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -219,6 +221,37 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
         # (rule 5 bumps v only when a change alters which signals surface).
         "regime":       (dossier.get("macro") or {}).get("regime"),
     }
+
+
+def _debate_digest(result: dict) -> list | None:
+    """Slim per-agent archive of the debate (~2KB cap): each agent's final
+    score + last core argument. Full transcripts are deliberately never
+    persisted (size), which made post-mortems on past signals impossible
+    (2026-07-11 audit) — this keeps just enough to autopsy a signal months
+    later. Rides the Supabase history rows ONLY; stripped from the KV boards
+    (see _strip_digest)."""
+    transcript = result.get("transcript")
+    if not isinstance(transcript, list) or not transcript:
+        return None
+    last_by_agent: dict = {}
+    for t in transcript:
+        if isinstance(t, dict) and t.get("agent"):
+            last_by_agent[t["agent"]] = t
+    out = []
+    for agent, t in list(last_by_agent.items())[:8]:
+        arg = (t.get("thesis") or t.get("revised_thesis") or t.get("key_risk")
+               or t.get("rationale") or "")
+        out.append({"agent": agent,
+                    "score": t.get("revised_score", t.get("score")),
+                    "argument": clip(str(arg), 220)})
+    return out or None
+
+
+def _strip_digest(cards: list | None) -> list | None:
+    """Board copies of cards without the archival debate_digest field."""
+    if not cards:
+        return cards
+    return [{k: v for k, v in c.items() if k != "debate_digest"} for c in cards]
 
 
 def _earnings_in_days(dossier: dict) -> int | None:
@@ -276,6 +309,7 @@ def _scout_card(ticker: str, result: dict, meta: dict | None = None,
         "fair_value_composite": result.get("fair_value_composite"),
         "factors":           _factor_stamp(dossier, result) if dossier else None,
         "earnings_in_days":  _earnings_in_days(dossier),
+        "debate_digest":     _debate_digest(result),
     }
 
 
@@ -554,9 +588,9 @@ def main():
     payload = {
         "results":          portfolio_results,
         "index":            index,
-        "scouts":           discoveries if discoveries else None,
-        "gems":             gems_discoveries if gems_discoveries else None,
-        "watchlist":        watchlist if watchlist else None,
+        "scouts":           _strip_digest(discoveries) if discoveries else None,
+        "gems":             _strip_digest(gems_discoveries) if gems_discoveries else None,
+        "watchlist":        _strip_digest(watchlist) if watchlist else None,
         "reconcile_remove": reconcile_remove if reconcile_remove else None,
         "scout_history":    scout_history,
         "scout_notified":   scout_notified,

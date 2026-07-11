@@ -371,3 +371,44 @@ def test_render_report_includes_behavior_gap():
                            "vwra_pct": 4.3, "real_twr_pct": 21.7, "note": "x"}}
     text = "\n".join(sa.render_report(sb))
     assert "behavior gap" in text and "+12.4%" in text and "+21.7%" in text
+
+
+# ── holdings archive (dd_history mining, 2026-07-11) ──────────────────
+
+
+def test_parse_dd_rows_dedupes_to_weekly():
+    rows = [
+        {"ticker": "AMZN", "run_at": "2026-07-06T09:00:00+00:00", "price": 220.0,
+         "score": 7.1, "agent_scores": {"A": 7.0, "B": 8.0}, "archetype": "COMPOUNDER", "mos": 0.2},
+        {"ticker": "AMZN", "run_at": "2026-07-08T09:00:00+00:00", "price": 221.0,
+         "score": 7.2, "agent_scores": {}, "archetype": "COMPOUNDER", "mos": 0.2},  # same ISO week
+        {"ticker": "AMZN", "run_at": "2026-07-13T09:00:00+00:00", "price": 225.0,
+         "score": 7.3, "agent_scores": {}, "archetype": "COMPOUNDER", "mos": 0.2},  # next week
+        {"ticker": "", "run_at": "2026-07-06T09:00:00+00:00"},                       # no ticker
+        {"ticker": "BAD", "run_at": "not-a-date"},                                   # bad date
+    ]
+    obs = sa.parse_dd_rows(rows)
+    assert len(obs) == 2                       # weekly dedupe, first-in-week wins
+    assert obs[0]["entry_price"] == 220.0
+    assert obs[0]["agent_scores"] == {"A": 7.0, "B": 8.0}
+
+
+def test_holdings_analysis_agent_tilt_calibration():
+    closes = {"WIN": _series("2026-06-01", 40, 100, 2.0)}
+    vwra = _series("2026-06-01", 40, 200, 0.2)
+    obs = sa.parse_dd_rows([
+        {"ticker": "WIN", "run_at": "2026-06-10T00:00:00+00:00", "price": 118.0,
+         "score": 7.0, "archetype": "COMPOUNDER", "mos": 0.3,
+         "agent_scores": {"Bull": 8.0, "Bear": 6.0, "Mid": 7.0}},   # Bull +1 tilt, Bear −1
+    ])
+    ha = sa.compute_holdings_analysis(obs, closes, vwra, [1], date(2026, 6, 30))
+    b = ha["windows"][0]["buckets"]
+    tilts = {e["k"] for e in b["agent_tilt"]}
+    assert tilts == {"Bull:bullish", "Bear:bearish"}   # Mid (±0) is no tilt
+    assert b["archetype"][0]["k"] == "COMPOUNDER"
+    assert ha["n_obs"] == 1 and "small n" in ha["note"]
+
+
+def test_holdings_analysis_empty_is_none():
+    assert sa.compute_holdings_analysis([], {}, _series("2026-06-01", 5, 200, 0.1),
+                                        [1], date(2026, 6, 30)) is None

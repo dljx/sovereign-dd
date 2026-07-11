@@ -278,3 +278,31 @@ def test_scout_card_earnings_in_days_handles_garbage():
     assert upload_kv._scout_card("AAPL", {}, dossier={})["earnings_in_days"] is None
     bad = {"earnings_calendar": {"upcoming": [{"date": "soon™"}]}}
     assert upload_kv._scout_card("AAPL", {}, dossier=bad)["earnings_in_days"] is None
+
+
+def test_debate_digest_slim_and_last_entry_wins():
+    result = {"transcript": [
+        {"agent": "Bull", "round": 1, "score": 8.0, "thesis": "early take " + "x" * 500},
+        {"agent": "Bull", "round": 3, "revised_score": 7.2, "thesis": "final take"},
+        {"agent": "Bear", "round": 1, "score": 5.0, "key_risk": "valuation stretch"},
+        {"round": "synthesis"},  # no agent → ignored
+    ]}
+    dig = upload_kv._debate_digest(result)
+    by = {d["agent"]: d for d in dig}
+    assert by["Bull"]["score"] == 7.2 and by["Bull"]["argument"] == "final take"
+    assert by["Bear"]["argument"] == "valuation stretch"
+    assert all(len(d["argument"]) <= 223 for d in dig)   # clip cap
+    assert upload_kv._debate_digest({"transcript": []}) is None
+    assert upload_kv._debate_digest({}) is None
+
+
+def test_scout_card_carries_digest_but_boards_are_stripped():
+    result = {"consensus_score": 7.5,
+              "transcript": [{"agent": "Bull", "score": 8.0, "thesis": "t"}]}
+    card = upload_kv._scout_card("AAA", result)
+    assert card["debate_digest"][0]["agent"] == "Bull"
+    row = upload_kv._scout_history_row(card)
+    assert row["debate_digest"][0]["agent"] == "Bull"     # archived in Supabase
+    stripped = upload_kv._strip_digest([card])
+    assert "debate_digest" not in stripped[0]             # never ships to KV boards
+    assert upload_kv._strip_digest(None) is None
