@@ -102,6 +102,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
+          # behavior-gap section reads the real broker NAV series from the eye
+          DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
+          SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
         run: python signal_analysis.py --json output/scoreboard.json --digest-weekly
 
       - name: Upload results to Sovereign Eye

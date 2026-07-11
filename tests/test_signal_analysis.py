@@ -290,3 +290,84 @@ def test_scoreboard_regime_unstamped_for_old_rows():
     ], "scout")
     sb = sa.compute_scoreboard(signals, closes, vwra, [1], date(2026, 6, 30))
     assert sb["windows"][0]["buckets"]["regime"][0]["k"] == "unstamped"
+
+
+# ── behavior gap (2026-07-11) ─────────────────────────────────────────
+
+
+def test_twr_chain_matches_eye_fixture():
+    """SHARED FIXTURE with sovereign-eye tests/nav-broker.test.mjs: 100 → 210
+    with a 100 deposit on day 2 must be +10%, not +110%. Both implementations
+    must agree on this forever."""
+    twr = sa._twr_chain(["2026-07-01", "2026-07-02"], [100.0, 210.0],
+                        {"2026-07-02": 100.0})
+    assert twr == 10.0
+    assert sa._twr_chain(["a", "b"], [100.0, 105.0], {}) == 5.0
+    assert sa._twr_chain([], [], {}) is None
+
+
+def test_behavior_gap_paper_vs_real():
+    closes = {"WIN":  _series("2026-06-01", 40, 100, 2.0),
+              "LOSE": _series("2026-06-01", 40, 100, -1.0)}
+    vwra = _series("2026-06-01", 40, 200, 0.2)
+    signals = sa.parse_rows([
+        {"ticker": "WIN", "discovered_at": "2026-06-10T00:00:00+00:00",
+         "price": 118.0, "confirmed": True, "verdict": "CONFIRM", "factors": None},
+        {"ticker": "LOSE", "discovered_at": "2026-06-10T00:00:00+00:00",
+         "price": 91.0, "confirmed": True, "verdict": "CONFIRM", "factors": None},
+        {"ticker": "WIN", "discovered_at": "2026-06-12T00:00:00+00:00",
+         "price": 100.0, "confirmed": True, "verdict": "DOWNGRADE", "factors": None},
+    ], "scout")
+    real = {"dates": ["2026-06-09", "2026-06-15", "2026-06-30"],
+            "nav": [1000.0, 1150.0, 1150.0],   # +15% then flat, no flows
+            "flows": {}}
+    bg = sa.compute_behavior_gap(signals, closes, vwra, date(2026, 6, 30), real)
+    assert bg["since"] == "2026-06-10"
+    assert bg["paper"]["n"] == 2                       # DOWNGRADE excluded
+    assert bg["paper"]["hit"] == 0.5
+    assert bg["vwra_pct"] is not None
+    # real slice starts at 2026-06-15 (first date >= since... 06-09 < since)
+    assert bg["real_twr_pct"] == 0.0                   # 1150 → 1150
+    assert "no costs" in bg["note"]
+
+
+def test_behavior_gap_none_without_confirms():
+    signals = sa.parse_rows([
+        {"ticker": "AAA", "discovered_at": "2026-06-10T00:00:00+00:00",
+         "price": 100.0, "verdict": "DOWNGRADE", "factors": None},
+    ], "scout")
+    assert sa.compute_behavior_gap(signals, {}, _series("2026-06-01", 5, 200, 0.1),
+                                   date(2026, 6, 30), None) is None
+
+
+def test_behavior_gap_survives_missing_real():
+    closes = {"AAA": _series("2026-06-01", 40, 100, 1.0)}
+    vwra = _series("2026-06-01", 40, 200, 0.2)
+    signals = sa.parse_rows([
+        {"ticker": "AAA", "discovered_at": "2026-06-10T00:00:00+00:00",
+         "price": 109.0, "confirmed": True, "verdict": "CONFIRM", "factors": None},
+    ], "scout")
+    bg = sa.compute_behavior_gap(signals, closes, vwra, date(2026, 6, 30), real=None)
+    assert bg["real_twr_pct"] is None and bg["paper"]["n"] == 1
+
+
+def test_fetch_real_nav_requires_broker_source(monkeypatch):
+    class _Resp:
+        ok = True
+        def json(self):
+            return {"perf": {"source": "snapshots"}, "raw": {"dates": ["d"], "nav": [1]}}
+    monkeypatch.setenv("SOVEREIGN_EYE_URL", "https://eye.example")
+    monkeypatch.setenv("DD_UPLOAD_SECRET", "s")
+    monkeypatch.setattr(sa.requests, "get", lambda *a, **k: _Resp())
+    assert sa.fetch_real_nav() is None                 # quote-derived ≠ real account
+
+
+def test_render_report_includes_behavior_gap():
+    sb = {"as_of": "2026-06-30", "n_scout": 1, "n_gems": 0, "benchmark": "VWRA.L",
+          "note": "n", "versions": [], "windows": [],
+          "behavior_gap": {"since": "2026-06-10", "as_of": "2026-06-30",
+                           "paper": {"n": 2, "mean_return_pct": 12.4, "hit": 0.5,
+                                     "mean_excess_pct": 8.1},
+                           "vwra_pct": 4.3, "real_twr_pct": 21.7, "note": "x"}}
+    text = "\n".join(sa.render_report(sb))
+    assert "behavior gap" in text and "+12.4%" in text and "+21.7%" in text

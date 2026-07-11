@@ -298,6 +298,113 @@ def compute_scoreboard(signals: list[dict], closes: dict, vwra: pd.Series,
     }
 
 
+# ── Behavior gap (2026-07-11): signal quality vs execution behavior ───
+#
+# Decomposes "beat VWRA or abstain" into its two failure points: the paper
+# portfolio measures what the SIGNALS earned (every CONFIRM, equal weight,
+# buy-and-hold from signal price — no costs, no sizing, no timing); the real
+# broker TWR over the same window measures what the human+system actually
+# earned. The gap is directional, not precise — but its SIGN says whether
+# underperformance lives in signal quality or in behavior.
+
+
+def _twr_chain(dates: list, navs: list, flows: dict) -> float | None:
+    """Flow-adjusted TWR (%) — end-of-day flow convention, the same chain the
+    eye computes in nav-history.js (locked by a shared fixture both sides)."""
+    chain, prev = 1.0, None
+    for d, v in zip(dates, navs):
+        if v is None:
+            continue
+        if prev is not None and prev > 0:
+            chain *= (v - float(flows.get(d, 0.0))) / prev
+        prev = v
+    return round((chain - 1.0) * 100, 2) if prev is not None else None
+
+
+def fetch_real_nav() -> dict | None:
+    """Real broker NAV series from the eye ({dates, nav, flows}) or None.
+    Only broker-sourced series count — the quote-derived snapshot fallback is
+    not the real account."""
+    base = os.getenv("SOVEREIGN_EYE_URL", "").rstrip("/")
+    secret = os.getenv("DD_UPLOAD_SECRET", "")
+    if not base or not secret:
+        return None
+    try:
+        r = requests.get(f"{base}/api/nav-history",
+                         headers={"Authorization": f"Bearer {secret}"}, timeout=30)
+        if not r.ok:
+            return None
+        d = r.json() or {}
+        if (d.get("perf") or {}).get("source") != "broker":
+            return None
+        raw = d.get("raw") or {}
+        if not raw.get("dates") or not raw.get("nav"):
+            return None
+        flows = {f["date"]: float(f["amount"])
+                 for f in raw.get("flows") or [] if f.get("date")}
+        return {"dates": raw["dates"], "nav": raw["nav"], "flows": flows}
+    except Exception as e:
+        print(f"[analysis] real NAV fetch failed ({e}) — behavior gap omits real TWR")
+        return None
+
+
+def compute_behavior_gap(signals: list[dict], closes: dict, vwra: pd.Series,
+                         today: date, real: dict | None = None) -> dict | None:
+    """The 'behavior_gap' scoreboard section, or None (no CONFIRMs yet)."""
+    confirms = [s for s in signals if s["verdict"] == "CONFIRM"]
+    if not confirms:
+        return None
+    since = min(s["discovered"] for s in confirms)
+
+    rets, excesses = [], []
+    for s in confirms:
+        series = closes.get(s["ticker"])
+        entry = s["entry_price"]
+        if entry is None:
+            hit = close_near(series, s["discovered"])
+            entry = hit[1] if hit else None
+        exit_hit = close_near(series, today)
+        if not entry or entry <= 0 or exit_hit is None:
+            continue
+        ret = exit_hit[1] / entry - 1.0
+        rets.append(ret)
+        v_in, v_out = close_near(vwra, s["discovered"]), close_near(vwra, today)
+        if v_in and v_out and v_in[1] > 0:
+            excesses.append(ret - (v_out[1] / v_in[1] - 1.0))
+    if not rets:
+        return None
+
+    v_start, v_end = close_near(vwra, since), close_near(vwra, today)
+    vwra_pct = (round((v_end[1] / v_start[1] - 1.0) * 100, 2)
+                if v_start and v_end and v_start[1] > 0 else None)
+
+    real_twr = None
+    if real:
+        cutoff = str(since)
+        idx = [i for i, d in enumerate(real["dates"]) if str(d) >= cutoff]
+        if len(idx) >= 2:
+            real_twr = _twr_chain([real["dates"][i] for i in idx],
+                                  [real["nav"][i] for i in idx],
+                                  real.get("flows") or {})
+
+    return {
+        "since": str(since),
+        "as_of": str(today),
+        "paper": {
+            "n": len(rets),
+            "mean_return_pct": round(statistics.fmean(rets) * 100, 2),
+            "hit": round(sum(1 for r in rets if r > 0) / len(rets), 4),
+            "mean_excess_pct": (round(statistics.fmean(excesses) * 100, 2)
+                                if excesses else None),
+        },
+        "vwra_pct": vwra_pct,
+        "real_twr_pct": real_twr,
+        "note": ("paper = every CONFIRM equal-weight buy-and-hold at signal price, "
+                 "no costs/sizing/timing; real = broker TWR over the same window. "
+                 "Direction, not precision — small n."),
+    }
+
+
 # ── Report (text rendering of the scoreboard) ─────────────────────────
 
 
@@ -340,6 +447,22 @@ def render_report(sb: dict) -> list[str]:
         fmt = lambda e: f"{e['ticker']} {_pct(e['excess'])}"
         lines.append("  top:    " + " · ".join(fmt(e) for e in win["top"]))
         lines.append("  bottom: " + " · ".join(fmt(e) for e in win["bottom"]))
+
+    bg = sb.get("behavior_gap")
+    if bg:
+        p = bg["paper"]
+        lines += [
+            "", f"── behavior gap (since {bg['since']}) ──",
+            f"  paper ({p['n']} CONFIRMs, eq-weight, buy&hold): {p['mean_return_pct']:+.1f}%"
+            + (f" · excess {p['mean_excess_pct']:+.1f}%" if p["mean_excess_pct"] is not None else "")
+            + f" · hit {p['hit'] * 100:.0f}%",
+            "  VWRA same window: "
+            + (f"{bg['vwra_pct']:+.1f}%" if bg["vwra_pct"] is not None else "n/a"),
+            "  real account TWR: "
+            + (f"{bg['real_twr_pct']:+.1f}%" if bg["real_twr_pct"] is not None
+               else "n/a (no broker NAV series)"),
+            f"  note: {bg['note']}",
+        ]
     return lines
 
 
@@ -431,6 +554,9 @@ def main() -> int:
               + (" …" if len(missing) > 10 else ""))
 
     sb = compute_scoreboard(signals, closes, vwra, windows, today)
+    bg = compute_behavior_gap(signals, closes, vwra, today, real=fetch_real_nav())
+    if bg:
+        sb["behavior_gap"] = bg
     report = render_report(sb)
     print("\n".join(report))
 
