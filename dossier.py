@@ -1032,6 +1032,22 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     av_pb          = _safe_float(av_overview_raw.get("PriceToBookRatio"))
     av_trailing_pe = _safe_float(av_overview_raw.get("PERatio"))
 
+    # Slim AV OVERVIEW block for the dossier (2026-07-11 audit: ~50 fields
+    # fetched per run, 3 used, the rest dropped). Display/context only —
+    # feeds the dashboard Evidence tab and the debate's raw dump; not scoring.
+    dossier["av_overview"] = {
+        "analyst_target_price": _safe_float(av_overview_raw.get("AnalystTargetPrice")),
+        "peg_ratio":            _safe_float(av_overview_raw.get("PEGRatio")),
+        "dividend_yield":       _safe_float(av_overview_raw.get("DividendYield")),
+        "roe_ttm":              _safe_float(av_overview_raw.get("ReturnOnEquityTTM")),
+        "roa_ttm":              _safe_float(av_overview_raw.get("ReturnOnAssetsTTM")),
+        "profit_margin":        _safe_float(av_overview_raw.get("ProfitMargin")),
+        "quarterly_earnings_growth_yoy": _safe_float(av_overview_raw.get("QuarterlyEarningsGrowthYOY")),
+        "quarterly_revenue_growth_yoy":  _safe_float(av_overview_raw.get("QuarterlyRevenueGrowthYOY")),
+        "ev_to_ebitda":         _safe_float(av_overview_raw.get("EVToEBITDA")),
+        "beta":                 _safe_float(av_overview_raw.get("Beta")),
+    } if av_overview_raw else {}
+
     _pe_trailing = yf_r.get("pe") or av_trailing_pe
     _pe_forward_raw = yf_r.get("fwd_pe")
 
