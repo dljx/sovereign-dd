@@ -7,6 +7,11 @@ in the payload fully replaces that broker's rows server-side; a broker whose
 fetch fails is simply OMITTED (its existing rows stay untouched) and an ops
 alert names it.
 
+Also syncs daily NAV history + cash flows + income (dividends/fees) to
+/api/dd/nav-broker: Tiger via get_analytics_asset (USD, NLV-guarded), IBKR via
+the sovereign-nav Flex query (SGD base → USD via yfinance FX). NAV failures
+alert but never block the positions sync.
+
 READ-ONLY CONTRACT
   - IBKR: the Flex token can only download statements — it structurally cannot
     trade. Data reflects the last statement generation (EOD).
@@ -153,8 +158,8 @@ def _parse_flex(xml_text: str) -> dict:
 
 # ── Tiger: OpenAPI (query methods ONLY — see module docstring) ────────────────
 
-def fetch_tiger() -> dict | None:
-    """{rows, cash, unmapped} or None (skip broker)."""
+def _tiger_config():
+    """TigerOpenClientConfig from env, or None if unconfigured/SDK missing."""
     tiger_id = os.getenv("TIGER_ID", "").strip()
     account = os.getenv("TIGER_ACCOUNT", "").strip()
     private_key = os.getenv("TIGER_PRIVATE_KEY", "").strip()
@@ -163,15 +168,23 @@ def fetch_tiger() -> dict | None:
         return None
     try:
         from tigeropen.tiger_open_config import TigerOpenClientConfig
-        from tigeropen.trade.trade_client import TradeClient
     except ImportError:
         print("  [sync] Tiger: tigeropen SDK not installed — skipping")
         return None
+    cfg = TigerOpenClientConfig()
+    cfg.tiger_id = tiger_id
+    cfg.account = account
+    cfg.private_key = private_key
+    return cfg
+
+
+def fetch_tiger() -> dict | None:
+    """{rows, cash, unmapped} or None (skip broker)."""
+    cfg = _tiger_config()
+    if cfg is None:
+        return None
     try:
-        cfg = TigerOpenClientConfig()
-        cfg.tiger_id = tiger_id
-        cfg.account = account
-        cfg.private_key = private_key
+        from tigeropen.trade.trade_client import TradeClient
         client = TradeClient(cfg)
         return _map_tiger(client.get_positions(), client.get_assets())
     except Exception as e:
@@ -206,6 +219,259 @@ def _map_tiger(positions, assets) -> dict:
                 pass
             break
     return {"rows": rows, "cash": cash, "unmapped": unmapped}
+
+
+# ── NAV history: Tiger analytics + IBKR Flex NAV query (2026-07-11) ───────────
+#
+# Probe-confirmed shapes: Tiger get_analytics_asset history carries
+# asset/cash_balance/deposit/withdrawal/dt per CALENDAR day; the IBKR
+# sovereign-nav Flex query reports EquitySummaryByReportDateInBase (daily NAV),
+# ChangeInNAV (period summary incl. TWR) and CashTransaction line items — all
+# in the account BASE currency, which for this account is SGD. Everything is
+# converted to USD before push; when conversion can't be resolved we refuse
+# the broker rather than ship base-as-USD.
+
+_NAV_NLV_TOLERANCE = 0.15  # currency-mixup guard: SGD-as-USD is a ~28% error
+
+
+def _analytics_to_nav(hist: list, live_nlv: float | None) -> dict | None:
+    """Map Tiger analytics history → {navs, flows, income}. Refuses when the
+    last point disagrees with the live USD NLV by >15% — that's a wrong-
+    currency series (SGDUSD ≈ 0.78), not market movement."""
+    navs, flows = [], []
+    for h in hist:
+        if not isinstance(h, dict):
+            continue
+        dt, asset = h.get("dt"), h.get("asset")
+        if not dt or asset is None:
+            continue
+        navs.append({"date": dt, "nav": round(float(asset), 2)})
+        flow = float(h.get("deposit") or 0) - float(h.get("withdrawal") or 0)
+        if flow:
+            flows.append({"date": dt, "amount": round(flow, 2)})
+    if not navs:
+        return None
+    if live_nlv:
+        last = navs[-1]["nav"]
+        if last and abs(last / live_nlv - 1) > _NAV_NLV_TOLERANCE:
+            print(f"  [sync] Tiger NAV: last analytics point {last:.2f} vs live NLV "
+                  f"{live_nlv:.2f} differ >{_NAV_NLV_TOLERANCE:.0%} — likely a "
+                  f"non-USD series; refusing")
+            return None
+    return {"navs": navs, "flows": flows, "income": [], "twr": None}
+
+
+def fetch_tiger_nav() -> dict | None:
+    """{navs, flows, income, twr} in USD, or None (skip broker)."""
+    cfg = _tiger_config()
+    if cfg is None:
+        return None
+    try:
+        from datetime import date, timedelta
+
+        from tigeropen.common.consts import Currency
+        from tigeropen.trade.trade_client import TradeClient
+        client = TradeClient(cfg)
+        today = date.today()
+
+        def _hist(**kw):
+            r = client.get_analytics_asset(end_date=str(today), **kw)
+            return (r.get("history") or []) if isinstance(r, dict) else []
+
+        hist = []
+        try:  # deep backfill, explicitly USD (account base may differ)
+            hist = _hist(start_date="2021-01-01", currency=Currency.USD)
+        except Exception as e:
+            print(f"  [sync] Tiger NAV: USD analytics call failed ({e}) — "
+                  f"retrying account default")
+        if not hist:
+            hist = _hist(start_date="2021-01-01")
+        if not hist:
+            hist = _hist(start_date=str(today - timedelta(days=365)))
+        if not hist:
+            print("  [sync] Tiger NAV: analytics returned no history — skipping")
+            return None
+
+        nlv = None  # live USD NLV for the currency-mixup guard
+        try:
+            for a in client.get_assets() or []:
+                v = getattr(getattr(a, "summary", None), "net_liquidation", None)
+                if v:
+                    nlv = float(v)
+                    break
+        except Exception as e:
+            print(f"  [sync] Tiger NAV: NLV cross-check unavailable ({e})")
+        return _analytics_to_nav(hist, nlv)
+    except Exception as e:
+        print(f"  [sync] Tiger NAV fetch failed: {e}")
+        return None
+
+
+def _parse_flex_nav(xml_text: str) -> dict | None:
+    """sovereign-nav Flex statement → {navs, flows, income, twr, base_currency}
+    in the account BASE currency (fetch_ibkr_nav converts to USD)."""
+    root = ET.fromstring(xml_text)
+
+    def _iso(d: str) -> str:  # '20250710' → '2025-07-10'
+        d = (d or "").strip()
+        return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) >= 8 and d[:8].isdigit() else d
+
+    base_ccy, navs = None, []
+    for el in root.iter("EquitySummaryByReportDateInBase"):
+        base_ccy = base_ccy or (el.get("currency") or "").upper()
+        date, total = _iso(el.get("reportDate")), el.get("total")
+        if date and total:
+            try:
+                navs.append({"date": date, "nav": float(total)})
+            except ValueError:
+                pass
+
+    flows, income = [], []
+    for el in root.iter("CashTransaction"):
+        ttype = (el.get("type") or "").strip()
+        date = _iso(el.get("reportDate") or el.get("dateTime")
+                    or el.get("settleDate") or "")
+        if not ttype or not date:
+            continue
+        try:  # amount × fxRateToBase = base-currency amount
+            amount = round(float(el.get("amount") or 0)
+                           * float(el.get("fxRateToBase") or 1), 2)
+        except ValueError:
+            continue
+        if "deposit" in ttype.lower() or "withdrawal" in ttype.lower():
+            flows.append({"date": date, "amount": amount})
+        else:
+            income.append({"date": date, "amount": amount, "type": ttype,
+                           "ticker": (el.get("symbol") or "").strip()})
+
+    change = next(root.iter("ChangeInNAV"), None)
+    twr = None
+    if change is not None:
+        base_ccy = base_ccy or (change.get("currency") or "").upper()
+        try:
+            twr = float(change.get("twr"))
+        except (TypeError, ValueError):
+            pass
+
+    # Structural guard (same philosophy as _parse_flex): a statement with NONE
+    # of the expected sections is a misconfigured query, not empty data.
+    if not navs and change is None:
+        return None
+    return {"navs": navs, "flows": flows, "income": income, "twr": twr,
+            "base_currency": base_ccy or ""}
+
+
+def _fx_closes(pair: str) -> dict:
+    """date→close series from yfinance (e.g. 'SGDUSD=X'); {} on failure."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(pair).history(period="5y")
+        return {i.strftime("%Y-%m-%d"): float(c)
+                for i, c in hist["Close"].items() if c}
+    except Exception as e:
+        print(f"  [sync] FX series {pair} failed: {e}")
+        return {}
+
+
+def _to_usd(parsed: dict, rates: dict) -> dict | None:
+    """Convert a base-currency NAV bundle to USD with a date→rate map
+    (forward-filled to the nearest prior trading day). None when any date has
+    no resolvable rate — never ship base-as-USD."""
+    from bisect import bisect_right
+    dates = sorted(rates)
+    if not dates:
+        return None
+
+    def rate_at(d: str) -> float | None:
+        i = bisect_right(dates, d)
+        return rates[dates[i - 1]] if i else None
+
+    out = {"navs": [], "flows": [], "income": [], "twr": parsed.get("twr")}
+    for key in ("navs", "flows", "income"):
+        field = "nav" if key == "navs" else "amount"
+        for row in parsed.get(key) or []:
+            r = rate_at(row["date"])
+            if r is None:
+                print(f"  [sync] NAV: no FX rate at/before {row['date']} — "
+                      f"refusing conversion")
+                return None
+            out[key].append({**row, field: round(row[field] * r, 2)})
+    return out
+
+
+def fetch_ibkr_nav() -> dict | None:
+    """{navs, flows, income, twr} in USD, or None (skip broker)."""
+    token = os.getenv("IBKR_FLEX_TOKEN", "").strip()
+    qid = os.getenv("IBKR_FLEX_QUERY_ID_NAV", "").strip()
+    if not token or not qid:
+        print("  [sync] IBKR NAV: no Flex token/NAV query configured — skipping")
+        return None
+    try:
+        xml_text = _flex_download(token, qid)
+        if xml_text is None:
+            return None
+        parsed = _parse_flex_nav(xml_text)
+        if parsed is None:
+            print("  [sync] IBKR NAV: statement has no NAV sections — "
+                  "query misconfigured; refusing")
+            return None
+        ccy = parsed.get("base_currency") or ""
+        if ccy == "USD":
+            return {k: parsed[k] for k in ("navs", "flows", "income", "twr")}
+        out = _to_usd(parsed, _fx_closes(f"{ccy}USD=X"))
+        if out is None:
+            print(f"  [sync] IBKR NAV: cannot convert {ccy}→USD — skipping")
+        return out
+    except Exception as e:
+        print(f"  [sync] IBKR NAV fetch failed: {e}")
+        return None
+
+
+def sync_nav(dry: bool) -> list:
+    """Fetch + push both brokers' NAV histories. Returns failure labels —
+    a broker whose creds exist but whose fetch/push failed (positions sync is
+    never blocked by NAV problems; failures surface via ops alert)."""
+    failures = []
+    brokers = {}
+    for name, fetcher, configured in (
+        ("IBKR", fetch_ibkr_nav,
+         bool(os.getenv("IBKR_FLEX_TOKEN", "").strip()
+              and os.getenv("IBKR_FLEX_QUERY_ID_NAV", "").strip())),
+        ("Tiger", fetch_tiger_nav, bool(os.getenv("TIGER_ID", "").strip())),
+    ):
+        d = fetcher()
+        if d is not None:
+            brokers[name] = d
+            print(f"  [sync] {name} NAV: {len(d['navs'])} day(s), "
+                  f"{len(d['flows'])} flow(s), {len(d['income'])} income row(s)"
+                  + (f" · TWR {d['twr']:.2f}%" if d.get("twr") is not None else ""))
+        elif configured:
+            failures.append(name)
+
+    if not brokers:
+        return failures
+    if dry:
+        print("  [sync] DRY RUN — NAV payload not pushed")
+        return failures
+
+    base = os.getenv("SOVEREIGN_EYE_URL", "").rstrip("/")
+    secret = os.getenv("DD_UPLOAD_SECRET", "")
+    if not base or not secret:
+        return failures + ["push (no eye URL/secret)"]
+    try:
+        r = requests.post(f"{base}/api/dd/nav-broker",
+                          headers={"Authorization": f"Bearer {secret}",
+                                   "Content-Type": "application/json"},
+                          json={"brokers": brokers}, timeout=30)
+        if not r.ok:
+            print(f"  [sync] NAV push failed: HTTP {r.status_code} {r.text[:200]}")
+            failures.append("push")
+        else:
+            print(f"  [sync] NAV pushed: {r.json()}")
+    except Exception as e:
+        print(f"  [sync] NAV push failed: {e}")
+        failures.append("push")
+    return failures
 
 
 # ── Probe mode: read-only capability diagnostics (prints only, no POSTs) ──────
@@ -422,6 +688,7 @@ def run() -> int:
         import json as _json
         print("  [sync] DRY RUN — payload below, nothing pushed")
         print(_json.dumps(payload, indent=2))
+        sync_nav(dry=True)
         return 0
 
     resp = push_payload(payload)
@@ -431,6 +698,8 @@ def run() -> int:
           f"-{len(resp.get('removed', []))} ~{len(resp.get('updated', []))} "
           f"· {resp.get('total')} row(s) total")
 
+    nav_failures = sync_nav(dry=False)
+
     try:
         from notify import alert_portfolio_sync, alert_ops
         alert_portfolio_sync(resp, cash, failed_brokers, unmapped)
@@ -438,6 +707,9 @@ def run() -> int:
             alert_ops(f"Broker sync: {', '.join(failed_brokers)} unavailable this run — "
                       f"its rows were left untouched. One-off is fine; repeated runs "
                       f"mean credentials/API changed.")
+        if nav_failures:
+            alert_ops(f"NAV sync: {', '.join(nav_failures)} failed this run — "
+                      f"nav:broker data is stale/incomplete until the next sync.")
     except Exception as e:
         print(f"  [sync] telegram skipped ({e})")
     return 0

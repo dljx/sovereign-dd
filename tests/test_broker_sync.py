@@ -236,3 +236,146 @@ def test_probe_without_credentials_never_pushes(monkeypatch, capsys):
     assert broker_sync.probe() == 0
     out = capsys.readouterr().out
     assert "read-only" in out and "not configured" in out
+
+
+# ── NAV history sync (2026-07-11): parse, convert, guard ────────────────────────
+
+_FLEX_NAV_XML = """<FlexQueryResponse queryName="sovereign-nav" type="AF">
+ <FlexStatements count="1">
+  <FlexStatement accountId="U1" fromDate="2025-07-11" toDate="2026-07-10">
+   <EquitySummaryInBase>
+    <EquitySummaryByReportDateInBase currency="SGD" reportDate="20260709"
+      cash="3942.21" total="88000.50" />
+    <EquitySummaryByReportDateInBase currency="SGD" reportDate="20260710"
+      cash="3942.21" total="88500.00" />
+    <EquitySummaryByReportDateInBase currency="SGD" reportDate="20260711"
+      cash="3942.21" total="notanumber" />
+   </EquitySummaryInBase>
+   <ChangeInNAV accountId="U1" currency="SGD" fromDate="20250711"
+     toDate="20260710" startingValue="46543.09" endingValue="88500.00"
+     depositsWithdrawals="36250" twr="18.42" />
+   <CashTransactions>
+    <CashTransaction currency="USD" fxRateToBase="1.2806" symbol="GOOG"
+      type="Dividends" reportDate="20260620" amount="10.00" />
+    <CashTransaction currency="USD" fxRateToBase="1.2806" symbol="GOOG"
+      type="Withholding Tax" reportDate="20260620" amount="-3.00" />
+    <CashTransaction currency="SGD" fxRateToBase="1" symbol=""
+      type="Deposits/Withdrawals" reportDate="20260601" amount="5000" />
+   </CashTransactions>
+  </FlexStatement>
+ </FlexStatements>
+</FlexQueryResponse>"""
+
+
+def test_parse_flex_nav_sections():
+    out = broker_sync._parse_flex_nav(_FLEX_NAV_XML)
+    assert out["base_currency"] == "SGD"
+    assert out["twr"] == 18.42
+    # unparseable total row dropped, dates normalized to ISO
+    assert out["navs"] == [{"date": "2026-07-09", "nav": 88000.50},
+                           {"date": "2026-07-10", "nav": 88500.00}]
+    # cash transactions split: deposits → flows, the rest → income (in base ccy)
+    assert out["flows"] == [{"date": "2026-06-01", "amount": 5000.0}]
+    by_type = {r["type"]: r for r in out["income"]}
+    assert by_type["Dividends"]["amount"] == 12.81      # 10.00 × 1.2806
+    assert by_type["Dividends"]["ticker"] == "GOOG"
+    assert by_type["Withholding Tax"]["amount"] == -3.84
+
+
+def test_parse_flex_nav_refuses_sectionless_statement():
+    """No NAV sections at all → misconfigured query, not empty data."""
+    xml = """<FlexQueryResponse queryName="wrong" type="AF">
+     <FlexStatements count="1"><FlexStatement accountId="U1">
+      <OpenPositions></OpenPositions>
+     </FlexStatement></FlexStatements></FlexQueryResponse>"""
+    assert broker_sync._parse_flex_nav(xml) is None
+
+
+def test_to_usd_forward_fills_weekends():
+    parsed = {"navs": [{"date": "2026-07-04", "nav": 1000.0},   # Saturday
+                       {"date": "2026-07-06", "nav": 1010.0}],
+              "flows": [{"date": "2026-07-06", "amount": 100.0}],
+              "income": [], "twr": 5.0}
+    rates = {"2026-07-03": 0.78, "2026-07-06": 0.80}
+    out = broker_sync._to_usd(parsed, rates)
+    assert out["navs"][0]["nav"] == 780.0    # Sat uses Friday's rate
+    assert out["navs"][1]["nav"] == 808.0
+    assert out["flows"][0]["amount"] == 80.0
+    assert out["twr"] == 5.0                 # percent is currency-invariant
+
+
+def test_to_usd_refuses_unresolvable_rate():
+    parsed = {"navs": [{"date": "2026-01-01", "nav": 1000.0}],
+              "flows": [], "income": [], "twr": None}
+    assert broker_sync._to_usd(parsed, {"2026-06-01": 0.78}) is None
+    assert broker_sync._to_usd(parsed, {}) is None
+
+
+def test_analytics_to_nav_maps_days_and_flows():
+    hist = [
+        {"dt": "2026-07-08", "asset": 65000.0, "deposit": 0.0, "withdrawal": 0.0},
+        {"dt": "2026-07-09", "asset": 65703.57, "deposit": 500.0, "withdrawal": 100.0},
+        {"asset": 999.0},          # undated → dropped
+        "garbage",                 # non-dict → dropped
+    ]
+    out = broker_sync._analytics_to_nav(hist, live_nlv=65800.0)
+    assert out["navs"] == [{"date": "2026-07-08", "nav": 65000.0},
+                           {"date": "2026-07-09", "nav": 65703.57}]
+    assert out["flows"] == [{"date": "2026-07-09", "amount": 400.0}]
+
+
+def test_analytics_to_nav_refuses_currency_mismatch():
+    """Last point 65703 vs live USD NLV 51000 ≈ SGDUSD — wrong currency, refuse."""
+    hist = [{"dt": "2026-07-09", "asset": 65703.57}]
+    assert broker_sync._analytics_to_nav(hist, live_nlv=51000.0) is None
+
+
+def test_analytics_to_nav_tolerates_missing_nlv():
+    hist = [{"dt": "2026-07-09", "asset": 65703.57}]
+    assert broker_sync._analytics_to_nav(hist, live_nlv=None) is not None
+
+
+def test_sync_nav_dry_never_posts(monkeypatch):
+    posted = []
+    monkeypatch.setattr(broker_sync.requests, "post",
+                        lambda *a, **k: posted.append(a) or None)
+    monkeypatch.setattr(broker_sync, "fetch_ibkr_nav",
+                        lambda: {"navs": [{"date": "2026-07-10", "nav": 1.0}],
+                                 "flows": [], "income": [], "twr": None})
+    monkeypatch.setattr(broker_sync, "fetch_tiger_nav", lambda: None)
+    monkeypatch.delenv("TIGER_ID", raising=False)
+    assert broker_sync.sync_nav(dry=True) == []
+    assert posted == []
+
+
+def test_sync_nav_posts_broker_scoped_payload(monkeypatch):
+    calls = {}
+
+    class _Resp:
+        ok = True
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls["url"], calls["json"] = url, json
+        return _Resp()
+
+    monkeypatch.setattr(broker_sync.requests, "post", fake_post)
+    monkeypatch.setenv("SOVEREIGN_EYE_URL", "https://eye.example")
+    monkeypatch.setenv("DD_UPLOAD_SECRET", "s3cret")
+    monkeypatch.delenv("TIGER_ID", raising=False)
+    nav = {"navs": [{"date": "2026-07-10", "nav": 1.0}], "flows": [], "income": [], "twr": 2.0}
+    monkeypatch.setattr(broker_sync, "fetch_ibkr_nav", lambda: nav)
+    monkeypatch.setattr(broker_sync, "fetch_tiger_nav", lambda: None)
+    assert broker_sync.sync_nav(dry=False) == []
+    assert calls["url"].endswith("/api/dd/nav-broker")
+    assert calls["json"] == {"brokers": {"IBKR": nav}}
+
+
+def test_sync_nav_reports_configured_broker_failure(monkeypatch):
+    """Tiger creds exist but the fetch fails → named in failures (ops alert)."""
+    monkeypatch.setenv("TIGER_ID", "t123")
+    monkeypatch.delenv("IBKR_FLEX_TOKEN", raising=False)
+    monkeypatch.setattr(broker_sync, "fetch_ibkr_nav", lambda: None)
+    monkeypatch.setattr(broker_sync, "fetch_tiger_nav", lambda: None)
+    assert broker_sync.sync_nav(dry=False) == ["Tiger"]
