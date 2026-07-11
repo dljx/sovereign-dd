@@ -164,6 +164,27 @@ def alert_portfolio_sync(resp: dict, cash: dict, failed_brokers: list[str],
     return _split_send("\n".join(lines), TOPIC_SCAN_RESULTS)
 
 
+def alert_thesis_break(items: list[dict]) -> bool:
+    """A registered owning thesis just BROKE → Trade Alerts topic (the one
+    alert that must not be missed). Fires only on the TRANSITION into BROKEN,
+    once per break — see thesis_check.broken_transitions. The system does not
+    trade: this is the signal to re-underwrite or exit deliberately."""
+    if not items:
+        return False
+    lines = ["🔴 <b>THESIS BROKEN</b> — re-underwrite now", ""]
+    for it in items:
+        adh = it.get("adherence")
+        lines.append(f"<b>{it['ticker']}</b>"
+                     + (f" · adherence {adh:.0f}/10" if adh is not None else ""))
+        if it.get("reason"):
+            lines.append(f"  {it['reason']}")
+        if it.get("thesis"):
+            lines.append(f"  <i>Registered thesis: {str(it['thesis'])[:200]}</i>")
+        lines.append("")
+    lines.append("The system does not sell — decide deliberately, don't drift.")
+    return _split_send("\n".join(lines), TOPIC_TRADE_ALERTS)
+
+
 def alert_fire_review(rows: list[dict]) -> bool:
     """Quarterly FIRE-assumption checkup result → Scan Results topic.
 

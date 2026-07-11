@@ -188,6 +188,8 @@ async def _run_batch(tickers: list[str], save: bool = False):
 
 async def _run_portfolio(save: bool = False, notify: bool = False):
     from cleaner import clean_ticker_batch
+    from thesis_check import (broken_transitions, build_checks, check_thesis,
+                              fetch_registry, push_checks, seed_check)
     tickers = _portfolio_tickers()
     console.rule(
         f"[bold blue]Sovereign DD — Portfolio scan "
@@ -202,6 +204,11 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
     if portfolio_meta:
         console.print(f"[dim]Cleaner resolved metadata for: {', '.join(portfolio_meta.keys())}[/dim]")
 
+    # Thesis registry (anti-drift pass): None = registry unreachable → checks
+    # are skipped wholesale this run (never seed or alert blind).
+    registry = fetch_registry()
+    outcomes: dict = {}
+
     sem = asyncio.Semaphore(3)
 
     async def _analyze_one(ticker: str) -> dict:
@@ -212,11 +219,25 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
                 # Portfolio screen is by definition reviewing current holdings —
                 # frame the debate as hold-vs-trim-vs-exit, not as a fresh entry.
                 result  = await run_debate(ticker, dossier, verbose=True, is_holding=True)
+                if registry is not None:
+                    # Attached BEFORE save so the check rides full_result into
+                    # dd_history + dd:<TICKER> KV. Seeds skip the LLM (today's
+                    # thesis vs today's evidence is a tautology).
+                    reg = registry.get(ticker) or {}
+                    result["thesis_check"] = (
+                        await check_thesis(ticker, reg, result, dossier)
+                        if reg.get("thesis") else seed_check(result)
+                    )
+                    tc = result["thesis_check"]
+                    console.print(f"[dim]  [thesis] {ticker}: {tc['status']}"
+                                  + (f" — {tc['reason']}" if tc["status"] not in ("INTACT",) else "")
+                                  + "[/dim]")
                 console.rule(f"[bold]{ticker} FINAL REPORT[/bold]")
                 render(result, dossier)
                 if save:
                     out_path = _save_result(ticker, result, dossier)
                     console.print(f"[dim]Saved to {out_path}[/dim]")
+                outcomes[ticker] = (result, dossier)
                 return {
                     "ticker": ticker,
                     "score":  result.get("consensus_score", 0),
@@ -227,6 +248,17 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
                 return {"ticker": ticker, "score": 0, "grade": "ERROR"}
 
     summaries = list(await asyncio.gather(*[_analyze_one(t) for t in tickers]))
+
+    if registry is not None and outcomes:
+        checks = build_checks(outcomes)
+        push_checks(checks, held=tickers)
+        broken = broken_transitions(registry, checks)
+        if broken:
+            # Alert on the TRANSITION into BROKEN only (once per break, not
+            # daily). alert_thesis_break no-ops without Telegram env, so this
+            # is safe on local runs.
+            from notify import alert_thesis_break
+            alert_thesis_break(broken)
 
     if notify and summaries:
         from notify import alert_portfolio_summary
