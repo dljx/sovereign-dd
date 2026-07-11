@@ -20,6 +20,18 @@ MAX_LOOPS = 3
 from grading import grade as _grade, grade_hold as _grade_hold, BUY_THRESHOLD
 
 
+def _safe_score(value, fallback: float) -> float:
+    """Coerce an agent-emitted score defensively. `.get(key, default)` only
+    guards a MISSING key — a present-but-null revised_score made float(None)
+    raise, which killed the whole ticker's analysis AND wrote it to history as
+    FAILED with a cooldown (2026-07-11 audit): a legitimate BUY lost, not just
+    degraded. Falls back to the agent's prior score, clamped to 0-10."""
+    try:
+        return max(0.0, min(10.0, float(value)))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _live_scores(scores: dict, results: dict) -> dict:
     """Return only the scores of agents that produced a real result.
 
@@ -156,7 +168,7 @@ async def _r3_emit(
     """Wraps _r3_agent â€" emits R3_DELTA live event as soon as this agent completes."""
     pair = await _r3_agent(agent, ticker, scores, r2_results, all_r2, loop)
     prev    = scores.get(pair[0], 5.0)
-    revised = float(pair[1].get("revised_score", prev))
+    revised = _safe_score(pair[1].get("revised_score", prev), prev)
     delta   = round(revised - prev, 2)
     await emit_live(ticker, {
         "type": "R3_DELTA",
@@ -304,12 +316,13 @@ async def run(ticker: str, dossier: dict, verbose: bool = True, max_loops: int |
             for agent in AGENTS:
                 r       = r3_results[agent]
                 prev    = scores[agent]
-                revised = float(r.get("revised_score", prev))
+                revised = _safe_score(r.get("revised_score", prev), prev)
                 delta   = revised - prev
                 arrow   = "^" if delta > 0 else ("v" if delta < 0 else "-")
                 print(f"    {agent:<14} -> {prev} {arrow} {revised}  (D {delta:+.1f})")
 
-        scores     = {a: float(r3_results[a].get("revised_score", scores[a])) for a in AGENTS}
+        scores     = {a: _safe_score(r3_results[a].get("revised_score", scores[a]), scores[a])
+                      for a in AGENTS}
 
         # Collect per-agent score breakdowns from R3 (overwrite each loop)
         agent_breakdowns = {

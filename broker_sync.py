@@ -560,7 +560,13 @@ def sync_nav(dry: bool) -> list:
         ("IBKR", fetch_ibkr_nav,
          bool(os.getenv("IBKR_FLEX_TOKEN", "").strip()
               and os.getenv("IBKR_FLEX_QUERY_ID_NAV", "").strip())),
-        ("Tiger", fetch_tiger_nav, bool(os.getenv("TIGER_ID", "").strip())),
+        # Same three-var predicate as _tiger_config — TIGER_ID alone read as
+        # "configured", so partial creds paged a false Tiger-NAV failure every
+        # run (2026-07-11 audit).
+        ("Tiger", fetch_tiger_nav,
+         bool(os.getenv("TIGER_ID", "").strip()
+              and os.getenv("TIGER_ACCOUNT", "").strip()
+              and os.getenv("TIGER_PRIVATE_KEY", "").strip())),
     ):
         d = fetcher()
         if d is not None:

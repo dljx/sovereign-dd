@@ -227,8 +227,11 @@ def _earnings_in_days(dossier: dict) -> int | None:
     try:
         upcoming = (dossier.get("earnings_calendar") or {}).get("upcoming") or []
         d = (upcoming[0] or {}).get("date")
-        days = (datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                - datetime.now(timezone.utc)).days
+        # Date-vs-date, not datetime-vs-midnight: anchoring the target at 00:00
+        # UTC made "earnings today" read −1 (chip missing on the day it matters
+        # most) and shifted every stamp by one (2026-07-11 audit).
+        days = (datetime.strptime(d, "%Y-%m-%d").date()
+                - datetime.now(timezone.utc).date()).days
         return days if 0 <= days <= 14 else None
     except Exception:
         return None

@@ -96,7 +96,10 @@ def _fh(path: str, params: dict = None) -> dict | list:
             r = requests.get(f"{FH}{path}", params=p, timeout=15)
         return r.json() if r.ok else {}
     except requests.exceptions.RequestException as e:
-        print(f"  [dossier] Finnhub {path} failed: {e}")
+        # Exception type only — connection-error strings embed the full URL
+        # incl. the key-bearing query params, which is cleartext in local logs
+        # (GitHub Actions masks registered secrets; local .env runs don't).
+        print(f"  [dossier] Finnhub {path} failed: {type(e).__name__}")
         return {}
 
 
@@ -172,7 +175,8 @@ def _av(function: str, params: dict = None) -> dict:
         r = requests.get("https://www.alphavantage.co/query", params=p, timeout=15)
         return r.json() if r.ok else {}
     except requests.exceptions.RequestException as e:
-        print(f"  [dossier] AlphaVantage {function} failed: {e}")
+        # Type only — see _fh: the exception string can carry the apikey URL.
+        print(f"  [dossier] AlphaVantage {function} failed: {type(e).__name__}")
         return {}
 
 
@@ -229,7 +233,8 @@ def _fmp_estimates(ticker: str) -> dict:
             result["fwd_eps_growth"] = round((ntm_eps - prior_eps) / abs(prior_eps), 4)
         return result
     except Exception as e:
-        print(f"  [dossier] FMP estimates {ticker} failed: {e}")
+        # Type only — the exception string can carry the apikey-bearing URL.
+        print(f"  [dossier] FMP estimates {ticker} failed: {type(e).__name__}")
         return {}
 
 
@@ -412,7 +417,12 @@ def _technicals(ticker: str) -> dict:
             **momentum,
         }
     except Exception as e:
-        return {"error": str(e)}
+        # Return {} not {"error": ...}: cached() stores any truthy result, so an
+        # error dict from one transient blip was served for the full 1h TTL and
+        # every debate in that window scored the name blind on technicals
+        # (2026-07-11 audit). {} stays uncached → the next run retries.
+        print(f"  [technicals] {ticker} failed: {type(e).__name__}: {e}")
+        return {}
 
 
 def _yf_financials(ticker: str) -> dict:

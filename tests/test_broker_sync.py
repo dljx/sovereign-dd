@@ -374,7 +374,11 @@ def test_sync_nav_posts_broker_scoped_payload(monkeypatch):
 
 def test_sync_nav_reports_configured_broker_failure(monkeypatch):
     """Tiger creds exist but the fetch fails → named in failures (ops alert)."""
+    # Fully configured (all three vars — the predicate matches _tiger_config
+    # since the 2026-07-11 audit fix; TIGER_ID alone means NOT configured)
     monkeypatch.setenv("TIGER_ID", "t123")
+    monkeypatch.setenv("TIGER_ACCOUNT", "a1")
+    monkeypatch.setenv("TIGER_PRIVATE_KEY", "k1")
     monkeypatch.delenv("IBKR_FLEX_TOKEN", raising=False)
     monkeypatch.setattr(broker_sync, "fetch_ibkr_nav", lambda: None)
     monkeypatch.setattr(broker_sync, "fetch_tiger_nav", lambda: None)

@@ -10,6 +10,21 @@ from text_utils import clip
 
 load_dotenv()
 
+def _esc(s) -> str:
+    """HTML-escape free text before it enters a parse_mode=HTML message.
+    LLM/external prose routinely contains '<20x EPS', 'S&P', 'M&A' — unescaped,
+    Telegram 400s "can't parse entities" and _send treats 4xx as permanent, so
+    the alert (including BUY signals) was silently DROPPED (2026-07-11 audit,
+    P1). quote=False keeps apostrophes readable."""
+    import html
+    return html.escape(str(s or ""), quote=False)
+
+
+def _ec(s, n: int) -> str:
+    """clip + escape — the display form of every dynamic field in this module."""
+    return _esc(clip(s, n))
+
+
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -134,7 +149,7 @@ def alert_ops(msg: str) -> bool:
     degraded candidate universe, alert-flood cap) — the class of failure that
     previously lived only in CI logs nobody reads and once ran silently for
     weeks (the pre-2026-07-03 UNVERIFIED incident)."""
-    return _split_send(f"🔧 <b>PIPELINE HEALTH</b>\n\n{msg}", TOPIC_SCAN_RESULTS)
+    return _split_send(f"🔧 <b>PIPELINE HEALTH</b>\n\n{_esc(msg)}", TOPIC_SCAN_RESULTS)
 
 
 def alert_portfolio_sync(resp: dict, cash: dict, failed_brokers: list[str],
@@ -156,7 +171,7 @@ def alert_portfolio_sync(resp: dict, cash: dict, failed_brokers: list[str],
     if cash:
         lines.append("💵 cash: " + " · ".join(f"{b} {v:,.2f}" for b, v in cash.items()))
     if unmapped:
-        lines.append(f"⚠️ verify ticker mapping: {', '.join(sorted(set(unmapped)))} "
+        lines.append(f"⚠️ verify ticker mapping: {_esc(', '.join(sorted(set(unmapped))))} "
                      "(non-US listing kept as raw symbol)")
     if failed_brokers:
         lines.append(f"⚠️ {', '.join(failed_brokers)} unavailable — rows untouched")
@@ -177,9 +192,9 @@ def alert_thesis_break(items: list[dict]) -> bool:
         lines.append(f"<b>{it['ticker']}</b>"
                      + (f" · adherence {adh:.0f}/10" if adh is not None else ""))
         if it.get("reason"):
-            lines.append(f"  {it['reason']}")
+            lines.append(f"  {_esc(it['reason'])}")
         if it.get("thesis"):
-            lines.append(f"  <i>Registered thesis: {str(it['thesis'])[:200]}</i>")
+            lines.append(f"  <i>Registered thesis: {_esc(str(it['thesis'])[:200])}</i>")
         lines.append("")
     lines.append("The system does not sell — decide deliberately, don't drift.")
     return _split_send("\n".join(lines), TOPIC_TRADE_ALERTS)
@@ -204,9 +219,9 @@ def alert_fire_review(rows: list[dict]) -> bool:
         lines.append(f"⚠️ <b>{r['parameter']}</b>: stored <code>{r['stored']}</code> "
                      f"vs current <code>{r['current']}</code>")
         if r.get("note"):
-            lines.append(f"   <i>{clip(r['note'], 200)}</i>")
+            lines.append(f"   <i>{_ec(r['note'], 200)}</i>")
         if r.get("source"):
-            lines.append(f"   src: {clip(r['source'], 80)}")
+            lines.append(f"   src: {_ec(r['source'], 80)}")
     ok = [r["parameter"] for r in rows if r.get("verdict") == "OK"]
     if ok:
         lines.append(f"\n✓ unchanged: {', '.join(ok)}")
@@ -268,9 +283,9 @@ def alert_buy_signal(d: dict) -> bool:
     filters   = d.get("matched_filters", [])
     path      = d.get("path", "")
 
-    lens_tag   = f" · <code>{lens}</code>" if lens else ""
+    lens_tag   = f" · <code>{_esc(lens)}</code>" if lens else ""
     path_tag   = f" [PATH {path}]" if path else ""
-    banger_tag = "\n🔥 <b>BANGER</b> — " + clip(banger.get("reason"), 150) if isinstance(banger, dict) and banger.get("is_banger") else ""
+    banger_tag = "\n🔥 <b>BANGER</b> — " + _ec(banger.get("reason"), 150) if isinstance(banger, dict) and banger.get("is_banger") else ""
     penalty    = score_rat or dissent
     filter_line = f"<b>Filters met:</b> {' · '.join(filters)}\n" if filters else ""
 
@@ -287,7 +302,7 @@ def alert_buy_signal(d: dict) -> bool:
         verify_line = f"🛡️ <b>Verified:</b> prosecutor CONFIRM{_vs}\n"
         header = f"{emoji} <b>BUY SIGNAL — {d['ticker']}</b>{path_tag}{lens_tag}"
     elif vverdict == "DOWNGRADE":
-        verify_line = (f"⚠️ <b>Red-team DOWNGRADE{_vs}:</b> <i>{clip(bear, 350)}</i>\n"
+        verify_line = (f"⚠️ <b>Red-team DOWNGRADE{_vs}:</b> <i>{_ec(bear, 350)}</i>\n"
                        if bear else f"⚠️ <b>Red-team DOWNGRADE{_vs}</b>\n")
         header = f"⚠️ <b>FLAGGED BUY — {d['ticker']}</b>{path_tag}{lens_tag} <i>(red-team DOWNGRADE)</i>"
     elif vverdict == "UNVERIFIED":
@@ -302,15 +317,15 @@ def alert_buy_signal(d: dict) -> bool:
         f"<b>Score:</b> {d['score']:.1f}/10 · {d['grade']} · {conf}\n"
         + verify_line
         + filter_line
-        + (f"<b>Gemma flagged:</b> <i>{clip(rationale, 350)}</i>\n" if rationale else "")
-        + (f"\n<b>Catalyst:</b> <i>{clip(catalyst, 400)}</i>\n" if catalyst else "")
-        + (f"<b>Asymmetry:</b> {asymmetry}\n" if asymmetry else "")
+        + (f"<b>Gemma flagged:</b> <i>{_ec(rationale, 350)}</i>\n" if rationale else "")
+        + (f"\n<b>Catalyst:</b> <i>{_ec(catalyst, 400)}</i>\n" if catalyst else "")
+        + (f"<b>Asymmetry:</b> {_esc(asymmetry)}\n" if asymmetry else "")
         + (f"<b>R/R:</b> {d['rr']:.1f}:1 ({d.get('risk','?')} risk)\n" if d.get("rr") is not None else "")
-        + (f"<b>Cycle:</b> {cycle_pos.get('regime','')} — {cycle_pos.get('phase','')}\n" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
-        + f"\n<b>Bull case:</b> <i>{clip(d.get('thesis'), 600)}</i>\n\n"
-        + (f"<b>Why not higher:</b> <i>{clip(penalty, 450)}</i>\n\n" if penalty else "")
-        + f"<b>Key factor:</b> {clip(d.get('key_swing_factor') or '—', 300)}\n"
-        + (f"<b>Position:</b> {pos.get('range','?')} ({clip(pos.get('reasoning'), 200)})\n" if isinstance(pos, dict) and pos.get("range") else "")
+        + (f"<b>Cycle:</b> {_esc(cycle_pos.get('regime',''))} — {_esc(cycle_pos.get('phase',''))}\n" if isinstance(cycle_pos, dict) and cycle_pos.get("phase") else "")
+        + f"\n<b>Bull case:</b> <i>{_ec(d.get('thesis'), 600)}</i>\n\n"
+        + (f"<b>Why not higher:</b> <i>{_ec(penalty, 450)}</i>\n\n" if penalty else "")
+        + f"<b>Key factor:</b> {_ec(d.get('key_swing_factor') or '—', 300)}\n"
+        + (f"<b>Position:</b> {pos.get('range','?')} ({_ec(pos.get('reasoning'), 200)})\n" if isinstance(pos, dict) and pos.get("range") else "")
         + banger_tag
         + f"\n⏰ {d['analyzed_at']}"
         + _dash_link(d["ticker"])
@@ -338,22 +353,22 @@ def alert_watchlist(d: dict) -> bool:
 
     conf        = CONF_EMOJI.get(d.get("confidence", ""), "")
     lens        = d.get("scout_lens", "")
-    lens_tag    = f" · <code>{lens}</code>" if lens else ""
+    lens_tag    = f" · <code>{_esc(lens)}</code>" if lens else ""
     vscore_line = f" · verify {vscore:.1f}/10" if isinstance(vscore, (int, float)) else ""
 
     findings_block = ""
     if findings:
         findings_block = ("\n<b>Disconfirming findings:</b>\n"
-                          + "\n".join(f"• <i>{clip(str(f), 200)}</i>" for f in findings[:4]) + "\n")
+                          + "\n".join(f"• <i>{_ec(str(f), 200)}</i>" for f in findings[:4]) + "\n")
 
     msg = (
         f"⚠️ <b>UNDER REVIEW — {d['ticker']}</b>{lens_tag}\n"
         f"<b>Score:</b> {d['score']:.1f}/10 · {d.get('grade','?')} · {conf} · <b>{verdict}</b>{vscore_line}\n"
         f"<i>Crossed the BUY line but failed the confirmation gate — not a confirmed signal.</i>\n\n"
-        f"<b>Why held back:</b> {clip(held, 500)}\n"
+        f"<b>Why held back:</b> {_ec(held, 500)}\n"
         + findings_block
         + (f"<b>R/R:</b> {d['rr']:.1f}:1 ({d.get('risk','?')} risk)\n" if d.get("rr") is not None else "")
-        + f"\n<b>Bull case (unconfirmed):</b> <i>{clip(d.get('thesis'), 450)}</i>\n"
+        + f"\n<b>Bull case (unconfirmed):</b> <i>{_ec(d.get('thesis'), 450)}</i>\n"
         + f"\n⏰ {d.get('analyzed_at','')}"
         + _dash_link(d["ticker"])
     )
@@ -379,11 +394,11 @@ def alert_dd_result(result: dict) -> bool:
         agent_lines.append(f"  {agent:<14} {s1:.1f} {arrow} {sf:.1f}")
 
     agents_block = "\n".join(agent_lines)
-    thesis = clip(result.get("majority_thesis"), 700)
+    thesis = _ec(result.get("majority_thesis"), 700)
 
     catalyst = result.get("catalyst", "")
     banger = result.get("banger", {})
-    banger_line = f"\n🔥 <b>BANGER</b> — {clip(banger.get('reason'), 250)}" if isinstance(banger, dict) and banger.get("is_banger") else ""
+    banger_line = f"\n🔥 <b>BANGER</b> — {_ec(banger.get('reason'), 250)}" if isinstance(banger, dict) and banger.get("is_banger") else ""
 
     rrd = result.get("risk_reward") or {}
     rr_line = (
@@ -395,8 +410,8 @@ def alert_dd_result(result: dict) -> bool:
         f"{emoji} <b>SOVEREIGN DD — {ticker}</b>\n"
         f"<b>Score:</b> {score:.2f}/10 · {grade} · {cconf}\n"
         + rr_line + "\n"
-        f"<pre>{agents_block}</pre>\n\n"
-        + (f"<b>Catalyst:</b> <i>{clip(catalyst, 400)}</i>\n\n" if catalyst else "")
+        f"<pre>{_esc(agents_block)}</pre>\n\n"
+        + (f"<b>Catalyst:</b> <i>{_ec(catalyst, 400)}</i>\n\n" if catalyst else "")
         + f"<i>{thesis}</i>"
         + banger_line
     )

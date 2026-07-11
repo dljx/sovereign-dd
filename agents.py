@@ -262,19 +262,35 @@ about the given stock using the provided query. Summarize what you find concisel
 Focus on recent developments (last 3-6 months). Do not fabricate information.
 Output plain text — a 3-5 sentence summary of your findings. No JSON needed for this step."""
 
-def _sanitize_untrusted(text: str, limit: int = 6000) -> str:
+def _sanitize_untrusted(text: str, limit: int = 6000,
+                        empty: str = "(no web research available)") -> str:
     """Neutralise untrusted external text (web/news/filings) before embedding it in a
     prompt. Strips our own fence markers so injected text can't 'close' the untrusted
     block and smuggle instructions, and caps length. Defense-in-depth alongside the
     in-prompt instruction to treat the block as data only.
     """
     if not text:
-        return "(no web research available)"
+        return empty
     t = re.sub(r"-{2,}\s*(?:BEGIN|END)\s+UNTRUSTED\s+CONTENT\s*-{2,}",
                "[redacted-marker]", str(text), flags=re.I)
     if len(t) > limit:
         t = t[:limit] + " …[truncated]"
     return t
+
+
+def _sanitize_deep(value, limit: int = 4000):
+    """_sanitize_untrusted over every string in a nested structure. Applied to
+    the dossier sections that carry EXTERNAL free text (news headlines/
+    summaries, filing text, company names) — they used to enter the prompt
+    inside the 'STRUCTURED DATA DOSSIER' block unsanitized, i.e. presented as
+    trusted (2026-07-11 audit)."""
+    if isinstance(value, str):
+        return _sanitize_untrusted(value, limit, empty="")
+    if isinstance(value, list):
+        return [_sanitize_deep(v, limit) for v in value]
+    if isinstance(value, dict):
+        return {k: _sanitize_deep(v, limit) for k, v in value.items()}
+    return value
 
 
 ROUND1_TEMPLATE = """Analyze the following company data dossier AND your web research findings.
@@ -529,6 +545,12 @@ HOLD_MODE_PREAMBLE = (
 def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_holding: bool = False) -> tuple[str, str]:
     """Returns (system, user) for round 1 analysis. Receives pre-fetched web research."""
     slim = {k: v for k, v in dossier.items() if k not in ("financials",)}
+    # External free text rides inside the dossier too — same neutralisation as
+    # web_research so a crafted headline can't fake fence markers or read as a
+    # trusted directive.
+    for _key in ("news", "sec_filing", "profile"):
+        if _key in slim:
+            slim[_key] = _sanitize_deep(slim[_key])
 
     fin = dossier.get("financials", {})
     income = fin.get("income", [])
@@ -705,6 +727,13 @@ def moderator_prompt(ticker: str, transcript: list[dict],
     system = ("You are a senior investment committee moderator. "
               "You synthesize multi-agent investment debates into final verdicts. "
               "You output strict JSON only.")
+    # Each agent's transcript entry carries its raw web_research (set in
+    # debate.py) — re-neutralise before it re-enters a prompt here.
+    transcript_sane = [
+        ({**t, "web_research": _sanitize_untrusted(t.get("web_research"))}
+         if isinstance(t, dict) and "web_research" in t else t)
+        for t in transcript
+    ]
     return (
         system,
         MODERATOR_TEMPLATE.format(
@@ -712,7 +741,7 @@ def moderator_prompt(ticker: str, transcript: list[dict],
             loops=loops,
             spread=spread,
             threshold=threshold,
-            transcript_json=json.dumps(transcript, indent=2),
+            transcript_json=json.dumps(transcript_sane, indent=2),
         ),
     )
 

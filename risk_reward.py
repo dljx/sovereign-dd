@@ -177,7 +177,10 @@ def _risk_index(dossier, fv, blind_spots, arch_conf):
         add("insider", 1.5, 0.5, f"MSPR 3m avg {avg_mspr:.0f}")
 
     # data (cap 1.5) — FV-layer signals only; validator's data_confidence keeps its own -0.5
-    if (dossier.get("financials") or {}).get("ratios_ttm", {}).get("adr_mismatch"):
+    # NB: `.get("ratios_ttm", {})` guards a MISSING key but not a present-None —
+    # that AttributeError was swallowed upstream into {"applied": False},
+    # silently disabling the whole R:R layer (2026-07-11 audit).
+    if ((dossier.get("financials") or {}).get("ratios_ttm") or {}).get("adr_mismatch"):
         add("data", 1.5, 0.5, "ADR/FX mismatch")
     if len(blind_spots) >= 2:
         add("data", 1.5, 0.5, f"{len(blind_spots)} FV blind spots")
