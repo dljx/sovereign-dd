@@ -62,6 +62,11 @@ jobs:
           GEMINI_API_KEYS:          ${{ secrets.GEMINI_API_KEYS }}
           FINNHUB_API_KEY:          ${{ secrets.FINNHUB_API_KEY }}
           FMP_API_KEY:              ${{ secrets.FMP_API_KEY }}
+          # Tiger market data (delayed quotes + adjusted bars) — query-only
+          # helpers in broker_sync.py, the sole Tiger client constructor.
+          TIGER_ID:                 ${{ secrets.TIGER_ID }}
+          TIGER_ACCOUNT:            ${{ secrets.TIGER_ACCOUNT }}
+          TIGER_PRIVATE_KEY:        ${{ secrets.TIGER_PRIVATE_KEY }}
           FRED_API_KEY:             ${{ secrets.FRED_API_KEY }}
           ALPHA_VANTAGE_API_KEYS:   ${{ secrets.ALPHA_VANTAGE_API_KEYS }}
           TELEGRAM_BOT_TOKEN:       ${{ secrets.TELEGRAM_BOT_TOKEN }}

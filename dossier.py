@@ -297,13 +297,47 @@ def quality_composite(ratios: dict) -> float | None:
     return round(sum(comps) / len(comps), 2)
 
 
+def _quote(ticker: str) -> dict:
+    """Spot quote, Finnhub-shape (c/d/dp/h/l/o/pc). Source-ranked 2026-07-11:
+    Tiger delayed briefs primary for plain US symbols (official keyed API, no
+    60/min cap; 15-min delay is fine for analysis), Finnhub fallback, and the
+    per-field yfinance fallbacks downstream stay as the last resort. Tiger env
+    absent (local runs) or any failure → silently the old path."""
+    try:
+        from broker_sync import tiger_delay_quotes, tiger_symbol_ok
+        if tiger_symbol_ok(ticker):
+            q = tiger_delay_quotes([ticker]).get(ticker)
+            if q and q.get("price"):
+                pc = q.get("prev_close")
+                return {
+                    "c": q["price"],
+                    "pc": pc,
+                    "d": round(q["price"] - pc, 4) if pc else None,
+                    "dp": q.get("change_pct"),
+                    "h": q.get("high"), "l": q.get("low"), "o": q.get("open"),
+                    "_src": "tiger-delayed",
+                }
+    except Exception:
+        pass
+    return _fh("/quote", {"symbol": ticker})
+
+
 def _technicals(ticker: str) -> dict:
     try:
+        # Tiger adjusted daily bars primary (probe-verified split-adjustment
+        # parity with yfinance, 2026-07-11); yfinance scrape as fallback.
+        hist = None
         try:
-            hist = yf.Ticker(ticker).history(period="1y")
+            from broker_sync import tiger_daily_bars
+            hist = tiger_daily_bars(ticker)
         except Exception:
-            time.sleep(5)
-            hist = yf.Ticker(ticker).history(period="1y")
+            hist = None
+        if hist is None or hist.empty:
+            try:
+                hist = yf.Ticker(ticker).history(period="1y")
+            except Exception:
+                time.sleep(5)
+                hist = yf.Ticker(ticker).history(period="1y")
         if hist.empty:
             return {}
         close = hist["Close"]
@@ -848,7 +882,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         fmp_estimates_raw,
     ) = await asyncio.gather(
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:profile:{ticker}",       72,  _fh, "/stock/profile2", {"symbol": ticker}), "profile"),
-        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:quote:{ticker}",          1,  _fh, "/quote", {"symbol": ticker}), "quote"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"quote:{ticker}",             1,  _quote, ticker), "quote"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:tech:{ticker}",           1,  _technicals, ticker), "technicals"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:{ticker}",           12,  _yf_financials, ticker), "financials"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:EARNINGS:{ticker}",      24,  _av, "EARNINGS", {"symbol": ticker}), "earnings"),
@@ -937,6 +971,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         "low":        quote_raw.get("l"),
         "open":       quote_raw.get("o"),
         "prev_close": quote_raw.get("pc") or yf_fin.get("previous_close"),
+        "src":        quote_raw.get("_src", "finnhub"),  # source-ranking audit trail
     }
 
     # â"€â"€ Technicals â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€

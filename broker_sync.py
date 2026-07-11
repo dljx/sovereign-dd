@@ -221,6 +221,103 @@ def _map_tiger(positions, assets) -> dict:
     return {"rows": rows, "cash": cash, "unmapped": unmapped}
 
 
+# ── Tiger market data: delayed quotes + adjusted daily bars (2026-07-11) ──────
+#
+# The pipeline's PRIMARY spot-quote/bars source for plain US symbols (probe-
+# confirmed: delayed briefs need no entitlement grab; bars are split-adjusted
+# to parity with yfinance across the NVDA 2024 10:1 split; kline quota
+# 500/day). Everything degrades silently to the Finnhub/yfinance path when
+# Tiger env is absent (local runs) or a call fails. This module stays the ONLY
+# constructor of Tiger clients (read-only contract, module docstring).
+
+import re as _re
+
+_TIGER_SYMBOL_RE = _re.compile(r"[A-Z0-9]{1,6}")
+_quote_client = None  # lazy; False = tried and unavailable
+
+
+def tiger_symbol_ok(ticker: str) -> bool:
+    """Plain US symbols only. Suffixed listings (.V/.TO/.HK) and share-class
+    dashes use different symbol dialects per vendor — those route straight to
+    the yfinance/Yahoo path rather than burning a failing Tiger call."""
+    return bool(_TIGER_SYMBOL_RE.fullmatch(ticker or ""))
+
+
+def tiger_quote_client():
+    """Cached QuoteClient or None. ALWAYS is_grab_permission=False — the SDK
+    default True SEIZES the quote entitlement from the owner's Tiger app."""
+    global _quote_client
+    if _quote_client is None:
+        cfg = _tiger_config()
+        if cfg is None:
+            _quote_client = False
+        else:
+            try:
+                from tigeropen.quote.quote_client import QuoteClient
+                _quote_client = QuoteClient(cfg, is_grab_permission=False)
+            except Exception as e:
+                print(f"  [quotes] Tiger quote client unavailable: {e}")
+                _quote_client = False
+    return _quote_client or None
+
+
+def tiger_delay_quotes(symbols: list) -> dict:
+    """{SYM: {price, prev_close, change_pct, open, high, low}} from delayed
+    briefs (15-min delay — fine for analysis, never used for execution).
+    {} when Tiger is unavailable; batches of 50."""
+    qc = tiger_quote_client()
+    if qc is None or not symbols:
+        return {}
+    out = {}
+    try:
+        for i in range(0, len(symbols), 50):
+            df = qc.get_stock_delay_briefs(list(symbols[i:i + 50]))
+            for _, row in df.iterrows():
+                close = float(row.get("close") or 0)
+                pre = float(row.get("pre_close") or 0)
+                if close <= 0:
+                    continue
+                out[str(row["symbol"])] = {
+                    "price": close,
+                    "prev_close": pre if pre > 0 else None,
+                    "change_pct": round((close - pre) / pre * 100, 4) if pre > 0 else None,
+                    "open": float(row.get("open") or 0) or None,
+                    "high": float(row.get("high") or 0) or None,
+                    "low": float(row.get("low") or 0) or None,
+                }
+    except Exception as e:
+        print(f"  [quotes] Tiger delayed briefs failed: {e}")
+    return out
+
+
+def tiger_daily_bars(symbol: str, days: int = 365):
+    """Split-adjusted daily OHLCV as a yfinance-history-shaped DataFrame
+    (Open/High/Low/Close/Volume, datetime index) or None. One call consumes
+    1 unit of the 500/day kline quota; on quota exhaustion the exception path
+    returns None and the caller falls back to yfinance."""
+    qc = tiger_quote_client()
+    if qc is None or not tiger_symbol_ok(symbol):
+        return None
+    try:
+        from datetime import datetime, timedelta, timezone
+        import pandas as pd
+        begin = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        df = qc.get_bars([symbol], begin_time=begin, limit=min(days, 1200))
+        if df is None or df.empty:
+            return None
+        out = pd.DataFrame({
+            "Open":   df["open"].astype(float).values,
+            "High":   df["high"].astype(float).values,
+            "Low":    df["low"].astype(float).values,
+            "Close":  df["close"].astype(float).values,
+            "Volume": df["volume"].astype(float).values,
+        }, index=pd.to_datetime(df["time"], unit="ms", utc=True))
+        return out
+    except Exception as e:
+        print(f"  [quotes] Tiger bars {symbol} failed: {e}")
+        return None
+
+
 # ── NAV history: Tiger analytics + IBKR Flex NAV query (2026-07-11) ───────────
 #
 # Probe-confirmed shapes: Tiger get_analytics_asset history carries

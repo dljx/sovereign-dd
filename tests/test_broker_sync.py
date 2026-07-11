@@ -379,3 +379,78 @@ def test_sync_nav_reports_configured_broker_failure(monkeypatch):
     monkeypatch.setattr(broker_sync, "fetch_ibkr_nav", lambda: None)
     monkeypatch.setattr(broker_sync, "fetch_tiger_nav", lambda: None)
     assert broker_sync.sync_nav(dry=False) == ["Tiger"]
+
+
+# ── Tiger market data helpers (2026-07-11): symbols, quotes, bars ───────────────
+
+def test_tiger_symbol_ok_plain_us_only():
+    assert broker_sync.tiger_symbol_ok("AAPL")
+    assert broker_sync.tiger_symbol_ok("BRK")
+    assert not broker_sync.tiger_symbol_ok("HPQ.V")     # suffixed → yfinance path
+    assert not broker_sync.tiger_symbol_ok("0700.HK")
+    assert not broker_sync.tiger_symbol_ok("BRK-B")     # dash dialect differs
+    assert not broker_sync.tiger_symbol_ok("")
+    assert not broker_sync.tiger_symbol_ok("TOOLONGSYM")
+
+
+class _FakeQuoteClient:
+    def __init__(self, briefs_df=None, bars_df=None):
+        self._briefs, self._bars = briefs_df, bars_df
+        self.brief_calls, self.bar_calls = [], []
+
+    def get_stock_delay_briefs(self, symbols):
+        self.brief_calls.append(list(symbols))
+        return self._briefs
+
+    def get_bars(self, symbols, **kw):
+        self.bar_calls.append((list(symbols), kw))
+        return self._bars
+
+
+def test_tiger_delay_quotes_maps_and_batches(monkeypatch):
+    import pandas as pd
+    df = pd.DataFrame([
+        {"symbol": "AAPL", "close": 315.32, "pre_close": 316.22,
+         "open": 314.72, "high": 316.91, "low": 312.17},
+        {"symbol": "DEAD", "close": 0, "pre_close": 10, "open": 0, "high": 0, "low": 0},
+    ])
+    fake = _FakeQuoteClient(briefs_df=df)
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: fake)
+    out = broker_sync.tiger_delay_quotes([f"S{i}" for i in range(60)])
+    assert len(fake.brief_calls) == 2                       # 50 + 10 batching
+    assert len(fake.brief_calls[0]) == 50
+    q = out["AAPL"]
+    assert q["price"] == 315.32 and q["prev_close"] == 316.22
+    assert q["change_pct"] == round((315.32 - 316.22) / 316.22 * 100, 4)
+    assert q["high"] == 316.91
+    assert "DEAD" not in out                                # zero close dropped
+
+
+def test_tiger_delay_quotes_unavailable_is_empty(monkeypatch):
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
+    assert broker_sync.tiger_delay_quotes(["AAPL"]) == {}
+
+
+def test_tiger_daily_bars_yfinance_shape(monkeypatch):
+    import pandas as pd
+    base_ms = 1780000000000
+    raw = pd.DataFrame([
+        {"symbol": "NVDA", "time": base_ms + i * 86400000, "open": 100.0 + i,
+         "high": 101.0 + i, "low": 99.0 + i, "close": 100.5 + i, "volume": 1000 + i}
+        for i in range(5)
+    ])
+    fake = _FakeQuoteClient(bars_df=raw)
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: fake)
+    hist = broker_sync.tiger_daily_bars("NVDA")
+    assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert len(hist) == 5 and float(hist["Close"].iloc[-1]) == 104.5
+    assert hist.index.dtype.kind == "M"                     # datetime index
+
+
+def test_tiger_daily_bars_skips_suffixed_and_unavailable(monkeypatch):
+    fake = _FakeQuoteClient(bars_df=None)
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: fake)
+    assert broker_sync.tiger_daily_bars("HPQ.V") is None
+    assert fake.bar_calls == []                             # never called
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
+    assert broker_sync.tiger_daily_bars("NVDA") is None
