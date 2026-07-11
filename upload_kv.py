@@ -214,6 +214,10 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
         "roic":         ratios.get("roic"),
         "score_spread": result.get("score_spread"),
         "confidence":   result.get("confidence"),
+        # Macro regime at signal time (2026-07-11) — measurement-only field for
+        # the attribution buckets; NOT selection-affecting, so factors.v stays 3
+        # (rule 5 bumps v only when a change alters which signals surface).
+        "regime":       (dossier.get("macro") or {}).get("regime"),
     }
 
 

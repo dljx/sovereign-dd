@@ -116,6 +116,10 @@ def parse_rows(rows: list[dict], src: str) -> list[dict]:
             "verdict":     r.get("verdict") or "(none)",
             "mom_12_1":    factors.get("mom_12_1"),
             "quality":     factors.get("quality"),
+            "eps_rev_mom": factors.get("eps_rev_mom"),
+            "fcf_yield":   factors.get("fcf_yield"),
+            "roic":        factors.get("roic"),
+            "regime":      factors.get("regime"),   # stamped from 2026-07-11
             "factors_v":   factors.get("v"),
         })
     return out
@@ -202,15 +206,33 @@ def bucket_stats(rows: list[dict], key_fn) -> dict:
 
 # ── Scoreboard (data) ─────────────────────────────────────────────────
 
+# Factor fields that get tercile-bucketed at entry time (field, bucket key on
+# the signal dict). eps_rev_mom/fcf_yield/roic added 2026-07-11 — the factors
+# jsonb has carried them since v3 (07-07); older rows show n/a.
+_TERCILE_FACTORS = [
+    ("mom_12_1",    "mom_bucket"),
+    ("quality",     "quality_bucket"),
+    ("eps_rev_mom", "eps_rev_bucket"),
+    ("fcf_yield",   "fcf_bucket"),
+    ("roic",        "roic_bucket"),
+]
+
 # Bucket key → (json key, report title). Order is the report/panel order.
 _BUCKETS = [
-    ("grade",     "grade",            lambda r: r["grade"]),
-    ("gate",      "gate",             lambda r: {True: "confirmed", False: "rejected"}.get(r["confirmed"], "unknown")),
-    ("verdict",   "verdict",          lambda r: r["verdict"]),
-    ("mom_12_1",  "mom_12_1 tercile", lambda r: r["mom_bucket"] or "n/a"),
-    ("quality",   "quality tercile",  lambda r: r["quality_bucket"] or "n/a"),
-    ("factors_v", "factors.v",        lambda r: f"v{r['factors_v']}" if r["factors_v"] else "unstamped"),
-    ("source",    "source",           lambda r: r["src"]),
+    ("grade",       "grade",              lambda r: r["grade"]),
+    ("gate",        "gate",               lambda r: {True: "confirmed", False: "rejected"}.get(r["confirmed"], "unknown")),
+    ("verdict",     "verdict",            lambda r: r["verdict"]),
+    ("mom_12_1",    "mom_12_1 tercile",   lambda r: r["mom_bucket"] or "n/a"),
+    ("quality",     "quality tercile",    lambda r: r["quality_bucket"] or "n/a"),
+    ("eps_rev_mom", "eps_rev_mom tercile", lambda r: r["eps_rev_bucket"] or "n/a"),
+    ("fcf_yield",   "fcf_yield tercile",  lambda r: r["fcf_bucket"] or "n/a"),
+    ("roic",        "roic tercile",       lambda r: r["roic_bucket"] or "n/a"),
+    # Macro regime at signal time — the MEASUREMENT half of the rejected macro
+    # kill-switch idea: a threshold rule only gets pre-registered if these
+    # buckets prove predictive at n≥30/regime (~Jan 2027 read).
+    ("regime",      "macro regime",       lambda r: r["regime"] or "unstamped"),
+    ("factors_v",   "factors.v",          lambda r: f"v{r['factors_v']}" if r["factors_v"] else "unstamped"),
+    ("source",      "source",             lambda r: r["src"]),
 ]
 
 
@@ -226,10 +248,10 @@ def compute_scoreboard(signals: list[dict], closes: dict, vwra: pd.Series,
     n_scout = sum(1 for s in signals if s["src"] == "scout")
 
     # Terciles are computed once across all signals (entry-time factor profile).
-    mom_lab = tercile_labels([s["mom_12_1"] for s in signals])
-    qual_lab = tercile_labels([s["quality"] for s in signals])
-    for s, m, q in zip(signals, mom_lab, qual_lab):
-        s["mom_bucket"], s["quality_bucket"] = m, q
+    for field, bucket in _TERCILE_FACTORS:
+        labels = tercile_labels([s.get(field) for s in signals])
+        for s, lab in zip(signals, labels):
+            s[bucket] = lab
 
     out_windows = []
     for weeks in windows:

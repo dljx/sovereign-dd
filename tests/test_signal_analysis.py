@@ -192,7 +192,8 @@ def test_compute_scoreboard_json_shape():
     assert w1["weeks"] == 1 and w1["measurable"] == 2 and w1["pending"] == 0
     assert w1["overall"]["n"] == 2
     assert set(w1["buckets"]) == {"grade", "gate", "verdict", "mom_12_1",
-                                  "quality", "factors_v", "source"}
+                                  "quality", "eps_rev_mom", "fcf_yield", "roic",
+                                  "regime", "factors_v", "source"}
     gate_keys = {e["k"] for e in w1["buckets"]["gate"]}
     assert gate_keys == {"confirmed", "unknown"}
     assert w1["top"][0]["ticker"] == "AAA" and w1["bottom"][0]["ticker"] == "BBB"
@@ -248,3 +249,44 @@ def test_build_report_pending_only_window():
     text = "\n".join(lines)
     assert "measurable 0 · pending 1" in text
     assert "nothing measurable" in text
+
+
+# ── attribution factors + regime (2026-07-11) ─────────────────────────
+
+
+def test_parse_rows_carries_attribution_factors():
+    rows = [{"ticker": "AAA", "discovered_at": "2026-07-01T00:00:00+00:00",
+             "factors": {"v": 3, "eps_rev_mom": 0.12, "fcf_yield": 4.5,
+                         "roic": 18.2, "regime": "TIGHTENING"}}]
+    s = sa.parse_rows(rows, "scout")[0]
+    assert s["eps_rev_mom"] == 0.12 and s["fcf_yield"] == 4.5
+    assert s["roic"] == 18.2 and s["regime"] == "TIGHTENING"
+
+
+def test_scoreboard_buckets_include_new_dimensions():
+    closes = {"AAA": _series("2026-06-01", 30, 100, 2.0)}
+    vwra = _series("2026-06-01", 30, 200, 0.5)
+    signals = sa.parse_rows([
+        {"ticker": "AAA", "discovered_at": "2026-06-10T12:00:00+00:00",
+         "price": 100.0, "grade": "BUY", "confirmed": True, "verdict": "CONFIRM",
+         "factors": {"v": 3, "fcf_yield": 5.0, "roic": 20.0,
+                     "eps_rev_mom": 0.1, "regime": "GOLDILOCKS"}},
+    ], "scout")
+    sb = sa.compute_scoreboard(signals, closes, vwra, [1], date(2026, 6, 30))
+    buckets = sb["windows"][0]["buckets"]
+    for key in ("eps_rev_mom", "fcf_yield", "roic", "regime"):
+        assert key in buckets, key
+    assert buckets["regime"][0]["k"] == "GOLDILOCKS"
+    # single signal → terciles collapse to 'all' (n<6 rule unchanged)
+    assert buckets["fcf_yield"][0]["k"] == "all"
+
+
+def test_scoreboard_regime_unstamped_for_old_rows():
+    closes = {"OLD": _series("2026-06-01", 30, 100, 1.0)}
+    vwra = _series("2026-06-01", 30, 200, 0.5)
+    signals = sa.parse_rows([
+        {"ticker": "OLD", "discovered_at": "2026-06-10T12:00:00+00:00",
+         "price": 100.0, "factors": {"v": 2}},
+    ], "scout")
+    sb = sa.compute_scoreboard(signals, closes, vwra, [1], date(2026, 6, 30))
+    assert sb["windows"][0]["buckets"]["regime"][0]["k"] == "unstamped"

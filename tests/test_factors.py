@@ -95,3 +95,14 @@ def test_factor_stamp_version_matches_scoreboard_register():
     assert stamped == latest_registered, (
         f"upload_kv stamps v{stamped} but the register's latest is v{latest_registered} — "
         "bump both in the same commit (ADAPTATION_PROTOCOL rule 5)")
+
+
+def test_factor_stamp_carries_signal_time_regime():
+    """Measurement-only regime field (2026-07-11) — factors.v must NOT bump
+    (rule 5: v changes only when selection is affected)."""
+    from upload_kv import _factor_stamp
+    stamped = _factor_stamp({"technicals": {}, "financials": {},
+                             "macro": {"regime": "TIGHTENING"}}, {})
+    assert stamped["regime"] == "TIGHTENING"
+    assert stamped["v"] == 3
+    assert _factor_stamp({"technicals": {}, "financials": {}}, {})["regime"] is None
