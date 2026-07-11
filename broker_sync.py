@@ -747,6 +747,32 @@ def probe() -> int:
             _probe_section("short interest AAPL",
                            lambda: _show("short interest", qc.get_short_interest(["AAPL"])))
 
+            # 2026-07-12 additions: capital-flow + options + official
+            # fundamentals entitlement checks (F4 — findings gate any wiring).
+            def _cap_flow():
+                from tigeropen.common.consts import CapitalPeriod
+                _show("capital flow AAPL (day)",
+                      qc.get_capital_flow("AAPL", Market.US, CapitalPeriod.DAY))
+            _probe_section("capital flow", _cap_flow)
+            _probe_section("capital distribution",
+                           lambda: _show("capital distribution AAPL",
+                                         qc.get_capital_distribution("AAPL", Market.US)))
+
+            def _options():
+                exps = qc.get_option_expirations(["AAPL"])
+                _show("option expirations", exps)
+                try:
+                    first = str(exps.iloc[0]["date"]) if len(exps) else None
+                except Exception:
+                    first = None
+                if first:
+                    chain = qc.get_option_chain("AAPL", first)
+                    _show("option chain (first expiry)", chain)
+            _probe_section("options (expirations + chain)", _options)
+            _probe_section("official fundamentals",
+                           lambda: _show("stock fundamental AAPL",
+                                         qc.get_stock_fundamental(["AAPL"], Market.US)))
+
         if tc is not None:
             def _analytics():
                 r = tc.get_analytics_asset(
