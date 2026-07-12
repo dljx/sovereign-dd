@@ -121,6 +121,7 @@ def parse_rows(rows: list[dict], src: str) -> list[dict]:
             "fcf_yield":   factors.get("fcf_yield"),
             "roic":        factors.get("roic"),
             "regime":      factors.get("regime"),   # stamped from 2026-07-11
+            "cap_smart_tilt": factors.get("cap_smart_tilt"),  # from 2026-07-12
             "factors_v":   factors.get("v"),
         })
     return out
@@ -216,6 +217,7 @@ _TERCILE_FACTORS = [
     ("eps_rev_mom", "eps_rev_bucket"),
     ("fcf_yield",   "fcf_bucket"),
     ("roic",        "roic_bucket"),
+    ("cap_smart_tilt", "cap_tilt_bucket"),
 ]
 
 # Bucket key → (json key, report title). Order is the report/panel order.
@@ -232,6 +234,7 @@ _BUCKETS = [
     # kill-switch idea: a threshold rule only gets pre-registered if these
     # buckets prove predictive at n≥30/regime (~Jan 2027 read).
     ("regime",      "macro regime",       lambda r: r["regime"] or "unstamped"),
+    ("cap_smart_tilt", "smart-money tilt tercile", lambda r: r["cap_tilt_bucket"] or "n/a"),
     ("factors_v",   "factors.v",          lambda r: f"v{r['factors_v']}" if r["factors_v"] else "unstamped"),
     ("source",      "source",             lambda r: r["src"]),
 ]

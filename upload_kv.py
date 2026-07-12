@@ -220,6 +220,9 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
         # the attribution buckets; NOT selection-affecting, so factors.v stays 3
         # (rule 5 bumps v only when a change alters which signals surface).
         "regime":       (dossier.get("macro") or {}).get("regime"),
+        # Smart-money tilt at signal time (Tiger capital distribution): >0 =
+        # institutional net flow more bullish than retail. Measurement-only.
+        "cap_smart_tilt": (dossier.get("capital_flow") or {}).get("smart_tilt"),
     }
 
 

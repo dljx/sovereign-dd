@@ -318,6 +318,33 @@ def tiger_daily_bars(symbol: str, days: int = 365):
         return None
 
 
+def tiger_capital_flow(symbol: str) -> dict | None:
+    """Institutional-vs-retail money flow for one US symbol, or None.
+    Probe-confirmed entitled 2026-07-11 (options + official fundamentals are
+    NOT). `net_inflow` is the whole-market net; `big/small` split is the
+    smart-money read. Display + factor context only — never a hard gate."""
+    qc = tiger_quote_client()
+    if qc is None or not tiger_symbol_ok(symbol):
+        return None
+    try:
+        from tigeropen.common.consts import Market
+        d = qc.get_capital_distribution(symbol, Market.US)
+        g = lambda a: float(getattr(d, a, 0) or 0)
+        in_big, in_small = g("in_big"), g("in_small")
+        out_big, out_small = g("out_big"), g("out_small")
+        net_big, net_small = in_big - out_big, in_small - out_small
+        return {
+            "net_inflow":     round(g("net_inflow"), 2),
+            "net_big":        round(net_big, 2),     # institutional net
+            "net_small":      round(net_small, 2),   # retail net
+            # >0 = big money more net-bullish than retail (smart-money tilt)
+            "smart_tilt":     round(net_big - net_small, 2),
+        }
+    except Exception as e:
+        print(f"  [quotes] Tiger capital flow {symbol} failed: {type(e).__name__}")
+        return None
+
+
 def tiger_earnings_dates(days_ahead: int = 30) -> dict:
     """{SYMBOL: 'YYYY-MM-DD'} from Tiger's market-wide US earnings calendar —
     ONE call covers every ticker (609 rows/14d at probe time, incl. small caps

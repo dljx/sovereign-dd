@@ -1367,6 +1367,19 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     peer_results = await asyncio.gather(*[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers") for p in peers])
     dossier["peer_comps"] = [r for r in peer_results if r]
 
+    # ── Capital flow (Tiger — entitled 2026-07-11) ─────────────────────────────
+    # Institutional-vs-retail money flow. Guarded on TIGER_* env (absent →
+    # silently skipped on local runs). Display + measurement factor only.
+    try:
+        from broker_sync import tiger_capital_flow, tiger_symbol_ok
+        if tiger_symbol_ok(ticker):
+            cf = await asyncio.to_thread(
+                cached, f"tiger:capflow:{ticker}", 6, tiger_capital_flow, ticker)
+            if cf:
+                dossier["capital_flow"] = cf
+    except Exception:
+        pass
+
     # Cross-validate key metrics across data sources
     try:
         from validator import validate_dossier

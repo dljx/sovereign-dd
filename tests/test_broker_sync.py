@@ -480,3 +480,25 @@ def test_tiger_earnings_dates_keeps_earliest(monkeypatch):
 def test_tiger_earnings_dates_unavailable_is_empty(monkeypatch):
     monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
     assert broker_sync.tiger_earnings_dates() == {}
+
+
+def test_tiger_capital_flow_smart_tilt(monkeypatch):
+    from types import SimpleNamespace
+    dist = SimpleNamespace(net_inflow=-8176381.0, in_big=8.0e8, in_small=2.2e9,
+                           out_big=3.9e8, out_small=2.27e9)
+
+    class _CF:
+        def get_capital_distribution(self, symbol, market):
+            return dist
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: _CF())
+    out = broker_sync.tiger_capital_flow("AAPL")
+    assert out["net_big"] == round(8.0e8 - 3.9e8, 2)      # institutional net
+    assert out["net_small"] == round(2.2e9 - 2.27e9, 2)   # retail net
+    assert out["smart_tilt"] == round(out["net_big"] - out["net_small"], 2)
+
+
+def test_tiger_capital_flow_skips_suffixed_and_unavailable(monkeypatch):
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: object())
+    assert broker_sync.tiger_capital_flow("HPQ.V") is None   # suffixed → skip
+    monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
+    assert broker_sync.tiger_capital_flow("AAPL") is None    # unavailable

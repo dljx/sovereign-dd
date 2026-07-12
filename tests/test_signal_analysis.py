@@ -193,7 +193,7 @@ def test_compute_scoreboard_json_shape():
     assert w1["overall"]["n"] == 2
     assert set(w1["buckets"]) == {"grade", "gate", "verdict", "mom_12_1",
                                   "quality", "eps_rev_mom", "fcf_yield", "roic",
-                                  "regime", "factors_v", "source"}
+                                  "regime", "cap_smart_tilt", "factors_v", "source"}
     gate_keys = {e["k"] for e in w1["buckets"]["gate"]}
     assert gate_keys == {"confirmed", "unknown"}
     assert w1["top"][0]["ticker"] == "AAA" and w1["bottom"][0]["ticker"] == "BBB"
