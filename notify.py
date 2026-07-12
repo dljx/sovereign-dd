@@ -200,6 +200,23 @@ def alert_thesis_break(items: list[dict]) -> bool:
     return _split_send("\n".join(lines), TOPIC_TRADE_ALERTS)
 
 
+def alert_trigger(alerts: list[dict]) -> bool:
+    """Trigger-engine hits (entry window / reached fair value) → Trade Alerts.
+    Timely, action-adjacent signals from standing analysis — deduped upstream
+    (watch_triggers). Alert only; the system never trades."""
+    if not alerts:
+        return False
+    icon = {"entry_window": "🎯", "target_reached": "🏁"}
+    lines = ["⏱️ <b>WATCH TRIGGER</b>", ""]
+    for a in alerts:
+        lines.append(f"{icon.get(a.get('rule'), '•')} <b>{_esc(a.get('ticker', '?'))}</b> "
+                     f"— {_esc(a.get('message', ''))}")
+        lines.append(_dash_link(a.get("ticker", "")))
+        lines.append("")
+    lines.append("<i>Standing analysis, priced now — a prompt to decide, not an order.</i>")
+    return _split_send("\n".join(lines), TOPIC_TRADE_ALERTS)
+
+
 def alert_fire_review(rows: list[dict]) -> bool:
     """Quarterly FIRE-assumption checkup result → Scan Results topic.
 

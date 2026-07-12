@@ -62,6 +62,23 @@ jobs:
           SYNC_DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
         run: python broker_sync.py ${{ github.event.inputs.probe == 'true' && '--probe' || '' }}
 
+      # Trigger engine: entry-window / reached-fair-value alerts on the current
+      # boards, priced with Tiger delayed quotes. Own step so a watch failure
+      # never marks the position sync failed; skipped on probe/dry dispatches.
+      - name: Watch triggers
+        if: ${{ github.event.inputs.probe != 'true' && github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        env:
+          TIGER_ID:           ${{ secrets.TIGER_ID }}
+          TIGER_ACCOUNT:      ${{ secrets.TIGER_ACCOUNT }}
+          TIGER_PRIVATE_KEY:  ${{ secrets.TIGER_PRIVATE_KEY }}
+          DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
+          SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOPIC_TRADE_ALERTS: ${{ secrets.TELEGRAM_TOPIC_TRADE_ALERTS }}
+        run: python watch_triggers.py
+
       - name: Notify on failure
         if: failure()
         env:
