@@ -503,12 +503,40 @@ def _parse_flex_nav(xml_text: str) -> dict | None:
         except (TypeError, ValueError):
             pass
 
+    # Trades — realized P&L per closing lot (needs the Trades section in the
+    # Flex query; absent = empty list, not an error). Only rows with a
+    # realized P&L are kept (opening lots have 0/none) → the platform can
+    # finally state its own realized performance (2026-07-11 dormant audit #2).
+    trades = []
+    for el in root.iter("Trade"):
+        if (el.get("assetCategory") or "STK") not in ("STK", ""):
+            continue
+        realized_raw = el.get("fifoPnlRealized")
+        if realized_raw in (None, "", "0"):
+            continue
+        date = _iso(el.get("tradeDate") or el.get("reportDate")
+                    or el.get("dateTime") or "")
+        try:
+            fx = float(el.get("fxRateToBase") or 1)
+            realized = round(float(realized_raw) * fx, 2)
+        except ValueError:
+            continue
+        if not date:
+            continue
+        ticker, _ok = map_symbol(el.get("symbol"), el.get("listingExchange"),
+                                 el.get("currency"))
+        trades.append({
+            "date": date, "ticker": ticker, "realized": realized,
+            "qty": abs(float(el.get("quantity") or 0)),
+            "side": (el.get("buySell") or "").upper(),
+        })
+
     # Structural guard (same philosophy as _parse_flex): a statement with NONE
     # of the expected sections is a misconfigured query, not empty data.
     if not navs and change is None:
         return None
     return {"navs": navs, "flows": flows, "income": income, "twr": twr,
-            "base_currency": base_ccy or ""}
+            "trades": trades, "base_currency": base_ccy or ""}
 
 
 def _fx_closes(pair: str) -> dict:
@@ -536,9 +564,11 @@ def _to_usd(parsed: dict, rates: dict) -> dict | None:
         i = bisect_right(dates, d)
         return rates[dates[i - 1]] if i else None
 
-    out = {"navs": [], "flows": [], "income": [], "twr": parsed.get("twr")}
-    for key in ("navs", "flows", "income"):
-        field = "nav" if key == "navs" else "amount"
+    out = {"navs": [], "flows": [], "income": [], "trades": [],
+           "twr": parsed.get("twr")}
+    field_of = {"navs": "nav", "flows": "amount", "income": "amount",
+                "trades": "realized"}
+    for key, field in field_of.items():
         for row in parsed.get(key) or []:
             r = rate_at(row["date"])
             if r is None:
@@ -567,7 +597,7 @@ def fetch_ibkr_nav() -> dict | None:
             return None
         ccy = parsed.get("base_currency") or ""
         if ccy == "USD":
-            return {k: parsed[k] for k in ("navs", "flows", "income", "twr")}
+            return {k: parsed[k] for k in ("navs", "flows", "income", "trades", "twr")}
         out = _to_usd(parsed, _fx_closes(f"{ccy}USD=X"))
         if out is None:
             print(f"  [sync] IBKR NAV: cannot convert {ccy}→USD — skipping")

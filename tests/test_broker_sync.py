@@ -502,3 +502,46 @@ def test_tiger_capital_flow_skips_suffixed_and_unavailable(monkeypatch):
     assert broker_sync.tiger_capital_flow("HPQ.V") is None   # suffixed → skip
     monkeypatch.setattr(broker_sync, "tiger_quote_client", lambda: None)
     assert broker_sync.tiger_capital_flow("AAPL") is None    # unavailable
+
+
+_FLEX_NAV_TRADES = """<FlexQueryResponse queryName="sovereign-nav" type="AF">
+ <FlexStatements count="1"><FlexStatement accountId="U1">
+  <EquitySummaryInBase>
+   <EquitySummaryByReportDateInBase currency="SGD" reportDate="20260710" total="88000" />
+  </EquitySummaryInBase>
+  <Trades>
+   <Trade assetCategory="STK" symbol="NVDA" listingExchange="NASDAQ" currency="USD"
+     tradeDate="20260705" quantity="-10" buySell="SELL" fifoPnlRealized="500"
+     fxRateToBase="1.28" />
+   <Trade assetCategory="STK" symbol="MU" listingExchange="NASDAQ" currency="USD"
+     tradeDate="20260706" quantity="-5" buySell="SELL" fifoPnlRealized="-120"
+     fxRateToBase="1.28" />
+   <Trade assetCategory="STK" symbol="AMZN" listingExchange="NASDAQ" currency="USD"
+     tradeDate="20260707" quantity="3" buySell="BUY" fifoPnlRealized="0"
+     fxRateToBase="1.28" />
+   <Trade assetCategory="OPT" symbol="X 260117C" currency="USD"
+     tradeDate="20260707" quantity="1" fifoPnlRealized="99" fxRateToBase="1.28" />
+  </Trades>
+ </FlexStatement></FlexStatements>
+</FlexQueryResponse>"""
+
+
+def test_parse_flex_nav_trades_realized_only():
+    out = broker_sync._parse_flex_nav(_FLEX_NAV_TRADES)
+    trades = out["trades"]
+    by = {t["ticker"]: t for t in trades}
+    assert set(by) == {"NVDA", "MU"}                  # 0-realized + option excluded
+    assert by["NVDA"]["realized"] == round(500 * 1.28, 2)   # base currency (SGD)
+    assert by["NVDA"]["side"] == "SELL" and by["NVDA"]["qty"] == 10.0
+    assert by["MU"]["realized"] == round(-120 * 1.28, 2)
+
+
+def test_to_usd_converts_trades():
+    parsed = {"navs": [{"date": "2026-07-06", "nav": 1000.0}],
+              "flows": [], "income": [],
+              "trades": [{"date": "2026-07-06", "ticker": "NVDA", "realized": 640.0,
+                          "qty": 10, "side": "SELL"}],
+              "twr": None}
+    rates = {"2026-07-06": 0.78}
+    out = broker_sync._to_usd(parsed, rates)
+    assert out["trades"][0]["realized"] == round(640.0 * 0.78, 2)
