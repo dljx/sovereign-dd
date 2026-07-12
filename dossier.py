@@ -836,7 +836,85 @@ def _fetch_peer(peer_ticker: str) -> dict | None:
         return None
 
 
+# SEC EDGAR is the authoritative, keyless, current-to-the-minute filing source.
+# Finnhub's /stock/filings lagged EDGAR by ~a week and froze some mappings
+# (e.g. GOOG at 2016) — sovereign-eye's /api/filings moved to EDGAR 2026-07-09;
+# the dossier follows so the agents' filing context matches the dashboard.
+SEC_UA = {"User-Agent": "SovereignEye/1.0 daryl.lee97@gmail.com"}
+_MEANINGFUL_FORMS = ("10-K", "10-Q", "8-K", "10-K/A", "10-Q/A", "8-K/A",
+                     "6-K", "20-F", "40-F", "S-1", "DEF 14A")
+
+
+def _sec_cik_map() -> dict:
+    """ticker (upper) → zero-padded 10-digit CIK, from SEC's canonical mapping
+    (~900KB). Cached 7d and shared across every ticker in a run."""
+    try:
+        r = requests.get("https://www.sec.gov/files/company_tickers.json",
+                         headers=SEC_UA, timeout=15)
+        if not r.ok:
+            return {}
+        out = {}
+        for e in r.json().values():
+            t = str(e.get("ticker", "")).upper()
+            cik = e.get("cik_str")
+            if t and cik is not None:
+                out[t] = str(cik).zfill(10)
+        return out
+    except requests.exceptions.RequestException as exc:
+        print(f"  [dossier] SEC ticker map failed: {type(exc).__name__}")
+        return {}
+
+
+def _edgar_latest_filing(ticker: str) -> dict:
+    """Latest meaningful SEC filing straight from EDGAR (data.sec.gov submissions
+    API — structured, authoritative, includes the report period). Returns {} for
+    tickers EDGAR doesn't cover (foreign filers, ETFs) so the caller can fall back."""
+    cik = (cached("sec:cik_map:v1", 168, _sec_cik_map) or {}).get(ticker.upper())
+    if not cik:
+        return {}
+    try:
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                         headers=SEC_UA, timeout=15)
+        if not r.ok:
+            return {}
+        recent = ((r.json().get("filings") or {}).get("recent") or {})
+        forms   = recent.get("form") or []
+        dates   = recent.get("filingDate") or []
+        reports = recent.get("reportDate") or []
+        accns   = recent.get("accessionNumber") or []
+        docs    = recent.get("primaryDocument") or []
+        if not forms:
+            return {}
+        # `recent` arrays are newest-first — prefer the latest 10-K/10-Q, then any
+        # meaningful form, then the newest filing of any kind.
+        idx = next((i for i, f in enumerate(forms) if f in ("10-K", "10-Q")), None)
+        if idx is None:
+            idx = next((i for i, f in enumerate(forms) if f in _MEANINGFUL_FORMS), None)
+        if idx is None:
+            idx = 0
+        accn = (accns[idx] if idx < len(accns) else "").replace("-", "")
+        doc  = docs[idx] if idx < len(docs) else ""
+        base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn}"
+        return {
+            "form":       forms[idx],
+            "filed_date": dates[idx] if idx < len(dates) else None,
+            "period":     (reports[idx] or None) if idx < len(reports) else None,
+            "url":        f"{base}/{doc}" if accn and doc else (f"{base}/" if accn else ""),
+            "src":        "edgar",
+        }
+    except requests.exceptions.RequestException as exc:
+        print(f"  [dossier] EDGAR {ticker} failed: {type(exc).__name__}")
+        return {}
+    except Exception:
+        return {}
+
+
 def _latest_filing(ticker: str) -> dict:
+    """Latest SEC filing. EDGAR primary (authoritative, current); Finnhub only as
+    a fallback for names EDGAR doesn't index."""
+    edgar = _edgar_latest_filing(ticker)
+    if edgar:
+        return edgar
     try:
         filings = _fh("/stock/filings", {"symbol": ticker})
         if isinstance(filings, list) and filings:
@@ -846,6 +924,7 @@ def _latest_filing(ticker: str) -> dict:
                 "filed_date": latest.get("filedDate"),
                 "period": latest.get("reportDate"),
                 "url": latest.get("reportUrl", ""),
+                "src": "finnhub",
             }
     except Exception as e:
         return {"error": str(e)}
