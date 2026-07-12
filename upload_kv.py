@@ -351,17 +351,26 @@ def collect_portfolio_results(output_dir: Path) -> tuple[list, dict, list, list]
             continue  # skip non-ticker files (e.g. history files)
         ticker = result["ticker"]
         results.append({"key": f"dd:{ticker}", "value": data})
+        _dossier = data.get("dossier", {})
         index[ticker] = {
             "score":   result.get("consensus_score", 0),
             "grade":   result.get("consensus_grade", "?"),
             "conf":    result.get("confidence", ""),
             # Same built_at-lives-on-the-dossier trap as _scout_card above.
-            "updated": data.get("dossier", {}).get("built_at")
+            "updated": _dossier.get("built_at")
                        or result.get("built_at", ""),
             "loops":   result.get("loops_run", 0),
             "spread":  result.get("score_spread", 0),
             "rr":      (result.get("risk_reward") or {}).get("rr_ratio"),
             "risk":    (result.get("risk_reward") or {}).get("risk_tier"),
+            # Edge & Exposure map inputs (2026-07-12) — carried on the index so
+            # the /portfolio edge/exposure views are one cheap join, no
+            # per-holding dd:<TICKER> reads. upload.js replaces each ticker
+            # entry wholesale, so new fields ride along with no consumer change.
+            "fv":      result.get("fair_value_composite"),
+            "sizePct": (result.get("position_guidance") or {}).get("basis_pct"),
+            "sector":  (_dossier.get("profile") or {}).get("sector"),
+            "beta":    ((_dossier.get("financials") or {}).get("ratios_ttm") or {}).get("beta"),
         }
         # Reflect this run on the Scout board: >= threshold refreshes/creates the
         # card; below threshold removes any stale card for the ticker.
