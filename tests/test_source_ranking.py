@@ -127,3 +127,38 @@ def test_earnings_upcoming_tiger_failure_is_silent(monkeypatch):
     monkeypatch.setattr(broker_sync, "tiger_earnings_dates",
                         lambda *a: (_ for _ in ()).throw(RuntimeError("down")))
     assert dossier._earnings_upcoming("AAPL", None) == []
+
+
+# ── cycle_type sector ranking (2026-07-12): GICS sector, NOT Finnhub industry ──
+# cycle_type feeds scoring.cycle_position_adjust, and _cycle_type keys on GICS
+# sector names. Finnhub's "Semiconductors" matches nothing → HYBRID, which
+# under-scored every semiconductor. These lock the taxonomy the classifier expects.
+
+def test_cycle_type_keys_on_gics_sector_names():
+    # The exact yfinance/GICS strings the resolver passes through.
+    assert dossier._cycle_type("Technology") == "SECULAR"          # semis land here
+    assert dossier._cycle_type("Healthcare") == "SECULAR"
+    assert dossier._cycle_type("Communication Services") == "SECULAR"
+    assert dossier._cycle_type("Utilities") == "DEFENSIVE"
+    assert dossier._cycle_type("Consumer Cyclical") == "CYCLICAL"
+    assert dossier._cycle_type("Industrials") == "HYBRID"          # genuinely mixed
+    # The regression: Finnhub's industry string is NOT a GICS sector → HYBRID.
+    assert dossier._cycle_type("Semiconductors") == "HYBRID"
+
+
+def test_sic_to_sector_fallback_maps_common_descriptions():
+    m = dossier._sic_to_sector
+    assert m("Semiconductors & Related Devices") == "Technology"
+    assert m("Services-Prepackaged Software") == "Technology"
+    assert m("Pharmaceutical Preparations") == "Healthcare"
+    assert m("National Commercial Banks") == "Financial Services"   # \bbanks?\b
+    assert m("Electric Services") == "Utilities"
+    assert m("Crude Petroleum & Natural Gas") == "Energy"
+    # "Investment" must not steal REITs for financials (real-estate rule is first).
+    assert m("Real Estate Investment Trusts") == "Real Estate"
+
+
+def test_sic_to_sector_returns_none_when_unmatched():
+    assert dossier._sic_to_sector(None) is None
+    assert dossier._sic_to_sector("") is None
+    assert dossier._sic_to_sector("Blank Space Widgets") is None    # → HYBRID default

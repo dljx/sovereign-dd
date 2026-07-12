@@ -47,6 +47,39 @@ def _cycle_type(sector: str) -> str:
     return "HYBRID"
 
 
+# SEC SIC description → yfinance/GICS sector name (the exact strings _cycle_type
+# keys on). Used ONLY as a cycle_type fallback when yfinance's sector is blank.
+# Keyed on keywords in the SIC description so it survives the Manufacturing SIC
+# block (2000-3999) that lumps semis, pharma, autos and food under one range.
+# Best-effort: an unmatched description returns None → HYBRID (the safe default).
+_SIC_SECTOR_PATTERNS = [
+    (r"semiconductor|computer|software|electronic component|prepackaged|data processing|internet", "Technology"),
+    (r"pharmaceutic|biolog|medicinal|surgical|medical|health|diagnostic|laborator", "Healthcare"),
+    (r"telephone|telecommunicat|broadcast|cable|motion picture|publishing|advertis", "Communication Services"),
+    # Real estate BEFORE financials — "Real Estate Investment Trusts" contains
+    # "invest" and would otherwise be miscaught by the financials pattern.
+    (r"real estate|land subdivid|\breit\b", "Real Estate"),
+    (r"\bbanks?\b|savings instit|security broker|\binvest|insurance|\bfinanc", "Financial Services"),
+    (r"electric services|gas.*(distribut|transmiss)|water suppl|\butilit|electric & other", "Utilities"),
+    (r"crude petroleum|natural gas|petroleum refin|\boil\b|\bcoal\b|drilling", "Energy"),
+    (r"metal mining|\bgold\b|\bsteel\b|chemical|\bmining\b|paper|forest|agricultur", "Basic Materials"),
+    (r"retail|eating.*place|restaurant|apparel|motor vehicle|\bhotel|leisure|\bstore", "Consumer Cyclical"),
+    (r"\bfood\b|beverage|grocer|household|tobacco", "Consumer Defensive"),
+    (r"machinery|aircraft|construction|electrical equip|engineering|railroad|trucking|air.*transport", "Industrials"),
+]
+
+
+def _sic_to_sector(desc: str | None) -> str | None:
+    """Best-effort SEC SIC description → GICS sector (a cycle_type fallback only)."""
+    if not desc:
+        return None
+    d = desc.lower()
+    for pattern, sector in _SIC_SECTOR_PATTERNS:
+        if re.search(pattern, d):
+            return sector
+    return None
+
+
 def _detect_regime(macro: dict) -> str:
     """Classify the current macro regime from FRED indicators.
 
@@ -877,7 +910,8 @@ def _edgar_latest_filing(ticker: str) -> dict:
                          headers=SEC_UA, timeout=15)
         if not r.ok:
             return {}
-        recent = ((r.json().get("filings") or {}).get("recent") or {})
+        j = r.json()
+        recent = ((j.get("filings") or {}).get("recent") or {})
         forms   = recent.get("form") or []
         dates   = recent.get("filingDate") or []
         reports = recent.get("reportDate") or []
@@ -901,6 +935,9 @@ def _edgar_latest_filing(ticker: str) -> dict:
             "period":     (reports[idx] or None) if idx < len(reports) else None,
             "url":        f"{base}/{doc}" if accn and doc else (f"{base}/" if accn else ""),
             "src":        "edgar",
+            # SEC's own SIC classification — piggybacks on this same fetch (no extra
+            # call). Used only as a cycle_type sector fallback when yfinance is blank.
+            "sic_description": j.get("sicDescription") or None,
         }
     except requests.exceptions.RequestException as exc:
         print(f"  [dossier] EDGAR {ticker} failed: {type(exc).__name__}")
@@ -1083,7 +1120,16 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         "financials_currency":  yf_fin.get("financials_currency") or "USD",
         "fx_rate_to_usd":       yf_fin.get("fx_rate_to_usd"),   # non-None only for converted ADRs
     }
-    dossier["cycle_type"] = _cycle_type(sector)
+    # cycle_type keys on GICS sector names (see _cycle_type / SECTOR_GROWTH_CAP) —
+    # NOT Finnhub's industry string ("Semiconductors" ≠ GICS "Technology"), which
+    # silently mislabelled every semiconductor as HYBRID and cost it ~0.3-0.5 pts
+    # in scoring.cycle_position_adjust (2026-07-12 fix, Daryl-approved). Resolve
+    # GICS-first: yfinance sector → SEC SIC description → HYBRID. profile["sector"]
+    # above stays Finnhub's finer industry label for display.
+    _cycle_sector = (yf_fin.get("sector")
+                     or _sic_to_sector((sec_raw or {}).get("sic_description"))
+                     or "Unknown")
+    dossier["cycle_type"] = _cycle_type(_cycle_sector)
 
     # ── Quote ──â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     dossier["quote"] = {
@@ -1442,7 +1488,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     if isinstance(fh_peers_raw, list) and len(fh_peers_raw) > 1:
         peers = [p for p in fh_peers_raw if p != ticker and re.match(r'^[A-Z]{1,5}$', p)][:4]
     else:
-        peers = [p for p in SECTOR_PEERS.get(sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
+        peers = [p for p in SECTOR_PEERS.get(gics_sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
     peer_results = await asyncio.gather(*[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers") for p in peers])
     dossier["peer_comps"] = [r for r in peer_results if r]
 
