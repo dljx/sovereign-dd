@@ -245,6 +245,87 @@ def _round_stats(s: dict) -> dict:
             "mean": round(s["mean"], 4), "median": round(s["median"], 4)}
 
 
+def compute_backtest(signals: list[dict], closes: dict, vwra: pd.Series,
+                     today: date, hold_weeks: int = 12) -> dict | None:
+    """Follow-the-engine equity curve: hold each CONFIRM equal-/score-weighted
+    from its signal date for `hold_weeks`, daily-compounded, vs buy-and-hold
+    VWRA over the same span.
+
+    HONEST FRAMEWORK, NOT EVIDENCE (2026-07-12): signals only go back ~weeks,
+    n is small, pre-2026-07-03 entry prices are same-day-close backfills, and
+    the exit rule (fixed hold) is imposed not learned — so the curve is partly
+    a function of `hold_weeks`. No survivorship bias (rejects are logged too,
+    but this uses CONFIRMs by design — the 'what the engine told you to buy'
+    line). No look-ahead: a signal only enters on/after its own `discovered`
+    date. Read as a maturing instrument, not proof, until data accrues."""
+    confirms = [s for s in signals
+                if s.get("verdict") == "CONFIRM"
+                and closes.get(s["ticker"]) is not None
+                and s.get("entry_price")]
+    if len(confirms) < 3:
+        return None
+
+    start = min(s["discovered"] for s in confirms)
+    cal = vwra.index[(vwra.index >= pd.Timestamp(start))
+                     & (vwra.index <= pd.Timestamp(today))]
+    if len(cal) < 5:
+        return None
+
+    def daily_ret(ticker):
+        s = closes[ticker].reindex(cal, method="ffill")
+        return s.pct_change().fillna(0.0)
+
+    eq_num = pd.Series(0.0, index=cal)
+    eq_cnt = pd.Series(0.0, index=cal)
+    sc_num = pd.Series(0.0, index=cal)
+    sc_den = pd.Series(0.0, index=cal)
+    for s in confirms:
+        entry = pd.Timestamp(s["discovered"])
+        mask = (cal >= entry) & (cal < entry + pd.Timedelta(weeks=hold_weeks))
+        if not mask.any():
+            continue
+        dr = daily_ret(s["ticker"]).to_numpy()
+        w = float(s.get("score") or 7.0)
+        eq_num.iloc[mask] += dr[mask]
+        eq_cnt.iloc[mask] += 1.0
+        sc_num.iloc[mask] += dr[mask] * w
+        sc_den.iloc[mask] += w
+
+    eq_ret = (eq_num / eq_cnt.replace(0.0, 1.0)).fillna(0.0)
+    sc_ret = (sc_num / sc_den.replace(0.0, 1.0)).fillna(0.0)
+    eq_curve = (1.0 + eq_ret).cumprod()
+    sc_curve = (1.0 + sc_ret).cumprod()
+    vw = vwra.reindex(cal, method="ffill")
+    vw_curve = vw / float(vw.iloc[0])
+
+    def _stats(curve):
+        total = float(curve.iloc[-1]) - 1.0
+        run_max = curve.cummax()
+        max_dd = float(((curve - run_max) / run_max).min())
+        yrs = max((today - start).days / 365.25, 1e-6)
+        cagr = (float(curve.iloc[-1])) ** (1 / yrs) - 1 if curve.iloc[-1] > 0 else None
+        return {"total": round(total, 4),
+                "cagr": round(cagr, 4) if cagr is not None else None,
+                "max_dd": round(max_dd, 4)}
+
+    eq_s, vw_s = _stats(eq_curve), _stats(vw_curve)
+    return {
+        "since": str(start),
+        "hold_weeks": hold_weeks,
+        "n_confirms": len(confirms),
+        "labels": [d.strftime("%b %d") for d in cal],
+        "equal": [round(float(x) * 100, 2) for x in eq_curve],
+        "score": [round(float(x) * 100, 2) for x in sc_curve],
+        "vwra":  [round(float(x) * 100, 2) for x in vw_curve],
+        "stats": {"equal": eq_s, "vwra": vw_s,
+                  "excess_total": round(eq_s["total"] - vw_s["total"], 4)},
+        "note": ("CONFIRM signals held {}w each from signal date, daily-compounded, "
+                 "vs buy-&-hold VWRA. FRAMEWORK not evidence: small n, pre-07-03 "
+                 "entry prices are backfills, the exit rule is imposed. Do not read "
+                 "an early curve as proof.").format(hold_weeks),
+    }
+
+
 def compute_scoreboard(signals: list[dict], closes: dict, vwra: pd.Series,
                        windows: list[int], today: date) -> dict:
     """The scoreboard as data — single source for the text report, the JSON
@@ -675,6 +756,16 @@ def main() -> int:
     bg = compute_behavior_gap(signals, closes, vwra, today, real=fetch_real_nav())
     if bg:
         sb["behavior_gap"] = bg
+    try:
+        bt = compute_backtest(signals, closes, vwra, today)
+        if bt:
+            sb["backtest"] = bt
+            print(f"[analysis] backtest: {bt['n_confirms']} CONFIRMs, "
+                  f"equal {bt['stats']['equal']['total'] * 100:+.1f}% vs VWRA "
+                  f"{bt['stats']['vwra']['total'] * 100:+.1f}% "
+                  f"(excess {bt['stats']['excess_total'] * 100:+.1f}%)")
+    except Exception as e:
+        print(f"[analysis] backtest skipped ({e})")
 
     # Holdings archive (dd_history) — isolated: a failure here must never
     # cost the signal scoreboard.

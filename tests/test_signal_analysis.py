@@ -412,3 +412,59 @@ def test_holdings_analysis_agent_tilt_calibration():
 def test_holdings_analysis_empty_is_none():
     assert sa.compute_holdings_analysis([], {}, _series("2026-06-01", 5, 200, 0.1),
                                         [1], date(2026, 6, 30)) is None
+
+
+# ── backtest framework (2026-07-12) ───────────────────────────────────
+
+
+def test_backtest_confirms_beat_and_trail(monkeypatch):
+    # WIN rises 1%/day, LOSE falls, MID flat; VWRA drifts up. Three CONFIRMs.
+    closes = {"WIN":  _series("2026-06-01", 60, 100, 1.0),
+              "LOSE": _series("2026-06-01", 60, 100, -0.5),
+              "MID":  _series("2026-06-01", 60, 100, 0.0)}
+    vwra = _series("2026-06-01", 60, 200, 0.1)
+    signals = sa.parse_rows([
+        {"ticker": "WIN", "discovered_at": "2026-06-05T00:00:00+00:00",
+         "price": 104.0, "verdict": "CONFIRM", "score": 8.0, "factors": None},
+        {"ticker": "LOSE", "discovered_at": "2026-06-05T00:00:00+00:00",
+         "price": 98.0, "verdict": "CONFIRM", "score": 7.0, "factors": None},
+        {"ticker": "MID", "discovered_at": "2026-06-05T00:00:00+00:00",
+         "price": 100.0, "verdict": "CONFIRM", "score": 7.0, "factors": None},
+        {"ticker": "WIN", "discovered_at": "2026-06-06T00:00:00+00:00",
+         "price": 105.0, "verdict": "DOWNGRADE", "score": 7.5, "factors": None},  # excluded
+    ], "scout")
+    bt = sa.compute_backtest(signals, closes, vwra, date(2026, 7, 25), hold_weeks=8)
+    assert bt is not None
+    assert bt["n_confirms"] == 3                       # DOWNGRADE excluded
+    assert len(bt["equal"]) == len(bt["vwra"]) == len(bt["labels"])
+    assert bt["equal"][0] == 100.0 and bt["vwra"][0] == 100.0   # base-100
+    # score-weight tilts toward WIN (score 8 > 7) → ends >= equal-weight
+    assert bt["score"][-1] >= bt["equal"][-1] - 1e-6
+    assert "FRAMEWORK not evidence" in bt["note"]
+    assert "max_dd" in bt["stats"]["equal"]
+
+
+def test_backtest_needs_three_confirms():
+    closes = {"AAA": _series("2026-06-01", 30, 100, 1.0)}
+    vwra = _series("2026-06-01", 30, 200, 0.1)
+    signals = sa.parse_rows([
+        {"ticker": "AAA", "discovered_at": "2026-06-05T00:00:00+00:00",
+         "price": 100.0, "verdict": "CONFIRM", "score": 8.0, "factors": None},
+    ], "scout")
+    assert sa.compute_backtest(signals, closes, vwra, date(2026, 7, 1)) is None
+
+
+def test_backtest_no_lookahead():
+    # A signal must not contribute before its discovery date.
+    closes = {"WIN": _series("2026-06-01", 60, 100, 1.0),
+              "W2":  _series("2026-06-01", 60, 100, 1.0),
+              "W3":  _series("2026-06-01", 60, 100, 1.0)}
+    vwra = _series("2026-06-01", 60, 200, 0.1)
+    signals = sa.parse_rows([
+        {"ticker": t, "discovered_at": "2026-06-20T00:00:00+00:00",
+         "price": 100.0, "verdict": "CONFIRM", "score": 8.0, "factors": None}
+        for t in ("WIN", "W2", "W3")
+    ], "scout")
+    bt = sa.compute_backtest(signals, closes, vwra, date(2026, 7, 25), hold_weeks=8)
+    # curve starts flat at 100 until the 06-20 entry (first day has no active pos)
+    assert bt["equal"][0] == 100.0
