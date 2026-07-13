@@ -255,6 +255,13 @@ SEARCH_QUERIES = {
     "ValuationEngine": (
         'Search for "{name}" (stock ticker: {ticker}) fair value estimate, price target consensus, '
         "forward PE historical comparison, EV/EBITDA vs peers, forward PEG ratio, NTM earnings growth rate, "
+        # Long-horizon consensus (EPS/revenue 2-3 years out) is licensed data with no
+        # free API path (2026-07-13 survey: FMP-covered symbols only; everything else
+        # paywalled or bot-walled) — but grounded search READS the pages scrapers
+        # can't, so the durability denominator for the PEG base-effect trap comes
+        # from here for FMP-uncovered names.
+        "analyst EPS forecast next 3 years, revenue growth projections for the next 3 fiscal years, "
+        "long-term earnings growth outlook, "
         "analyst estimate revisions upward or downward, EV/NTM Revenue vs peer comps, "
         "AND overvaluation warnings, stretched multiples, value trap signals, "
         "recent earnings reaction, beat or miss vs expectations."
