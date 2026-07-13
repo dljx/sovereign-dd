@@ -8,4 +8,5 @@ pandas==2.3.3
 python-dotenv==1.2.2
 rich==14.3.3
 finvizfinance==1.3.0
+beautifulsoup4==4.14.3   # already a finvizfinance transitive dep; pinned explicitly now that dossier.py imports it directly (Finviz peg_lt fetch)
 tigeropen==3.6.0

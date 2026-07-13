@@ -64,11 +64,13 @@ _VERSION_REGISTER = {
        "input not an auto-reject, DOWNGRADE surfaces flagged, calm-window "
        "re-verification of UNVERIFIED holds",
     4: "since 2026-07-13 — NTM-PEG disambiguation (PEG cited by basis, "
-       "base-effect trap in ValuationEngine, AV PEGRatio dropped as junk-basis, "
-       "peg_lt = fwd PE ÷ consensus EPS CAGR via FMP then AV EARNINGS_ESTIMATES "
-       "fallback — Nasdaq forecast rejected, verified GAAP-basis mismatch vs "
-       "the non-GAAP fwd_pe) + GICS-first cycle_type defect fix (live 07-12: "
-       "semis SECULAR not HYBRID)",
+       "base-effect trap requires BOTH peg_lt divergence AND implied_ntm_growth "
+       "checks — a multi-year recovery can keep both PEG readings cheap "
+       "together, found live on MRVL; AV PEGRatio dropped as junk-basis). "
+       "peg_lt = fwd PE ÷ consensus EPS CAGR, best-horizon-first: Finviz "
+       "true-5yr (runtime basis-cross-checked) → FMP (~2yr) → AV (~1-2yr) "
+       "— Nasdaq forecast rejected, verified GAAP-basis mismatch. Also "
+       "GICS-first cycle_type defect fix (live 07-12: semis SECULAR not HYBRID)",
 }
 
 

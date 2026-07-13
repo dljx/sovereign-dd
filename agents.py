@@ -125,20 +125,31 @@ PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
   - NTM PEG 1.0–2.0: fairly valued on growth — neutral
   - NTM PEG 2.0–3.0: premium requires strong catalyst justification
   - NTM PEG > 3.0: unjustified premium — negative signal
-  BASE-EFFECT TRAP: a single rebound year (margin normalization, cost cuts, an easy compare,
-  or a GAAP→non-GAAP basis jump) spikes next-year EPS growth and compresses the NTM PEG
-  without saying anything about years 2-5. Ignore third-party published "PEG" figures — they
-  carry unstated growth bases. Before scoring a sub-1.0 NTM PEG as underpriced growth, check
-  durability:
-  - ratios_ttm.peg_lt (Fwd P/E ÷ FY+1→FY+3 consensus EPS CAGR — known basis; present only
-    for covered symbols): NTM PEG < 1.0 while peg_lt > 1.5 means the cheapness is one year
-    deep — call it out and weigh toward peg_lt;
-  - when peg_lt is absent: ratios_ttm.implied_ntm_growth (forward vs trailing EPS) towering
-    over fwd_revenue_growth means the EPS jump is margin catch-up or an SBC-blind non-GAAP
-    basis gap, not compounding — and use your web research for growth projected BEYOND the
-    next fiscal year.
-  If the cheapness is one year deep, say so explicitly and value the business on normalized
-  years-2-5 growth instead.
+  BASE-EFFECT TRAP: a rebound period (margin normalization, cost cuts, an easy compare, a
+  GAAP→non-GAAP basis jump, or recovery from an impairment/one-time charge) spikes near-term
+  EPS growth and compresses the NTM PEG without saying anything about steady-state economics.
+  Ignore third-party published "PEG" figures — they carry unstated growth bases. Before
+  scoring a sub-1.0 NTM PEG as underpriced growth, check durability using BOTH of these —
+  they catch different failure modes, so use both, not either/or:
+  - ratios_ttm.peg_lt (Fwd P/E ÷ a genuine long-horizon consensus EPS growth rate —
+    ratios_ttm.eps_cagr_fwd_years tells you the actual horizon, typically 5y when sourced
+    from Finviz, ~1-2y when it fell back to FMP/Alpha Vantage; present for most covered
+    symbols now, but check the years field before treating it as "long-term"): NTM PEG < 1.0
+    while peg_lt > 1.5 means the cheapness is short-horizon only — call it out and weigh
+    toward peg_lt.
+  - ALWAYS ALSO check ratios_ttm.implied_ntm_growth (forward vs trailing EPS) against
+    fwd_revenue_growth, even when peg_lt looks fine. A multi-year earnings-recovery bridge
+    (e.g. a name still climbing back from a prior-year impairment or one-time charge) can
+    depress BOTH the NTM and the long-horizon growth-rate denominator similarly, so peg_lt
+    can stay cheap right alongside the NTM PEG with no divergence between them to catch —
+    a lack of divergence is not proof of durability. implied_ntm_growth towering over
+    fwd_revenue_growth is the tell regardless of what peg_lt shows: it means the EPS jump is
+    margin catch-up or a GAAP-recovery/non-GAAP basis gap, not organic compounding. Use your
+    web research to see whether trailing GAAP earnings were recently depressed by a one-time
+    item — if so, both PEG readings are measuring a recovery, not a growth rate, and neither
+    should be scored as "cheap, durable growth" on its own.
+  If the cheapness turns out to be short-horizon or recovery-driven, say so explicitly and
+  value the business on normalized steady-state growth instead.
   Secondary: FCF Yield > 5% supports valuation. Rule of 40 >= 40 justifies a premium multiple.
   Always deduct SBC from FCF before computing EV/FCF — inflated SBC is masked value destruction
   (and remember consensus forward EPS is typically non-GAAP, i.e. SBC-blind, for SaaS names).

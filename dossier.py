@@ -32,6 +32,10 @@ _fmp_lock = threading.Lock()     # FMP rate-limit: 10 RPM free tier
 _fmp_last_call: float = 0.0
 _FMP_MIN_INTERVAL = 6.0          # seconds between calls (10 RPM = 1 per 6s)
 
+_finviz_lock = threading.Lock()  # no published limit; throttled defensively —
+_finviz_last_call: float = 0.0   # same spacing finviz_screener.enrich_candidates
+_FINVIZ_MIN_INTERVAL = 1.5       # already uses against this exact site
+
 
 # ── Cycle type classification ──────────────────────────────────────────────────
 _CYCLICAL_SECTORS = {"Energy", "Basic Materials", "Consumer Cyclical", "Real Estate"}
@@ -237,8 +241,11 @@ def _fwd_eps_cagr(future: list) -> tuple[float, int] | None:
 
 
 # ── Long-horizon EPS CAGR fallback chain (2026-07-13) ──────────────────────────
-# FMP's free tier 402s some symbols (verified: MNDY, MRVL). Exhaustive survey of
-# free/keyless alternatives for multi-year consensus EPS:
+# FMP's free tier 402s some symbols (verified: MNDY, MRVL), AND even when FMP
+# covers a symbol, _fwd_eps_cagr caps its reach at ~FY+2/+3 (further rows are
+# analyst-thin) — so a "peg_lt" built only from FMP/AV was never a TRUE 5-year
+# figure for anyone. Exhaustive survey of free alternatives for a real 5-year
+# consensus growth rate, all live-verified 2026-07-13:
 #   worked live but WRONG BASIS, rejected → Nasdaq api.nasdaq.com/api/analyst/
 #     .../earnings-forecast (keyless, undocumented, 3 future FYs for both MNDY
 #     & MRVL — looked like a clean win). Cross-checked its numbers against
@@ -249,23 +256,96 @@ def _fwd_eps_cagr(future: list) -> tuple[float, int] | None:
 #     A GAAP-basis growth rate divided into a non-GAAP-basis fwd PE would have
 #     produced a peg_lt that's WRONG IN THE DANGEROUS DIRECTION — falsely
 #     cheap, defeating the entire point of a "known basis" long-horizon PEG.
-#     Deliberately not integrated, despite fetching cleanly. If revisited, it
-#     would need its own EPS-basis normalization first, not a straight ratio.
-#   worked + basis-verified consistent → Alpha Vantage EARNINGS_ESTIMATES
-#     (documented, same key pool as _av() above; its EPS rows matched
-#     yfinance's forwardEps to 4 decimal places on both MNDY and MRVL — same
-#     consensus basis as everything else in ratios_ttm).
+#     Deliberately not integrated. If revisited, it needs its own EPS-basis
+#     normalization first, not a straight ratio.
+#   worked + basis-verified consistent, PRIMARY → Finviz's quote page "EPS
+#     next 5Y" ("Long term annual growth estimate (5 years)" per its own
+#     tooltip) — a genuine 5-year consensus figure, unlike anything FMP/AV/
+#     yfinance expose free. Verification chain (not just one spot check):
+#       1. Finviz's OWN published PEG reconciles EXACTLY against its OWN
+#          displayed Forward P/E ÷ EPS-next-5Y (MNDY: 15.29/12.11% = 1.263
+#          computed vs 1.26 published) — confirms forward-PE basis, not
+#          trailing, not GAAP.
+#       2. Finviz's adjacent "EPS next Y" field (21.14% for MNDY) matched our
+#          OWN independently-computed AV-derived near-term growth (0.2114) to
+#          4 significant figures — cross-vendor confirmation, not an echo of
+#          the same upstream provider.
+#       3. _resolve_eps_cagr below ALSO cross-checks Finviz's displayed
+#          Forward P/E against our own fwd_pe at RUNTIME, per ticker, before
+#          trusting its growth rate — generalizing the manual spot-check into
+#          an always-on guard (same 25%-divergence philosophy as
+#          signal_analysis.py's split/bad-price guard: real basis mismatches
+#          run 2x+, not a few percent).
+#     Fetched directly (NOT via finvizfinance's FinvizQuote class, which
+#     live-tested to sometimes return a stripped page with no data table at
+#     all) using finviz_screener._parse_fundament — the in-house parser this
+#     same investigation found and fixed (it had been silently dropping 5 of
+#     Finviz's 6 sibling snapshot tables; see finviz_screener.py).
+#   fallback, ~1-2yr only → FMP (already fetched by the caller) → Alpha
+#     Vantage EARNINGS_ESTIMATES (documented, same key pool as _av() above;
+#     basis-verified against yfinance's forwardEps to 4 decimal places).
 #   blocked      → Finnhub /stock/eps-estimate (403, premium-gated on our key),
 #                  StockAnalysis.com, TipRanks (bot-walled)
 #   no forward data → Zacks quote-feed (has pe_f1 but no forward EPS field)
 
+_FINVIZ_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+
+def _finviz_pct(s) -> float | None:
+    """Parse a Finviz percent-string field ('12.11%', '-', None) to a fraction."""
+    if not isinstance(s, str):
+        return None
+    s = s.strip().replace(",", "")
+    if not s or s == "-":
+        return None
+    try:
+        return float(s.rstrip("%")) / 100
+    except ValueError:
+        return None
+
+
+def _finviz_growth_5y(ticker: str) -> dict:
+    """5-year consensus EPS growth + Forward P/E straight from Finviz's quote
+    page (see the module comment above for the verification chain). Fetched
+    directly with a browser UA — the finvizfinance library's own FinvizQuote
+    fetch was live-tested to sometimes return a stripped page with no data
+    table, unrelated to the six-sibling-table parsing bug also fixed this
+    session. Only a positive growth rate is usable (PEG is not a meaningful
+    concept against expected decline). Returns {} on any failure or missing
+    field — never a partial/fabricated result."""
+    global _finviz_last_call
+    with _finviz_lock:
+        wait = _FINVIZ_MIN_INTERVAL - (time.time() - _finviz_last_call)
+        if wait > 0:
+            time.sleep(wait)
+        _finviz_last_call = time.time()
+    try:
+        r = requests.get(f"https://finviz.com/quote.ashx?t={ticker}",
+                         headers={"User-Agent": _FINVIZ_UA}, timeout=15)
+        if not r.ok:
+            return {}
+        from bs4 import BeautifulSoup
+        from finviz_screener import _parse_fundament
+        info = _parse_fundament(BeautifulSoup(r.text, "html.parser"), ticker)
+    except requests.exceptions.RequestException as exc:
+        print(f"  [dossier] Finviz {ticker} failed: {type(exc).__name__}")
+        return {}
+    except Exception:
+        return {}
+    eps_5y = _finviz_pct(info.get("EPS next 5Y"))
+    fwd_pe = _safe_float(info.get("Forward P/E"))
+    if eps_5y is None or eps_5y <= 0 or fwd_pe is None:
+        return {}
+    return {"eps_5y": eps_5y, "fwd_pe": fwd_pe}
+
+
 def _av_eps_estimates_fwd(ticker: str) -> list[dict] | dict:
     """Forward-year EPS consensus via Alpha Vantage's EARNINGS_ESTIMATES —
-    documented, shares the throttled multi-key AV pool _av() already manages
-    (only reached when FMP 402s the symbol). Basis-verified consistent with
-    yfinance's forwardEps (see the module comment above) — safe to divide
-    fwd_pe by. Fiscal-year-horizon rows only; sorted oldest-first, keyed
-    "epsAvg" for _fwd_eps_cagr."""
+    documented, shares the throttled multi-key AV pool _av() already manages.
+    Basis-verified consistent with yfinance's forwardEps (see the module
+    comment above) — safe to divide fwd_pe by. Fiscal-year-horizon rows only;
+    sorted oldest-first, keyed "epsAvg" for _fwd_eps_cagr."""
     data = _av("EARNINGS_ESTIMATES", {"symbol": ticker})
     rows = data.get("estimates") if isinstance(data, dict) else None
     if not isinstance(rows, list):
@@ -284,14 +364,28 @@ def _av_eps_estimates_fwd(ticker: str) -> list[dict] | dict:
     return out
 
 
-def _resolve_eps_cagr(ticker: str, fmp_cagr: float | None,
-                      fmp_years: int | None) -> tuple[float | None, int | None, str | None]:
-    """Long-horizon EPS CAGR for peg_lt: FMP (already fetched by the caller —
-    5 FYs when covered) → Alpha Vantage EARNINGS_ESTIMATES (2 FYs, basis
-    verified to match yfinance's forwardEps — see the module comment above;
-    only reached for the minority FMP's free tier 402s). Cached independently
-    (see cache.cached) so a miss isn't re-fetched every run.
-    Returns (cagr, years, source) or (None, None, None)."""
+_FWD_PE_DIVERGENCE_MAX = 0.25  # same threshold as signal_analysis's split/bad-price guard
+
+
+def _resolve_eps_cagr(ticker: str, fmp_cagr: float | None, fmp_years: int | None,
+                      fwd_pe_clean: float | None) -> tuple[float | None, int | None, str | None]:
+    """Long-horizon EPS CAGR for peg_lt, best-horizon-first: Finviz "EPS next
+    5Y" (true 5-year consensus — see the module comment above) when its own
+    Forward P/E is within 25% of our independently-computed fwd_pe_clean →
+    FMP (already fetched by the caller, ~2yr reach in practice) → Alpha
+    Vantage EARNINGS_ESTIMATES (~1-2yr). Finviz is tried FIRST for every
+    ticker, not just names FMP's free tier misses — reach and horizon
+    shouldn't depend on which vendor happens to cover a name. Falls through
+    cleanly (never fabricates) when fwd_pe_clean is unavailable (can't verify
+    Finviz's basis — e.g. an ADR-nulled name) or any source is missing/fails.
+    Cached independently per source (see cache.cached) so a miss isn't
+    re-fetched every run. Returns (cagr, years, source) or (None, None, None)."""
+    if fwd_pe_clean and fwd_pe_clean > 0:
+        fz = cached(f"finviz:eps5y:{ticker}", 168, _finviz_growth_5y, ticker)
+        if isinstance(fz, dict) and fz.get("eps_5y") and fz.get("fwd_pe"):
+            divergence = abs(fz["fwd_pe"] - fwd_pe_clean) / fwd_pe_clean
+            if divergence <= _FWD_PE_DIVERGENCE_MAX:
+                return fz["eps_5y"], 5, "finviz"
     if fmp_cagr:
         return fmp_cagr, fmp_years, "fmp"
     rows = cached(f"av:EPSEST:{ticker}", 24, _av_eps_estimates_fwd, ticker)
@@ -1357,11 +1451,12 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _dv = _de_w / (1 + _de_w) if _de_w > 0 else 0.0
         _wacc = round((1 - _dv) * _ke + _dv * 0.05 * 0.79, 4)
 
-    # Long-horizon EPS CAGR (peg_lt denominator) — FMP already fetched; only
-    # reaches the network again (AV, thread-hopped, blocking IO) for the
-    # minority of tickers FMP's free tier doesn't cover.
+    # Long-horizon EPS CAGR (peg_lt denominator) — tries Finviz's true 5-year
+    # consensus first (cross-checked against _fwd_pe_clean, computed above),
+    # falling back to FMP/AV's ~1-2yr reach. Thread-hopped: blocking IO.
     _cagr_fwd, _cagr_years, _cagr_src = await asyncio.to_thread(
-        _resolve_eps_cagr, ticker, _fmp_est.get("eps_cagr_fwd"), _fmp_est.get("eps_cagr_years"))
+        _resolve_eps_cagr, ticker, _fmp_est.get("eps_cagr_fwd"),
+        _fmp_est.get("eps_cagr_years"), _fwd_pe_clean)
 
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
@@ -1395,11 +1490,13 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             # single rebound year spikes EPS off a low base — agents must cite
             # it as "NTM PEG" and apply the base-effect trap (agents.py PATH A).
             "fwd_peg":                 _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
-            # Long-horizon PEG: fwd PE ÷ FY+1→FY+2/3 consensus EPS CAGR, known
-            # basis (see _fwd_eps_cagr) — the durable-growth cross-check on a
-            # compressed NTM PEG. Source chain: FMP → Alpha Vantage (see
-            # _resolve_eps_cagr — Nasdaq was tried and rejected, wrong EPS
-            # basis); "src" is the audit trail, None only if both miss.
+            # Long-horizon PEG: fwd PE ÷ long-horizon consensus EPS CAGR, known
+            # basis — the durable-growth cross-check on a compressed NTM PEG.
+            # Source chain (see _resolve_eps_cagr): Finviz "EPS next 5Y" —
+            # TRUE 5yr, runtime-cross-checked against fwd_pe_clean — → FMP
+            # (~2yr reach) → Alpha Vantage (~1-2yr). Nasdaq was tried and
+            # rejected (wrong EPS basis). "src"/"years" are the audit trail;
+            # None only if every source misses.
             "eps_cagr_fwd":            _cagr_fwd,
             "eps_cagr_fwd_years":      _cagr_years,
             "eps_cagr_fwd_src":        _cagr_src,

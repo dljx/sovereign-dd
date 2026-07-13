@@ -198,15 +198,23 @@ def test_fwd_eps_cagr_guards():
     assert years == 2 and abs(cagr - 0.2) < 1e-4
 
 
-# ── peg_lt fallback chain (2026-07-13): FMP → Alpha Vantage EARNINGS_ESTIMATES ─
+# ── peg_lt fallback chain (2026-07-13): Finviz "EPS next 5Y" → FMP → Alpha
+# Vantage EARNINGS_ESTIMATES ───────────────────────────────────────────────────
 # Nasdaq's keyless analyst-forecast endpoint was tried and REJECTED after a live
 # cross-check: its EPS figures run on a different (GAAP) basis than fwd_pe (non-
 # GAAP) — MNDY's Nasdaq FY2026 EPS was 1.59 vs yfinance/AV's 5.39, a ~3.4x gap.
 # Dividing fwd_pe by a GAAP-basis growth rate would silently understate peg_lt
-# (falsely cheap) — the dangerous direction. AV's EARNINGS_ESTIMATES matched
-# yfinance's forwardEps to 4 decimal places on both MNDY and MRVL — verified
-# same basis, safe to use. No test exercises the rejected Nasdaq path — it was
-# never wired into _resolve_eps_cagr.
+# (falsely cheap) — the dangerous direction. No test exercises the rejected
+# Nasdaq path — it was never wired into _resolve_eps_cagr.
+#
+# Finviz's "EPS next 5Y" is a genuine 5-year consensus (verified: its own PEG
+# reconciles exactly via its own Forward P/E ÷ EPS-next-5Y; its adjacent "EPS
+# next Y" matched our independently-computed AV growth to 4 sig figs) and is
+# tried FIRST for every ticker — but ONLY when its own displayed Forward P/E is
+# within 25% of our fwd_pe_clean (the runtime generalization of that manual
+# verification — a real basis mismatch runs 2x+, not a few percent). FMP/AV
+# stay as the ~1-2yr fallback when Finviz is unavailable, mismatched, or
+# fwd_pe_clean itself is unknown (can't verify Finviz's basis without it).
 
 
 def test_av_eps_estimates_fwd_filters_to_future_fiscal_year_rows(monkeypatch):
@@ -229,23 +237,106 @@ def test_av_eps_estimates_fwd_bad_shape_returns_empty_dict(monkeypatch):
     assert dossier._av_eps_estimates_fwd("GHOST") == {}
 
 
-def test_resolve_eps_cagr_fmp_short_circuits_no_network(monkeypatch):
+# ── _finviz_pct ──────────────────────────────────────────────────────────────
+
+def test_finviz_pct_parses_and_guards():
+    assert abs(dossier._finviz_pct("12.11%") - 0.1211) < 1e-9
+    assert abs(dossier._finviz_pct("-5.20%") - (-0.052)) < 1e-9
+    assert dossier._finviz_pct("-") is None
+    assert dossier._finviz_pct("") is None
+    assert dossier._finviz_pct(None) is None
+    assert dossier._finviz_pct("garbage%") is None
+
+
+# ── _finviz_growth_5y ────────────────────────────────────────────────────────
+
+def _mock_finviz_response(monkeypatch, fields: dict, status=200):
+    monkeypatch.setattr(dossier, "_finviz_last_call", 0.0)  # skip the real throttle sleep
+    cells = []
+    for k, v in fields.items():
+        cells.append(f"<td>{k}</td><td>{v}</td>")
+    html = f'<html><body><table class="snapshot-table2"><tr>{"".join(cells)}</tr></table></body></html>'
+    class _Resp:
+        ok = status == 200
+        status_code = status
+        text = html
+    monkeypatch.setattr(dossier.requests, "get", lambda *a, **k: _Resp())
+
+
+def test_finviz_growth_5y_parses_positive_growth(monkeypatch):
+    _mock_finviz_response(monkeypatch, {"EPS next 5Y": "12.11%", "Forward P/E": "15.29"})
+    out = dossier._finviz_growth_5y("MNDY")
+    assert abs(out["eps_5y"] - 0.1211) < 1e-9
+    assert abs(out["fwd_pe"] - 15.29) < 1e-9
+
+
+def test_finviz_growth_5y_rejects_negative_or_missing(monkeypatch):
+    _mock_finviz_response(monkeypatch, {"EPS next 5Y": "-3.00%", "Forward P/E": "15.29"})
+    assert dossier._finviz_growth_5y("DECLINE") == {}   # negative growth: PEG meaningless
+    _mock_finviz_response(monkeypatch, {"Forward P/E": "15.29"})
+    assert dossier._finviz_growth_5y("NOFIELD") == {}   # field absent entirely
+
+
+def test_finviz_growth_5y_http_failure_returns_empty(monkeypatch):
+    _mock_finviz_response(monkeypatch, {"EPS next 5Y": "12.11%", "Forward P/E": "15.29"}, status=403)
+    assert dossier._finviz_growth_5y("BLOCKED") == {}
+
+
+def test_finviz_growth_5y_network_exception_returns_empty(monkeypatch):
+    import requests as _requests
+    monkeypatch.setattr(dossier, "_finviz_last_call", 0.0)  # skip the real throttle sleep
+    monkeypatch.setattr(dossier.requests, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(_requests.exceptions.Timeout()))
+    assert dossier._finviz_growth_5y("TIMEOUT") == {}
+
+
+# ── _resolve_eps_cagr priority chain ────────────────────────────────────────
+
+def test_resolve_eps_cagr_prefers_finviz_over_fmp_when_basis_matches(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(dossier, "_finviz_growth_5y",
+                        lambda t: {"eps_5y": 0.1211, "fwd_pe": 15.29})
+    # FMP also has a value, but Finviz — the truer 5yr horizon — must win.
+    cagr, years, src = dossier._resolve_eps_cagr("MNDY", 0.21, 1, fwd_pe_clean=15.291081)
+    assert (cagr, years, src) == (0.1211, 5, "finviz")
+
+
+def test_resolve_eps_cagr_rejects_finviz_on_basis_mismatch(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    # Finviz's own fwd_pe is >25% off ours — e.g. a stale/ADR/split mismatch —
+    # so its growth rate must NOT be trusted; falls through to FMP.
+    monkeypatch.setattr(dossier, "_finviz_growth_5y",
+                        lambda t: {"eps_5y": 0.50, "fwd_pe": 40.0})
+    cagr, years, src = dossier._resolve_eps_cagr("MNDY", 0.21, 1, fwd_pe_clean=15.29)
+    assert (cagr, years, src) == (0.21, 1, "fmp")
+
+
+def test_resolve_eps_cagr_skips_finviz_when_fwd_pe_unknown(monkeypatch):
     monkeypatch.setattr(dossier, "cached",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("network hit despite FMP success")))
-    cagr, years, src = dossier._resolve_eps_cagr("AAPL", 0.1026, 2)
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Finviz hit despite no fwd_pe to verify against")))
+    cagr, years, src = dossier._resolve_eps_cagr("AAPL", 0.1026, 2, fwd_pe_clean=None)
     assert (cagr, years, src) == (0.1026, 2, "fmp")
 
 
-def test_resolve_eps_cagr_falls_back_to_av_when_fmp_misses(monkeypatch):
+def test_resolve_eps_cagr_finviz_empty_falls_back_to_fmp(monkeypatch):
     monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(dossier, "_finviz_growth_5y", lambda t: {})
+    cagr, years, src = dossier._resolve_eps_cagr("AAPL", 0.1026, 2, fwd_pe_clean=32.8)
+    assert (cagr, years, src) == (0.1026, 2, "fmp")
+
+
+def test_resolve_eps_cagr_falls_back_to_av_when_finviz_and_fmp_miss(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(dossier, "_finviz_growth_5y", lambda t: {})
     monkeypatch.setattr(dossier, "_av_eps_estimates_fwd", lambda t: [
         {"date": "2026-12-31", "epsAvg": 4.4521}, {"date": "2027-12-31", "epsAvg": 5.3933}])
-    cagr, years, src = dossier._resolve_eps_cagr("MNDY", None, None)
+    cagr, years, src = dossier._resolve_eps_cagr("MNDY", None, None, fwd_pe_clean=15.29)
     assert src == "av" and years == 1
     assert abs(cagr - (5.3933 / 4.4521 - 1)) < 1e-4
 
 
-def test_resolve_eps_cagr_both_miss_returns_none_triple(monkeypatch):
+def test_resolve_eps_cagr_all_sources_miss_returns_none_triple(monkeypatch):
     monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(dossier, "_finviz_growth_5y", lambda t: {})
     monkeypatch.setattr(dossier, "_av_eps_estimates_fwd", lambda t: [])
-    assert dossier._resolve_eps_cagr("GHOST", None, None) == (None, None, None)
+    assert dossier._resolve_eps_cagr("GHOST", None, None, fwd_pe_clean=20.0) == (None, None, None)
