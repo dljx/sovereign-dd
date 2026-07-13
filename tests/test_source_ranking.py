@@ -196,3 +196,56 @@ def test_fwd_eps_cagr_guards():
     # Missing middle year: skips to the FY+2 row, years distance stays honest.
     cagr, years = dossier._fwd_eps_cagr([_fy(2.0), _fy(None), _fy(2.88)])
     assert years == 2 and abs(cagr - 0.2) < 1e-4
+
+
+# ── peg_lt fallback chain (2026-07-13): FMP → Alpha Vantage EARNINGS_ESTIMATES ─
+# Nasdaq's keyless analyst-forecast endpoint was tried and REJECTED after a live
+# cross-check: its EPS figures run on a different (GAAP) basis than fwd_pe (non-
+# GAAP) — MNDY's Nasdaq FY2026 EPS was 1.59 vs yfinance/AV's 5.39, a ~3.4x gap.
+# Dividing fwd_pe by a GAAP-basis growth rate would silently understate peg_lt
+# (falsely cheap) — the dangerous direction. AV's EARNINGS_ESTIMATES matched
+# yfinance's forwardEps to 4 decimal places on both MNDY and MRVL — verified
+# same basis, safe to use. No test exercises the rejected Nasdaq path — it was
+# never wired into _resolve_eps_cagr.
+
+
+def test_av_eps_estimates_fwd_filters_to_future_fiscal_year_rows(monkeypatch):
+    monkeypatch.setattr(dossier, "_av", lambda fn, params: {"estimates": [
+        {"horizon": "fiscal quarter", "date": "2026-09-30", "eps_estimate_average": "1.08"},
+        {"horizon": "fiscal year", "date": "2020-12-31", "eps_estimate_average": "9.99"},  # past
+        {"horizon": "fiscal year", "date": "2027-12-31", "eps_estimate_average": "5.3933"},
+        {"horizon": "fiscal year", "date": "2026-12-31", "eps_estimate_average": "4.4521"},
+    ]})
+    rows = dossier._av_eps_estimates_fwd("MNDY")
+    # quarterly row and the stale 2020 row dropped; sorted oldest-first.
+    assert rows == [{"date": "2026-12-31", "epsAvg": 4.4521},
+                    {"date": "2027-12-31", "epsAvg": 5.3933}]
+
+
+def test_av_eps_estimates_fwd_bad_shape_returns_empty_dict(monkeypatch):
+    monkeypatch.setattr(dossier, "_av", lambda fn, params: {})
+    assert dossier._av_eps_estimates_fwd("GHOST") == {}
+    monkeypatch.setattr(dossier, "_av", lambda fn, params: {"estimates": "not-a-list"})
+    assert dossier._av_eps_estimates_fwd("GHOST") == {}
+
+
+def test_resolve_eps_cagr_fmp_short_circuits_no_network(monkeypatch):
+    monkeypatch.setattr(dossier, "cached",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("network hit despite FMP success")))
+    cagr, years, src = dossier._resolve_eps_cagr("AAPL", 0.1026, 2)
+    assert (cagr, years, src) == (0.1026, 2, "fmp")
+
+
+def test_resolve_eps_cagr_falls_back_to_av_when_fmp_misses(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(dossier, "_av_eps_estimates_fwd", lambda t: [
+        {"date": "2026-12-31", "epsAvg": 4.4521}, {"date": "2027-12-31", "epsAvg": 5.3933}])
+    cagr, years, src = dossier._resolve_eps_cagr("MNDY", None, None)
+    assert src == "av" and years == 1
+    assert abs(cagr - (5.3933 / 4.4521 - 1)) < 1e-4
+
+
+def test_resolve_eps_cagr_both_miss_returns_none_triple(monkeypatch):
+    monkeypatch.setattr(dossier, "cached", _passthrough_cached)
+    monkeypatch.setattr(dossier, "_av_eps_estimates_fwd", lambda t: [])
+    assert dossier._resolve_eps_cagr("GHOST", None, None) == (None, None, None)

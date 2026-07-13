@@ -236,6 +236,71 @@ def _fwd_eps_cagr(future: list) -> tuple[float, int] | None:
     return round((tgt["epsAvg"] / base) ** (1 / years) - 1, 4), years
 
 
+# ── Long-horizon EPS CAGR fallback chain (2026-07-13) ──────────────────────────
+# FMP's free tier 402s some symbols (verified: MNDY, MRVL). Exhaustive survey of
+# free/keyless alternatives for multi-year consensus EPS:
+#   worked live but WRONG BASIS, rejected → Nasdaq api.nasdaq.com/api/analyst/
+#     .../earnings-forecast (keyless, undocumented, 3 future FYs for both MNDY
+#     & MRVL — looked like a clean win). Cross-checked its numbers against
+#     yfinance's forwardEps (what fwd_pe is built on) before trusting it: for
+#     MNDY, Nasdaq's FY2026 EPS = 1.59 vs yfinance/AV = 5.39 — a ~3.4x gap,
+#     same pattern on MRVL (3.07 vs 6.18). Nasdaq's "earnings forecast" is
+#     GAAP-basis; the rest of this file's forward-PE machinery is non-GAAP.
+#     A GAAP-basis growth rate divided into a non-GAAP-basis fwd PE would have
+#     produced a peg_lt that's WRONG IN THE DANGEROUS DIRECTION — falsely
+#     cheap, defeating the entire point of a "known basis" long-horizon PEG.
+#     Deliberately not integrated, despite fetching cleanly. If revisited, it
+#     would need its own EPS-basis normalization first, not a straight ratio.
+#   worked + basis-verified consistent → Alpha Vantage EARNINGS_ESTIMATES
+#     (documented, same key pool as _av() above; its EPS rows matched
+#     yfinance's forwardEps to 4 decimal places on both MNDY and MRVL — same
+#     consensus basis as everything else in ratios_ttm).
+#   blocked      → Finnhub /stock/eps-estimate (403, premium-gated on our key),
+#                  StockAnalysis.com, TipRanks (bot-walled)
+#   no forward data → Zacks quote-feed (has pe_f1 but no forward EPS field)
+
+def _av_eps_estimates_fwd(ticker: str) -> list[dict] | dict:
+    """Forward-year EPS consensus via Alpha Vantage's EARNINGS_ESTIMATES —
+    documented, shares the throttled multi-key AV pool _av() already manages
+    (only reached when FMP 402s the symbol). Basis-verified consistent with
+    yfinance's forwardEps (see the module comment above) — safe to divide
+    fwd_pe by. Fiscal-year-horizon rows only; sorted oldest-first, keyed
+    "epsAvg" for _fwd_eps_cagr."""
+    data = _av("EARNINGS_ESTIMATES", {"symbol": ticker})
+    rows = data.get("estimates") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    today = datetime.now(timezone.utc).date().isoformat()
+    out = []
+    for e in rows:
+        if not isinstance(e, dict) or e.get("horizon") != "fiscal year":
+            continue
+        edate = e.get("date")
+        eps = _safe_float(e.get("eps_estimate_average"))
+        if not edate or str(edate) < today or eps is None:
+            continue
+        out.append({"date": str(edate), "epsAvg": eps})
+    out.sort(key=lambda x: x["date"])
+    return out
+
+
+def _resolve_eps_cagr(ticker: str, fmp_cagr: float | None,
+                      fmp_years: int | None) -> tuple[float | None, int | None, str | None]:
+    """Long-horizon EPS CAGR for peg_lt: FMP (already fetched by the caller —
+    5 FYs when covered) → Alpha Vantage EARNINGS_ESTIMATES (2 FYs, basis
+    verified to match yfinance's forwardEps — see the module comment above;
+    only reached for the minority FMP's free tier 402s). Cached independently
+    (see cache.cached) so a miss isn't re-fetched every run.
+    Returns (cagr, years, source) or (None, None, None)."""
+    if fmp_cagr:
+        return fmp_cagr, fmp_years, "fmp"
+    rows = cached(f"av:EPSEST:{ticker}", 24, _av_eps_estimates_fwd, ticker)
+    got = _fwd_eps_cagr(rows if isinstance(rows, list) else [])
+    if got:
+        return got[0], got[1], "av"
+    return None, None, None
+
+
 def _fmp_estimates(ticker: str) -> dict:
     """Fetch annual analyst consensus from FMP stable API (250 req/day free tier).
 
@@ -1292,6 +1357,12 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _dv = _de_w / (1 + _de_w) if _de_w > 0 else 0.0
         _wacc = round((1 - _dv) * _ke + _dv * 0.05 * 0.79, 4)
 
+    # Long-horizon EPS CAGR (peg_lt denominator) — FMP already fetched; only
+    # reaches the network again (AV, thread-hopped, blocking IO) for the
+    # minority of tickers FMP's free tier doesn't cover.
+    _cagr_fwd, _cagr_years, _cagr_src = await asyncio.to_thread(
+        _resolve_eps_cagr, ticker, _fmp_est.get("eps_cagr_fwd"), _fmp_est.get("eps_cagr_years"))
+
     dossier["financials"] = {
         "income":   yf_fin.get("income")   or fmp_income,
         "balance":  yf_fin.get("balance")  or fmp_balance,
@@ -1324,12 +1395,15 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             # single rebound year spikes EPS off a low base — agents must cite
             # it as "NTM PEG" and apply the base-effect trap (agents.py PATH A).
             "fwd_peg":                 _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
-            # Long-horizon PEG: fwd PE ÷ FY+1→FY+2/3 consensus EPS CAGR (FMP,
-            # known basis — see _fwd_eps_cagr). None for FMP-uncovered symbols;
-            # the durable-growth cross-check on a compressed NTM PEG.
-            "eps_cagr_fwd":            _fmp_est.get("eps_cagr_fwd"),
-            "eps_cagr_fwd_years":      _fmp_est.get("eps_cagr_years"),
-            "peg_lt":                  _safe_div(_fwd_pe_clean, (_fmp_est.get("eps_cagr_fwd") or 0) * 100),
+            # Long-horizon PEG: fwd PE ÷ FY+1→FY+2/3 consensus EPS CAGR, known
+            # basis (see _fwd_eps_cagr) — the durable-growth cross-check on a
+            # compressed NTM PEG. Source chain: FMP → Alpha Vantage (see
+            # _resolve_eps_cagr — Nasdaq was tried and rejected, wrong EPS
+            # basis); "src" is the audit trail, None only if both miss.
+            "eps_cagr_fwd":            _cagr_fwd,
+            "eps_cagr_fwd_years":      _cagr_years,
+            "eps_cagr_fwd_src":        _cagr_src,
+            "peg_lt":                  _safe_div(_fwd_pe_clean, (_cagr_fwd or 0) * 100),
             "fcf_yield":               _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
             "rule_of_40":              _r40,
             "implied_ntm_growth":      _implied_ntm_growth,
