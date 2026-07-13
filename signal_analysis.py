@@ -71,6 +71,13 @@ _VERSION_REGISTER = {
        "true-5yr (runtime basis-cross-checked) → FMP (~2yr) → AV (~1-2yr) "
        "— Nasdaq forecast rejected, verified GAAP-basis mismatch. Also "
        "GICS-first cycle_type defect fix (live 07-12: semis SECULAR not HYBRID)",
+    5: "since 2026-07-13 — fair-value composite recalibration: all 6 "
+       "fair_value.py archetypes now peer-median their core multiple "
+       "(static tables fallback-only); rides the same bump: ratios_ttm.fcf "
+       "(this file's fcf_yield factor) was silently sourced from yfinance's "
+       "opaque info['freeCashflow'], verified live to diverge 20-70%+ from "
+       "a real TTM (NEE sign-flipped) — fixed via a genuine last-4-real-"
+       "quarters sum",
 }
 
 

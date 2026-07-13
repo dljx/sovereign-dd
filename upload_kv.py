@@ -206,12 +206,15 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
     ratios = (dossier.get("financials") or {}).get("ratios_ttm") or {}
     result = result or {}
     return {
-        # v4 (2026-07-13): NTM-PEG disambiguation — PEG labelled by basis in
-        # prompts/filters, base-effect trap added to ValuationEngine PATH A,
-        # junk-basis AV PEGRatio dropped from the dossier. Also covers the
-        # GICS-first cycle_type defect fix (live 2026-07-12). See
+        # v5 (2026-07-13): fair_value.py's 6 archetype engines now derive
+        # their core multiple from live peer-median comps instead of static
+        # tables (static tiers demoted to fallback-only). Rides the same
+        # bump: ratios_ttm.fcf (this file's own fcf_yield factor above) was
+        # silently sourced from yfinance's opaque info['freeCashflow'],
+        # verified live to diverge 20-70%+ from a real TTM (NEE sign-
+        # flipped) — fixed via a genuine last-4-real-quarters sum. See
         # docs/ADAPTATION_PROTOCOL.md §4.
-        "v":            4,
+        "v":            5,
         "mom_12_1":     tech.get("mom_12_1"),
         "mom_6m":       tech.get("mom_6m"),
         "mom_1m":       tech.get("mom_1m"),

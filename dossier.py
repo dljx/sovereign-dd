@@ -1,6 +1,7 @@
 """Data dossier builder â€" async, parallel fetches per ticker, shared macro cache."""
 
 import asyncio
+import math
 import os
 import re
 import threading
@@ -749,6 +750,37 @@ def _technicals(ticker: str) -> dict:
         return {}
 
 
+def _ttm_fcf_from_quarterly(t) -> float | None:
+    """Sum the last 4 REAL quarterly OCF/Capex statements into a genuine
+    trailing-twelve-month FCF. info['freeCashflow'] is an opaque, unaudited
+    Yahoo figure verified live (2026-07-13) to diverge 20-70%+ from this across
+    a broad sample (NVDA -61%, MU -71%, CAT -52%, MRVL +37%), with an outright
+    sign flip on NEE (-$18.5B info-dict vs a real +$2.4B) — traced to WMT/KO/
+    TSLA composite fair values landing at 6-10% of price (both DCF and EV/FCF
+    legs consume this same field). Too unreliable to feed valuation. Returns
+    None if fewer than 4 real (non-NaN) quarters of both OCF and Capex are
+    available (e.g. recent IPOs) — caller falls back to the annual statement.
+    """
+    try:
+        qcf = t.quarterly_cashflow
+        if qcf is None or qcf.empty:
+            return None
+        ocf_row = next((r for r in ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities")
+                        if r in qcf.index), None)
+        if ocf_row is None or "Capital Expenditure" not in qcf.index:
+            return None
+        cols = list(qcf.columns[:4])
+        if len(cols) < 4:
+            return None
+        ocf_vals = [qcf.loc[ocf_row, c] for c in cols]
+        capex_vals = [qcf.loc["Capital Expenditure", c] for c in cols]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in ocf_vals + capex_vals):
+            return None
+        return float(sum(ocf_vals) + sum(capex_vals))
+    except Exception:
+        return None
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -788,7 +820,9 @@ def _yf_financials(ticker: str) -> dict:
         _pb = None if _is_adr_mismatch else _r(info.get("priceToBook"))
         _ps = None if _is_adr_mismatch else _r(info.get("priceToSalesTrailing12Months"))
         _fcf_ps = None  # always compute from safe_shares below if fcf available
-        _fcf = info.get("freeCashflow")
+        _ttm_fcf = _ttm_fcf_from_quarterly(t)
+        _fcf = _ttm_fcf if _ttm_fcf is not None else info.get("freeCashflow")
+        _fcf_source = "ttm_quarterly_sum" if _ttm_fcf is not None else "info_dict_fallback"
         if _fcf and _safe_shares:
             _fcf_ps = _r(_fcf / _safe_shares)
 
@@ -806,6 +840,7 @@ def _yf_financials(ticker: str) -> dict:
             "current_ratio": _r(info.get("currentRatio")),
             "fcf":           _fcf,
             "fcf_per_share": _fcf_ps,
+            "fcf_source":    _fcf_source,
             "revenue_ttm":   info.get("totalRevenue"),
             "ebitda":        info.get("ebitda"),
             "beta":          _r(info.get("beta")),
@@ -1166,6 +1201,23 @@ def _apply_fx_conversion(yf_fin: dict, currency: str, verbose: bool = False) -> 
 def _fetch_peer(peer_ticker: str) -> dict | None:
     try:
         info = yf.Ticker(peer_ticker).info
+        ev    = info.get("enterpriseValue")
+        fcf   = info.get("freeCashflow")
+        rev   = info.get("totalRevenue")
+        debt  = info.get("totalDebt")
+        bvps  = info.get("bookValue")          # per-share book value
+        shrs  = info.get("sharesOutstanding")
+        # ev_fcf/ev_sales/ev_ic (2026-07-13, fair_value recalibration): live
+        # peer trading multiples, sourced from this SAME .info call — zero
+        # extra API load. None (never a fabricated 0) when the underlying
+        # figure isn't meaningful for this peer (e.g. FCF/EBITDA for banks) —
+        # _peer_median filters out non-positive/missing values, so a peer
+        # missing one multiple still contributes to the others.
+        ev_fcf = round(ev / fcf, 1) if ev and fcf and fcf > 0 else None
+        ev_sales = round(ev / rev, 1) if ev and rev and rev > 0 else None
+        peer_ic = (debt or 0) + (bvps * shrs if bvps and shrs else 0)
+        ev_ic = round(ev / peer_ic, 2) if ev and peer_ic > 0 else None
+        p2b = info.get("priceToBook")
         return {
             "ticker":       peer_ticker,
             "pe":           round(info.get("trailingPE") or 0, 1),
@@ -1173,9 +1225,40 @@ def _fetch_peer(peer_ticker: str) -> dict | None:
             "ev_ebitda":    round(info.get("enterpriseToEbitda") or 0, 1),
             "rev_growth":   round((info.get("revenueGrowth") or 0) * 100, 1),
             "gross_margin": round((info.get("grossMargins") or 0) * 100, 1),
+            "ev_fcf":        ev_fcf,
+            "ev_sales":      ev_sales,
+            # EV/Invested-Capital: peer equity approximated as bookValue(per
+            # share) x sharesOutstanding — the same single-call info fields
+            # dossier.py already trusts elsewhere, not a full balance-sheet
+            # fetch. A labelled approximation, not the exact dossier-side
+            # stockholders_equity figure.
+            "ev_ic":         ev_ic,
+            # P/B as a P/TBV proxy: exact tangible book (netting goodwill/
+            # intangibles) needs a peer balance-sheet fetch we don't make;
+            # P/B is the closest single-field approximation and is what
+            # info.get("priceToBook") already directly provides.
+            "price_to_book": round(p2b, 2) if p2b and p2b > 0 else None,
         }
     except Exception:
         return None
+
+
+def _usable_peer(p: dict) -> bool:
+    """A peer dict carries at least one real valuation-relevant number — not
+    just a ticker with everything None (garbage/illiquid Finnhub peer match;
+    found live on ETN: /stock/peers suggested ADSE/HTOO, both missing
+    ev_fcf/ev_sales/ev_ic/price_to_book/ev_ebitda entirely)."""
+    return bool(p) and any(p.get(k) for k in
+                           ("ev_fcf", "ev_sales", "ev_ic", "price_to_book", "ev_ebitda"))
+
+
+def _better_peer_set(primary: list, fallback: list) -> list:
+    """Pick whichever peer_comps list has more usable peers. `primary` unless
+    `fallback` (only ever fetched when primary looked thin) is STRICTLY
+    better — never assumes a fallback fetch is automatically an improvement."""
+    if sum(1 for p in fallback if _usable_peer(p)) > sum(1 for p in primary if _usable_peer(p)):
+        return fallback
+    return primary
 
 
 # SEC EDGAR is the authoritative, keyless, current-to-the-minute filing source.
@@ -1596,6 +1679,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "current_ratio": yf_r.get("current_ratio"),
             "fcf_per_share": yf_r.get("fcf_per_share"),
             "fcf":           yf_r.get("fcf"),
+            "fcf_source":    yf_r.get("fcf_source"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
             "beta":          yf_r.get("beta"),
@@ -1792,7 +1876,28 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     else:
         peers = [p for p in SECTOR_PEERS.get(gics_sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
     peer_results = await asyncio.gather(*[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers") for p in peers])
-    dossier["peer_comps"] = [r for r in peer_results if r]
+    peer_comps = [r for r in peer_results if r]
+
+    # Quality gate (2026-07-13, fair_value peer-median recalibration): Finnhub's
+    # /stock/peers sometimes suggests thinly-traded/mismatched tickers with
+    # almost no usable financial data — found live on ETN (ADSE, HTOO: both
+    # missing ev_fcf/ev_sales/price_to_book entirely), which starved the
+    # peer-median valuation on a real portfolio holding despite Finnhub
+    # "successfully" returning 2+ tickers (the old length-only check passed).
+    # Rule-based, not hand-picking which companies count as ETN's "true"
+    # peers — just requiring that WHICHEVER list is used actually carries
+    # usable numbers. Retries with the curated SECTOR_PEERS list only when
+    # the Finnhub-suggested set is thin.
+    if sum(1 for p in peer_comps if _usable_peer(p)) < 2:
+        fallback_tickers = [p for p in SECTOR_PEERS.get(gics_sector, [])
+                            if p != ticker and p not in peers][:4]
+        if fallback_tickers:
+            fallback_results = await asyncio.gather(
+                *[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers")
+                  for p in fallback_tickers])
+            peer_comps = _better_peer_set(peer_comps, [r for r in fallback_results if r])
+
+    dossier["peer_comps"] = peer_comps
 
     # ── Capital flow (Tiger — entitled 2026-07-11) ─────────────────────────────
     # Institutional-vs-retail money flow. Guarded on TIGER_* env (absent →

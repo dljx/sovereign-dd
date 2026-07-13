@@ -126,6 +126,45 @@ def _get_price(dossier: dict):
         return None
 
 
+def _get_peers(dossier: dict) -> list:
+    """Safely retrieve peer_comps (dossier.py._fetch_peer output)."""
+    try:
+        return dossier["peer_comps"] or []
+    except (KeyError, TypeError):
+        return []
+
+
+# ── Peer-derived multiples (2026-07-13 recalibration) ──────────────────────
+# Every archetype below used a STATIC multiple table (target EV/FCF, P/S, mid-
+# cycle P/E, P/TBV-by-ROE-tier, P/AFFO...) with no external ground truth —
+# live-verified on AAPL (composite 0.31x price) and MRVL (0.10x): arithmetically
+# correct, badly miscalibrated. No authoritative "correct" multiple exists to
+# hand-pick a replacement with (unlike the PEG work, which had Finviz as hard
+# ground truth) — inventing new static numbers would repeat the same mistake.
+# Instead: derive the multiple from what dossier["peer_comps"] ACTUALLY trades
+# at right now (median across the ~4 fetched peers, min 2 valid values — a
+# single peer's outlier multiple isn't a market). This is standard relative-
+# valuation methodology (comps analysis), grounded in live, checkable market
+# data instead of a hardcoded guess, and self-corrects as market multiples
+# move instead of going stale. The OLD static tables remain as an EXPLICIT
+# fallback (labelled in blind_spots) for names with thin peer coverage —
+# never a hard failure, matching every other degradation in this file.
+_MIN_PEER_SAMPLE = 2
+
+
+def _peer_median(peers: list, key: str, min_peers: int = _MIN_PEER_SAMPLE) -> float | None:
+    """Median of peers[i][key] across positive, present values. None (never a
+    fabricated number) when fewer than min_peers qualify — a median of 0 or 1
+    values isn't a market read, it's a single data point wearing a market's
+    clothing."""
+    vals = sorted(p[key] for p in (peers or []) if p and p.get(key) is not None and p[key] > 0)
+    n = len(vals)
+    if n < min_peers:
+        return None
+    mid = n // 2
+    return round(vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2, 3)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def classify_archetype(dossier: dict) -> dict:
@@ -491,7 +530,16 @@ def _value_asset_light(dossier: dict) -> dict:
             hypergrowth_fv = (ev_ntm - net_debt_hg) / shares_out
 
     # ── Primary: EV/FCF (SBC-adjusted) ───────────────────────────────────────
-    if rule_of_40 is not None and rule_of_40 >= 40:
+    # Peer-derived multiple (median EV/FCF across dossier["peer_comps"], min 2
+    # valid peers) is PRIMARY — live market data, not a hardcoded guess. The
+    # rule_of_40-tiered table (12/18/25x) is the fallback for thin peer
+    # coverage, kept because it's still a reasonable prior, just not a live one.
+    peers = _get_peers(dossier)
+    peer_ev_fcf = _peer_median(peers, "ev_fcf")
+    used_peer_fcf = peer_ev_fcf is not None
+    if used_peer_fcf:
+        target_multiple = peer_ev_fcf
+    elif rule_of_40 is not None and rule_of_40 >= 40:
         target_multiple = 25
     elif rule_of_40 is not None and rule_of_40 >= 20:
         target_multiple = 18
@@ -503,6 +551,8 @@ def _value_asset_light(dossier: dict) -> dict:
     primary_assumptions = {
         "method": "EV/FCF (SBC-adjusted)",
         "target_multiple": target_multiple,
+        "target_multiple_source": "peer_median" if used_peer_fcf else "static_fallback",
+        "peer_ev_fcf_median": peer_ev_fcf,
         "rule_of_40": rule_of_40,
         "sbc_adjusted_fcf": sbc_adjusted_fcf,
         "net_debt": net_debt_al,
@@ -520,23 +570,37 @@ def _value_asset_light(dossier: dict) -> dict:
         "assumptions": primary_assumptions,
     }
 
-    # ── Secondary: Price/Sales ────────────────────────────────────────────────
-    if gross_margin is not None and gross_margin > 0.70:
-        ps_multiple = 8
+    # ── Secondary: EV/Sales (peer-derived; static gross-margin tiers as fallback) ─
+    # Switched from raw Price/Sales to EV/Sales: capital-structure-neutral (a
+    # company carrying debt shouldn't get equity credit for sales the same way
+    # a debt-free one does), and it's what peer_comps actually supplies. For a
+    # typically low-debt asset-light name the two are close, so this doesn't
+    # materially change the static-fallback numbers, just makes them correct
+    # for names that DO carry real debt.
+    peer_ev_sales = _peer_median(peers, "ev_sales")
+    used_peer_sales = peer_ev_sales is not None
+    if used_peer_sales:
+        ev_sales_multiple = peer_ev_sales
+    elif gross_margin is not None and gross_margin > 0.70:
+        ev_sales_multiple = 8
     elif gross_margin is not None and gross_margin > 0.60:
-        ps_multiple = 5
+        ev_sales_multiple = 5
     else:
-        ps_multiple = 3
+        ev_sales_multiple = 3
 
     secondary_fv = None
     if revenue_ttm is not None and revenue_ttm > 0 and shares_out is not None and shares_out > 0:
-        secondary_fv = (ps_multiple * revenue_ttm) / shares_out
+        equity_value_sales = ev_sales_multiple * revenue_ttm - net_debt_al
+        if equity_value_sales > 0:
+            secondary_fv = equity_value_sales / shares_out
 
     secondary = [{
-        "method": "Price/Sales",
+        "method": "EV/Sales",
         "fair_value": secondary_fv,
         "assumptions": {
-            "ps_multiple": ps_multiple,
+            "ev_sales_multiple": ev_sales_multiple,
+            "ev_sales_multiple_source": "peer_median" if used_peer_sales else "static_fallback",
+            "peer_ev_sales_median": peer_ev_sales,
             "gross_margin": gross_margin,
             "revenue_ttm": revenue_ttm,
         },
@@ -565,21 +629,28 @@ def _value_asset_light(dossier: dict) -> dict:
     blind_spots = ["NRR_NOT_COMPUTED"]
     if sbc_pct_revenue is not None and sbc_pct_revenue > 0.15:
         blind_spots.append("SBC_DILUTION")
-    # STATIC_MULTIPLE_VS_FAST_GROWTH (2026-07-13): the EV/FCF (12-25x) and P/S
-    # (3-8x) tiers below are fixed assumptions, not derived from current market
-    # pricing. Confirmed live to badly understate fair value for names growing
-    # fast enough to command real multiples well above these tiers but not fast
-    # enough to trigger the hypergrowth override (>50% fwd revenue growth) —
-    # e.g. MRVL (42% growth, composite came out at 0.10x actual price). Below
-    # the hypergrowth threshold but still a real grower: flag it explicitly
-    # rather than let the fixed-tier composite stand unqualified.
-    if not hypergrowth_active and revenue_growth_yoy is not None and revenue_growth_yoy > 0.25:
+    # STATIC_MULTIPLE_VS_FAST_GROWTH (2026-07-13, narrowed same day once peer-
+    # median multiples shipped): only meaningful when BOTH legs are actually on
+    # the static-table fallback (thin/no peer coverage) — a peer-derived
+    # multiple already reflects whatever premium the market pays for this
+    # growth rate, so the original blanket "fast grower -> flag it" trigger
+    # would now be a false alarm on the common case. Original finding this
+    # guards against: MRVL (42% growth, static-tier composite 0.10x price)
+    # before peer data was wired in.
+    if (not hypergrowth_active and not used_peer_fcf and not used_peer_sales
+            and revenue_growth_yoy is not None and revenue_growth_yoy > 0.25):
         blind_spots.append(
             "STATIC_MULTIPLE_VS_FAST_GROWTH — revenue growing "
-            f"{revenue_growth_yoy:.0%} YoY but below the 50% hypergrowth cutoff; "
-            "the fixed EV/FCF and P/S multiple tiers this composite uses are not "
-            "adjusted for growth this fast and likely understate fair value — "
-            "weight the composite down and lean on peer multiples / your own research"
+            f"{revenue_growth_yoy:.0%} YoY but below the 50% hypergrowth cutoff, and "
+            "no peer-derived multiple was available (thin peer coverage) — the "
+            "static EV/FCF and EV/Sales fallback tiers are not adjusted for growth "
+            "this fast and likely understate fair value — weight the composite down"
+        )
+    elif not used_peer_fcf and not used_peer_sales and not hypergrowth_active:
+        blind_spots.append(
+            "PEER_DATA_UNAVAILABLE — both legs fell back to static multiple tiers "
+            "(fewer than 2 peers had a usable EV/FCF or EV/Sales multiple); the "
+            "composite is not anchored to current market pricing"
         )
 
     return {
@@ -597,6 +668,9 @@ def _value_asset_light(dossier: dict) -> dict:
             "hypergrowth_active": hypergrowth_active,
             "hypergrowth_fv": hypergrowth_fv,
             "fwd_rev_growth": fwd_rev_growth,
+            "peer_count": len(peers),
+            "used_peer_ev_fcf": used_peer_fcf,
+            "used_peer_ev_sales": used_peer_sales,
         },
         "blind_spots": blind_spots,
         "invalid": ["STANDARD_DCF_UNRELIABLE", "EV_FCF_BEFORE_SBC_MISLEADING"],
@@ -677,8 +751,16 @@ def _value_cyclical(dossier: dict) -> dict:
     if ev is not None and invested_capital is not None and invested_capital > 0:
         ev_ic = ev / invested_capital
 
-    # ── Primary: Normalized mid-cycle P/E ────────────────────────────────────
-    if "Semiconductor" in industry:
+    # ── Primary: Normalized mid-cycle P/E (peer-median trailing P/E applied to
+    # THIS company's multi-year-averaged EPS — keeps the peak-earnings-trap
+    # protection from normalization while replacing the static multiple with
+    # a live one; static industry table is the fallback for thin peer coverage) ─
+    peers = _get_peers(dossier)
+    peer_pe_cyc = _peer_median(peers, "pe")
+    used_peer_pe = peer_pe_cyc is not None
+    if used_peer_pe:
+        mid_cycle_pe_target = peer_pe_cyc
+    elif "Semiconductor" in industry:
         mid_cycle_pe_target = 18
     elif sector == "Industrials":
         mid_cycle_pe_target = 16
@@ -696,15 +778,26 @@ def _value_cyclical(dossier: dict) -> dict:
             "normalized_earnings": normalized_earnings,
             "normalized_eps": normalized_eps,
             "mid_cycle_pe_target": mid_cycle_pe_target,
+            "mid_cycle_pe_target_source": "peer_median" if used_peer_pe else "static_fallback",
+            "peer_pe_median": peer_pe_cyc,
             "years_averaged": len(net_incomes),
         },
     }
 
-    # ── Secondary: EV/IC ──────────────────────────────────────────────────────
-    target_ev_ic_multiple = 1.5
+    # ── Secondary: EV/IC (peer-derived; flat 1.5x static as fallback) ───────────
+    peer_ev_ic = _peer_median(peers, "ev_ic")
+    used_peer_ic = peer_ev_ic is not None
+    target_ev_ic_multiple = peer_ev_ic if used_peer_ic else 1.5
     secondary_fv = None
+    net_debt_cyc = (total_debt or 0) - (cash or 0)
     if invested_capital is not None and shares_out is not None and shares_out > 0:
-        secondary_fv = (invested_capital * target_ev_ic_multiple) / shares_out
+        # Fixed 2026-07-13: EV/IC x invested_capital is ENTERPRISE value; the
+        # prior formula divided it straight into per-share value with no net-
+        # debt subtraction, the same missing conversion step found in
+        # asset_light's old P/S and early_stage's old EV/Revenue formulas.
+        equity_value_cyc = invested_capital * target_ev_ic_multiple - net_debt_cyc
+        if equity_value_cyc > 0:
+            secondary_fv = equity_value_cyc / shares_out
 
     secondary = [{
         "method": "EV/Invested Capital",
@@ -712,6 +805,9 @@ def _value_cyclical(dossier: dict) -> dict:
         "assumptions": {
             "invested_capital": invested_capital,
             "target_ev_ic_multiple": target_ev_ic_multiple,
+            "target_ev_ic_multiple_source": "peer_median" if used_peer_ic else "static_fallback",
+            "peer_ev_ic_median": peer_ev_ic,
+            "net_debt": net_debt_cyc,
         },
     }]
 
@@ -744,6 +840,9 @@ def _value_cyclical(dossier: dict) -> dict:
             "dio": dio,
             "capex_intensity": capex_intensity,
             "ev_ic": ev_ic,
+            "peer_count": len(peers),
+            "used_peer_pe": used_peer_pe,
+            "used_peer_ev_ic": used_peer_ic,
         },
         "blind_spots": blind_spots,
         "invalid": ["STANDARD_DCF_UNRELIABLE_AT_CYCLE_EXTREMES"],
@@ -776,10 +875,19 @@ def _value_financial(dossier: dict) -> dict:
     if tangible_book_per_share is not None and tangible_book_per_share > 0 and price is not None:
         ptbv = price / tangible_book_per_share
 
-    # Fair P/TBV target based on ROE
+    # Fair P/TBV target: peer-median P/B (dossier.py._fetch_peer's
+    # price_to_book — a P/TBV PROXY, since it doesn't net out goodwill/
+    # intangibles the way true tangible book does; documented there).
+    # Static ROE-tiered table (0.6/0.9/1.3/1.8, no external grounding — worth
+    # being honest that these breakpoints were never verified against
+    # anything) is the fallback for thin peer coverage.
     # ROE arrives as a percentage (e.g. 12.5 == 12.5%) — see dossier.py _pct().
-    fair_ptbv_target = 0.6  # default / low ROE
-    if roe is not None:
+    peers = _get_peers(dossier)
+    peer_pb = _peer_median(peers, "price_to_book")
+    used_peer_pb = peer_pb is not None
+    if used_peer_pb:
+        fair_ptbv_target = peer_pb
+    elif roe is not None:
         if roe >= 15:
             fair_ptbv_target = 1.8
         elif roe >= 12:
@@ -788,6 +896,8 @@ def _value_financial(dossier: dict) -> dict:
             fair_ptbv_target = 0.9
         else:
             fair_ptbv_target = 0.6
+    else:
+        fair_ptbv_target = 0.6  # default / no ROE, no peers
 
     # ── Primary: P/TBV ───────────────────────────────────────────────────────
     primary_fv = None
@@ -800,6 +910,8 @@ def _value_financial(dossier: dict) -> dict:
         "assumptions": {
             "tangible_book_per_share": tangible_book_per_share,
             "fair_ptbv_target": fair_ptbv_target,
+            "fair_ptbv_target_source": "peer_median_pb" if used_peer_pb else "static_roe_tier_fallback",
+            "peer_pb_median": peer_pb,
             "roe": roe,
         },
     }
@@ -808,6 +920,12 @@ def _value_financial(dossier: dict) -> dict:
     blind_spots = ["DDM_REQUIRES_DIVIDEND_DATA", "DURATION_MISMATCH_CHECK_YIELD_CURVE"]
     if yield_curve is not None and yield_curve < 0:
         blind_spots.append("RATE_SENSITIVE")
+    if used_peer_pb:
+        blind_spots.append(
+            "PTBV_PROXY_IS_PB — peer multiple is Price/Book, not true Price/"
+            "Tangible-Book (goodwill/intangibles not netted out for peers); "
+            "treat as directional, not exact"
+        )
 
     return {
         "primary": primary,
@@ -819,6 +937,8 @@ def _value_financial(dossier: dict) -> dict:
             "roe": roe,
             "fair_ptbv_target": fair_ptbv_target,
             "dividend_yield": None,
+            "peer_count": len(peers),
+            "used_peer_price_to_book": used_peer_pb,
         },
         "blind_spots": blind_spots,
         "invalid": ["EV_FCF_INVALID_FOR_FINANCIALS", "STANDARD_DCF_INVALID_FOR_FINANCIALS", "DDM_INVALID_NO_DIVIDEND_DATA"],
@@ -903,6 +1023,13 @@ def _value_infrastructure(dossier: dict) -> dict:
     }
 
     # ── Secondary: EV/(EBITDA - CapEx) ───────────────────────────────────────
+    # Peer-median EV/EBITDA (dossier.py._fetch_peer's ev_ebitda — already
+    # fetched, no extension needed) now answers the file's own prior "TODO
+    # calibrate against sector comps" note; static industry table remains the
+    # fallback for thin peer coverage.
+    peers = _get_peers(dossier)
+    peer_ev_ebitda_infra = _peer_median(peers, "ev_ebitda")
+    used_peer_infra = peer_ev_ebitda_infra is not None
     secondary_fv = None
     net_debt_infra = (total_debt or 0) - (cash or 0)
     secondary_assumptions: dict = {"ev_ebitda": ev_ebitda, "ebitda": ebitda, "capex": capex, "net_debt": net_debt_infra}
@@ -912,9 +1039,11 @@ def _value_infrastructure(dossier: dict) -> dict:
             # EV = (EBITDA - CapEx) × EV multiple; subtract net debt -> equity value.
             # This is an ENTERPRISE multiple and must NOT reuse the equity P/AFFO
             # multiple (the prior code aliased them, mixing equity and EV bases).
-            # Values are approximate — calibrate against sector comps (TODO). Also note
-            # EBITDA is TTM while CapEx is the latest ANNUAL figure (period mismatch).
-            if "REIT" in industry:
+            # Note EBITDA is TTM while CapEx is the latest ANNUAL figure (period
+            # mismatch) — unrelated to the multiple source, left as a known gap.
+            if used_peer_infra:
+                target_ev_multiple = peer_ev_ebitda_infra
+            elif "REIT" in industry:
                 target_ev_multiple = 20
             elif "Utility" in industry or "Utilities" in industry:
                 target_ev_multiple = 16
@@ -927,6 +1056,8 @@ def _value_infrastructure(dossier: dict) -> dict:
                 secondary_fv = equity_value / shares_out
             secondary_assumptions["ebitda_minus_capex"] = ebitda_minus_capex
             secondary_assumptions["target_ev_multiple"] = target_ev_multiple
+            secondary_assumptions["target_ev_multiple_source"] = "peer_median" if used_peer_infra else "static_fallback"
+            secondary_assumptions["peer_ev_ebitda_median"] = peer_ev_ebitda_infra
             secondary_assumptions["period_mismatch"] = "EBITDA=TTM, CapEx=annual"
 
     secondary = [{
@@ -957,8 +1088,19 @@ def _value_infrastructure(dossier: dict) -> dict:
             "ev_ebitda_expensive": ev_ebitda_expensive,
             "net_debt_ebitda": net_debt_ebitda,
             "target_affo_multiple": target_affo_multiple,
+            "peer_count": len(peers),
+            "used_peer_ev_ebitda": used_peer_infra,
         },
-        "blind_spots": ["RATE_SENSITIVE", "AFFO_IS_ESTIMATED"],
+        "blind_spots": [
+            "RATE_SENSITIVE", "AFFO_IS_ESTIMATED",
+            # P/AFFO (primary, 70% composite weight) still uses a static
+            # industry-tiered multiple — AFFO isn't cleanly peer-derivable
+            # from a single .info() call (needs peer capex, not reliably
+            # available without a full peer cashflow-statement fetch this
+            # file doesn't make). Only the EV/(EBITDA-CapEx) secondary leg
+            # is peer-anchored. Disclosed, not silently left inconsistent.
+            "PRIMARY_METHOD_STILL_STATIC — P/AFFO multiple is not peer-derived",
+        ],
         "invalid": ["STANDARD_DCF_UNRELIABLE_DUE_TO_LEVERAGE"],
     }
 
@@ -1026,8 +1168,13 @@ def _value_early_stage(dossier: dict) -> dict:
         },
     }
 
-    # ── Secondary: EV/Revenue ─────────────────────────────────────────────────
-    if sector == "Technology":
+    # ── Secondary: EV/Revenue (peer-derived; sector-tiered static as fallback) ──
+    peers = _get_peers(dossier)
+    peer_ev_sales_es = _peer_median(peers, "ev_sales")
+    used_peer_es = peer_ev_sales_es is not None
+    if used_peer_es:
+        target_ev_rev = peer_ev_sales_es
+    elif sector == "Technology":
         target_ev_rev = 8
     elif sector == "Healthcare":
         target_ev_rev = 6
@@ -1035,17 +1182,28 @@ def _value_early_stage(dossier: dict) -> dict:
         target_ev_rev = 4
 
     secondary_fv = None
+    net_debt_es = (total_debt or 0) - (cash or 0)
     if revenue_ttm is not None and revenue_ttm > 0 and shares_out is not None and shares_out > 0:
-        secondary_fv = (target_ev_rev * revenue_ttm) / shares_out
+        # Fixed 2026-07-13: this is an ENTERPRISE multiple (EV/Revenue) but the
+        # prior formula never subtracted net debt to reach equity value — it
+        # silently treated EV/Revenue as if it were already a per-share equity
+        # multiple. Early-stage names often carry little debt so the prior
+        # numbers were close, but wrong in principle for any name that does.
+        equity_value_es = target_ev_rev * revenue_ttm - net_debt_es
+        if equity_value_es > 0:
+            secondary_fv = equity_value_es / shares_out
 
     secondary = [{
         "method": "EV/Revenue",
         "fair_value": secondary_fv,
         "assumptions": {
             "target_ev_rev": target_ev_rev,
+            "target_ev_rev_source": "peer_median" if used_peer_es else "static_fallback",
+            "peer_ev_sales_median": peer_ev_sales_es,
             "revenue_ttm": revenue_ttm,
             "ev_revenue_current": ev_revenue,
             "sector": sector,
+            "net_debt": net_debt_es,
         },
     }]
 
@@ -1069,6 +1227,8 @@ def _value_early_stage(dossier: dict) -> dict:
             "runway_signal": runway_signal,
             "revenue_run_rate": revenue_run_rate,
             "ev_revenue": ev_revenue,
+            "peer_count": len(peers),
+            "used_peer_ev_sales": used_peer_es,
         },
         "blind_spots": blind_spots,
         "invalid": ["STANDARD_DCF_MEANINGLESS", "PE_RATIO_MEANINGLESS"],
@@ -1128,10 +1288,16 @@ def _value_mature_compounder(dossier: dict) -> dict:
         "assumptions": valuation.get("dcf_assumptions") or {},
     }
 
-    # ── Secondary: EV/FCF yield ───────────────────────────────────────────────
-    # Sector-based FCF multiple — Technology/Healthcare command premium multiples;
-    # Energy/Utilities/Financials trade at lower FCF yields.
-    ev_fcf_multiple = _MATURE_FCF_MULTIPLE.get(sector, _DEFAULT_MATURE_FCF_MULTIPLE)
+    # ── Secondary: EV/FCF yield (peer-derived; sector-tiered static as fallback) ─
+    peers = _get_peers(dossier)
+    peer_ev_fcf_mc = _peer_median(peers, "ev_fcf")
+    used_peer_mc = peer_ev_fcf_mc is not None
+    if used_peer_mc:
+        ev_fcf_multiple = peer_ev_fcf_mc
+    else:
+        # Sector-based FCF multiple — Technology/Healthcare command premium
+        # multiples; Energy/Utilities/Financials trade at lower FCF yields.
+        ev_fcf_multiple = _MATURE_FCF_MULTIPLE.get(sector, _DEFAULT_MATURE_FCF_MULTIPLE)
     total_debt_mc   = _safe(balance.get("total_debt"), 0)
     cash_mc         = _safe(balance.get("cash"), 0)
     net_debt_mc     = (total_debt_mc or 0) - (cash_mc or 0)
@@ -1144,11 +1310,13 @@ def _value_mature_compounder(dossier: dict) -> dict:
             secondary_fv = equity_value_mc / shares_out
 
     secondary = [{
-        "method": f"EV/FCF ({ev_fcf_multiple}x, {sector or 'default'})",
+        "method": f"EV/FCF ({ev_fcf_multiple}x, {'peer median' if used_peer_mc else sector or 'default'})",
         "fair_value": secondary_fv,
         "assumptions": {
             "fcf": fcf,
             "ev_fcf_multiple": ev_fcf_multiple,
+            "ev_fcf_multiple_source": "peer_median" if used_peer_mc else "static_fallback",
+            "peer_ev_fcf_median": peer_ev_fcf_mc,
             "sector": sector,
             "net_debt": net_debt_mc,
         },
@@ -1184,6 +1352,8 @@ def _value_mature_compounder(dossier: dict) -> dict:
             "organic_growth": organic_growth,
             "roic": roic,
             "dcf_iv_per_share": dcf_iv,
+            "peer_count": len(peers),
+            "used_peer_ev_fcf": used_peer_mc,
         },
         "blind_spots": blind_spots,
         "invalid": [],
