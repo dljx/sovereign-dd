@@ -81,9 +81,60 @@ def test_forward_return_no_data_paths():
     empty = pd.Series(dtype=float)
     assert sa.forward_return(empty, None, date(2026, 6, 10), 1,
                              date(2026, 6, 30))["status"] == "no_data"
+    # A zero stored price is unusable — with history available it now recovers
+    # via the discovery close (flagged approx) instead of dropping the row;
+    # with no history it stays no_data.
     s = _series("2026-06-01", 30)
-    assert sa.forward_return(s, 0.0, date(2026, 6, 10), 1,
+    fr = sa.forward_return(s, 0.0, date(2026, 6, 10), 1, date(2026, 6, 30))
+    assert fr["status"] == "ok" and fr["entry_approx"] is True
+    assert sa.forward_return(empty, 0.0, date(2026, 6, 10), 1,
                              date(2026, 6, 30))["status"] == "no_data"
+
+
+# ── effective_entry: split / bad-price guard (2026-07-13) ─────────────
+# Adjusted closes rescale the whole history after a corporate action; a raw
+# stored entry against them fakes a huge move. >25% divergence from the
+# discovery-date adjusted close → trust the close, flag approx.
+
+
+def test_effective_entry_keeps_stored_price_within_tolerance():
+    s = _series("2026-06-01", 30)  # 06-10 close = 107
+    entry, approx = sa.effective_entry(s, 100.0, date(2026, 6, 10))
+    assert entry == 100.0 and approx is False  # ~6.5% gap: normal intraday
+
+
+def test_effective_entry_split_guard_prefers_adjusted_close():
+    # Post-split adjusted history: discovery close ~53.5, stored raw entry 107
+    # (2:1 split after signal) — raw entry would fake a ~-50% forward return.
+    s = _series("2026-06-01", 30) / 2.0
+    entry, approx = sa.effective_entry(s, 107.0, date(2026, 6, 10))
+    assert approx is True
+    assert abs(entry - 53.5) < 1e-9
+
+
+def test_effective_entry_missing_price_falls_back_to_close():
+    s = _series("2026-06-01", 30)
+    entry, approx = sa.effective_entry(s, None, date(2026, 6, 10))
+    assert entry == 107.0 and approx is True
+
+
+def test_effective_entry_no_series_keeps_stored_price():
+    # Stored price with no history to check against — keep it (can't disprove).
+    entry, approx = sa.effective_entry(pd.Series(dtype=float), 100.0,
+                                       date(2026, 6, 10))
+    assert entry == 100.0 and approx is False
+    assert sa.effective_entry(pd.Series(dtype=float), None,
+                              date(2026, 6, 10)) == (None, False)
+
+
+def test_forward_return_split_guard_end_to_end():
+    # Same split scenario through forward_return: return must be computed on
+    # the adjusted basis (+12/107), not the raw-entry fake (-47.7%).
+    s = _series("2026-06-01", 30) / 2.0
+    fr = sa.forward_return(s, 107.0, date(2026, 6, 10), weeks=1,
+                           today=date(2026, 6, 30))
+    assert fr["status"] == "ok" and fr["entry_approx"] is True
+    assert abs(fr["ret"] - (56.0 / 53.5 - 1.0)) < 1e-9
 
 
 # ── bucketing ─────────────────────────────────────────────────────────

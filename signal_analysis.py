@@ -151,20 +151,45 @@ def close_near(closes: pd.Series, target: date,
     return None
 
 
+# Stored entry prices are RAW prices at signal time, but the return math runs
+# on ADJUSTED closes (auto_adjust=True — correct for splits/dividends *within*
+# the series). A corporate action between signal time and today rescales the
+# whole adjusted history: after a 2:1 split, a raw $100 entry against a ~$50
+# adjusted exit reads as a fake -50% and poisons every bucket the row lands in.
+# Beyond this divergence from the adjusted close at the signal date, the stored
+# price's basis can no longer be trusted — use the adjusted close instead.
+# (Also catches plain bad stored prices, e.g. currency mixups. Normal intraday
+# signal-vs-close gaps are far below 25%.)
+_ENTRY_DIVERGENCE_MAX = 0.25
+
+
+def effective_entry(closes: pd.Series, entry_price: float | None,
+                    discovered: date) -> tuple[float | None, bool]:
+    """(entry, approx): the stored signal price, unless it's missing or diverges
+    >_ENTRY_DIVERGENCE_MAX from the adjusted close nearest the signal date
+    (split / bad-price guard) — both fall back to that close with approx=True.
+    (None, False) when neither is available."""
+    hit = close_near(closes, discovered)
+    if entry_price and entry_price > 0:
+        if hit is None or hit[1] <= 0:
+            return float(entry_price), False
+        if abs(entry_price - hit[1]) / hit[1] > _ENTRY_DIVERGENCE_MAX:
+            return float(hit[1]), True
+        return float(entry_price), False
+    return (float(hit[1]), True) if hit else (None, False)
+
+
 def forward_return(closes: pd.Series, entry_price: float | None,
                    discovered: date, weeks: int, today: date) -> dict:
-    """Return over `weeks` from a signal. entry_price=None falls back to the
-    close nearest the discovery date (flagged entry_approx). Statuses:
-    ok / pending (window not yet elapsed) / no_data (elapsed but unpriceable)."""
+    """Return over `weeks` from a signal. entry_price=None (or a stored price
+    whose basis no longer matches the adjusted series — see effective_entry)
+    falls back to the close nearest the discovery date (flagged entry_approx).
+    Statuses: ok / pending (window not yet elapsed) / no_data (elapsed but
+    unpriceable)."""
     target = discovered + timedelta(weeks=weeks)
     if target > today:
         return {"status": "pending"}
-    entry, entry_approx = entry_price, False
-    if entry is None:
-        hit = close_near(closes, discovered)
-        if hit is None:
-            return {"status": "no_data"}
-        entry, entry_approx = hit[1], True
+    entry, entry_approx = effective_entry(closes, entry_price, discovered)
     if not entry or entry <= 0:
         return {"status": "no_data"}
     exit_hit = close_near(closes, target)
@@ -444,10 +469,9 @@ def compute_behavior_gap(signals: list[dict], closes: dict, vwra: pd.Series,
     rets, excesses = [], []
     for s in confirms:
         series = closes.get(s["ticker"])
-        entry = s["entry_price"]
-        if entry is None:
-            hit = close_near(series, s["discovered"])
-            entry = hit[1] if hit else None
+        # Same split/bad-price guard as forward_return — a raw entry against an
+        # adjusted exit would fake a huge loss after a corporate action.
+        entry, _approx = effective_entry(series, s["entry_price"], s["discovered"])
         exit_hit = close_near(series, today)
         if not entry or entry <= 0 or exit_hit is None:
             continue
