@@ -362,15 +362,30 @@ def compute_fair_values(dossier: dict) -> dict:
     composite     = _safe(result.get("composite"))
     price         = _get_price(dossier)
 
-    # Backstop sanity check: composite FV > 5× price or < 4% of price likely reflects
-    # a currency or unit error. With FX conversion now active, genuine hits are rare
-    # (deep-value microcaps, early-stage, etc.) so preserve the value but flag it.
+    # Backstop sanity check (tightened 2026-07-13 — see below) — flag when composite
+    # FV and market price disagree by a wide margin. Preserve the value (never
+    # silently drop it — the model may be RIGHT and the market wrong) but flag it
+    # so the agent weighs it accordingly instead of trusting it as-is.
+    #
+    # The prior band (>5.0x or <0.04x — i.e. a 25-95x mispricing before firing)
+    # was live-verified too loose to catch a real, confirmed failure mode: the
+    # ASSET_LIGHT_GROWTH engine's fixed EV/FCF (12-25x) and P/S (3-8x) multiple
+    # tiers are calibrated for stable mid-cap SaaS comps and can badly understate
+    # fair value for large/fast-growing names whose ACTUAL market multiples run
+    # far higher — found on AAPL (ratio 0.31x, composite $97 vs price $315) and
+    # MRVL (ratio 0.10x, composite $24 vs price $236), both arithmetically
+    # correct per the formula, neither a currency/unit bug. 0.35-3.0x is wide
+    # enough to leave real contrarian calls (a name the model thinks is 2x
+    # over/undervalued) unflagged, while catching mispricings of this magnitude.
     _backstop_flags = result.get("blind_spots") or []
     if composite is not None and price is not None and price > 0:
         _ratio = composite / price
-        if _ratio > 5.0 or _ratio < 0.04:
+        if _ratio > 3.0 or _ratio < 0.35:
             _backstop_flags = list(_backstop_flags) + [
-                f"composite_fv_extreme_ratio:{_ratio:.1f}x — verify for currency/unit errors"
+                f"composite_fv_wide_gap:{_ratio:.2f}x price — large model/market disagreement; "
+                "could be a genuine mispricing OR a stale/miscalibrated assumption in the "
+                "valuation method (e.g. fixed multiples not tracking current market pricing "
+                "for this archetype) — verify before treating the composite as authoritative"
             ]
 
     primary_fv = _safe(primary.get("fair_value"))
@@ -550,6 +565,22 @@ def _value_asset_light(dossier: dict) -> dict:
     blind_spots = ["NRR_NOT_COMPUTED"]
     if sbc_pct_revenue is not None and sbc_pct_revenue > 0.15:
         blind_spots.append("SBC_DILUTION")
+    # STATIC_MULTIPLE_VS_FAST_GROWTH (2026-07-13): the EV/FCF (12-25x) and P/S
+    # (3-8x) tiers below are fixed assumptions, not derived from current market
+    # pricing. Confirmed live to badly understate fair value for names growing
+    # fast enough to command real multiples well above these tiers but not fast
+    # enough to trigger the hypergrowth override (>50% fwd revenue growth) —
+    # e.g. MRVL (42% growth, composite came out at 0.10x actual price). Below
+    # the hypergrowth threshold but still a real grower: flag it explicitly
+    # rather than let the fixed-tier composite stand unqualified.
+    if not hypergrowth_active and revenue_growth_yoy is not None and revenue_growth_yoy > 0.25:
+        blind_spots.append(
+            "STATIC_MULTIPLE_VS_FAST_GROWTH — revenue growing "
+            f"{revenue_growth_yoy:.0%} YoY but below the 50% hypergrowth cutoff; "
+            "the fixed EV/FCF and P/S multiple tiers this composite uses are not "
+            "adjusted for growth this fast and likely understate fair value — "
+            "weight the composite down and lean on peer multiples / your own research"
+        )
 
     return {
         "primary": primary,
