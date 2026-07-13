@@ -101,6 +101,45 @@ def evaluate(cards: list, quotes: dict) -> list[dict]:
     return alerts
 
 
+def _yahoo_price(symbol: str) -> float | None:
+    """Live-ish price from the Yahoo chart API (same free endpoint the eye's
+    quote fallback uses). Native currency — matches the card's signal price
+    basis for suffixed listings, so no FX conversion is needed."""
+    try:
+        r = requests.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            params={"interval": "1d", "range": "1d"},
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        if not r.ok:
+            return None
+        meta = ((r.json().get("chart") or {}).get("result") or [{}])[0].get("meta") or {}
+        p = meta.get("regularMarketPrice")
+        return float(p) if p and p > 0 else None
+    except Exception:
+        return None
+
+
+def gather_quotes(tickers: list) -> dict:
+    """ticker → live price. Tiger delayed quotes for plain US symbols; Yahoo
+    chart fallback for whatever Tiger didn't price — suffixed listings
+    (.V/.TO) are never Tiger-safe and used to be silently unwatched
+    (2026-07-13 coverage fix), and a Tiger outage now degrades to Yahoo
+    instead of skipping the whole run."""
+    quotes: dict = {}
+    try:
+        from broker_sync import tiger_delay_quotes, tiger_symbol_ok
+        q = tiger_delay_quotes([t for t in tickers if tiger_symbol_ok(t)])
+        quotes = {t: v["price"] for t, v in q.items() if v.get("price")}
+    except Exception as e:
+        print(f"  [watch] tiger quotes unavailable ({type(e).__name__}) — Yahoo fallback")
+    for t in tickers:
+        if t not in quotes:
+            p = _yahoo_price(t)
+            if p:
+                quotes[t] = p
+    return quotes
+
+
 def _fresh(alerts: list[dict], state: dict) -> list[dict]:
     """Drop alerts whose (ticker,rule) fired within the cooldown window."""
     now = datetime.now(timezone.utc)
@@ -135,13 +174,7 @@ def run() -> int:
         return 0
 
     tickers = sorted({str(c.get("ticker") or "").upper() for c in cards if c.get("ticker")})
-    try:
-        from broker_sync import tiger_delay_quotes, tiger_symbol_ok
-        q = tiger_delay_quotes([t for t in tickers if tiger_symbol_ok(t)])
-        quotes = {t: v["price"] for t, v in q.items() if v.get("price")}
-    except Exception as e:
-        print(f"  [watch] live quotes unavailable ({e}) — skipping")
-        return 0
+    quotes = gather_quotes(tickers)
     if not quotes:
         print("  [watch] no live quotes resolved — skipping")
         return 0

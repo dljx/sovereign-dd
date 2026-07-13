@@ -64,6 +64,36 @@ def test_dedup_respects_cooldown():
     assert len(wt._fresh(alerts, {})) == 1             # never fired
 
 
+# ── gather_quotes: Tiger primary, Yahoo fallback (2026-07-13 coverage fix) ──
+# Suffixed listings (.V/.TO) are never Tiger-safe and used to be silently
+# unwatched; a Tiger outage used to skip the whole run instead of degrading.
+
+
+def test_gather_quotes_yahoo_covers_suffixed_tickers(monkeypatch):
+    import broker_sync
+    monkeypatch.setattr(broker_sync, "tiger_delay_quotes",
+                        lambda syms: {t: {"price": 100.0} for t in syms})
+    monkeypatch.setattr(wt, "_yahoo_price",
+                        lambda s: 0.55 if s == "HPQ.V" else None)
+    q = wt.gather_quotes(["NVDA", "HPQ.V"])
+    assert q == {"NVDA": 100.0, "HPQ.V": 0.55}   # .V priced via Yahoo, not dropped
+
+
+def test_gather_quotes_tiger_outage_degrades_to_yahoo(monkeypatch):
+    import broker_sync
+    monkeypatch.setattr(broker_sync, "tiger_delay_quotes",
+                        lambda syms: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(wt, "_yahoo_price", lambda s: 42.0)
+    assert wt.gather_quotes(["NVDA", "AMD"]) == {"NVDA": 42.0, "AMD": 42.0}
+
+
+def test_gather_quotes_unpriceable_ticker_absent(monkeypatch):
+    import broker_sync
+    monkeypatch.setattr(broker_sync, "tiger_delay_quotes", lambda syms: {})
+    monkeypatch.setattr(wt, "_yahoo_price", lambda s: None)
+    assert wt.gather_quotes(["GHOST"]) == {}
+
+
 def test_alert_trigger_formats_and_escapes(monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "_split_send", lambda msg, topic="": sent.append((msg, topic)) or True)
