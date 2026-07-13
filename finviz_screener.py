@@ -256,7 +256,7 @@ def get_unique_candidates(screen_results: dict[str, list[str]]) -> list[str]:
 
 
 def _parse_fundament(soup, ticker: str) -> dict:
-    """Parse Finviz fundamentals straight from the snapshot table.
+    """Parse Finviz fundamentals straight from the snapshot table(s).
 
     Replaces finvizfinance's ``ticker_fundament()``, which crashes whenever
     Finviz renames the sector-links block — it did as of 2026-06 (``div.quote-
@@ -265,7 +265,20 @@ def _parse_fundament(soup, ticker: str) -> dict:
     ``table.snapshot-table2``, which is stable; Sector/Industry/Country are
     recovered best-effort from the screener-link hrefs.
 
-    Returns ``{}`` if the snapshot table is absent (treated as "no data").
+    As of 2026-07-13 the page splits the ONE big grid into SIX sibling
+    ``<table class="snapshot-table2">`` blocks (one per column-group of a CSS
+    grid layout) instead of one table with many rows — ``find()`` (singular)
+    silently returned only the first block (Index/Market Cap/.../IPO — 14
+    fields), dropping P/E, PEG, EPS growth, margins, ROE/ROIC, insider/
+    institutional data and technicals entirely, for every candidate
+    ``enrich_candidates()`` has scored since. Found live: pillar_scoring.
+    compute_composite() reads EVERY one of the fields that were being
+    dropped, so Gems' pre-triage composite ranking had been running on
+    effectively empty inputs. Fixed by summing over ALL matching tables —
+    a strict generalization: a single-table page (the old shape) still
+    yields identical output, verified by the existing single-table tests.
+
+    Returns ``{}`` if no snapshot table is present (treated as "no data").
     """
     info: dict[str, str] = {"Ticker": ticker}
 
@@ -273,12 +286,13 @@ def _parse_fundament(soup, ticker: str) -> dict:
     if company:
         info["Company"] = company.text.strip()
 
-    table = soup.find("table", class_="snapshot-table2")
-    if table is None:
+    tables = soup.find_all("table", class_="snapshot-table2")
+    if not tables:
         return {}
-    cells = [td.text for td in table.find_all("td")]
-    for i in range(0, len(cells) - 1, 2):
-        info[cells[i]] = cells[i + 1]
+    for table in tables:
+        cells = [td.text for td in table.find_all("td")]
+        for i in range(0, len(cells) - 1, 2):
+            info[cells[i]] = cells[i + 1]
 
     # Sector / Industry / Country link to ?f=sec_/ind_/geo_ filter screens.
     # Set last so these deliberate, link-derived values are authoritative.

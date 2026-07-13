@@ -61,3 +61,36 @@ def test_parse_fundament_empty_when_table_missing():
     """No snapshot-table2 → no data → {} (so the candidate is filtered out)."""
     html = '<html><body><h2 class="quote-header_ticker-wrapper_company">X</h2></body></html>'
     assert _parse_fundament(_soup(html), "X") == {}
+
+
+# Finviz's 2026-07-13 markup change: the one big grid is now SIX sibling
+# <table class="snapshot-table2"> blocks, not one table with many rows.
+# find() (singular) silently kept only the first block — dropping P/E, PEG,
+# EPS growth, margins, ROE/ROIC, insider/institutional data and technicals
+# from every field pillar_scoring.compute_composite() reads. This locks the
+# find_all-and-merge fix in place.
+_MULTI_TABLE_PAGE = """
+<html><body>
+  <h2 class="quote-header_ticker-wrapper_company">Acme Corp</h2>
+  <div class="quote-tabs_links">
+    <a href="/screener.ashx?v=111&f=sec_technology">Technology</a>
+  </div>
+  <table class="snapshot-table2">
+    <tr><td>Market Cap</td><td>4.26B</td><td>Sales</td><td>1.30B</td></tr>
+  </table>
+  <table class="snapshot-table2">
+    <tr><td>P/E</td><td>36.24</td><td>PEG</td><td>1.27</td></tr>
+  </table>
+  <table class="snapshot-table2">
+    <tr><td>EPS next Y</td><td>21.14%</td><td>EPS next 5Y</td><td>12.11%</td></tr>
+  </table>
+</body></html>
+"""
+
+
+def test_parse_fundament_merges_all_sibling_snapshot_tables():
+    f = _parse_fundament(_soup(_MULTI_TABLE_PAGE), "ACME")
+    # Fields from ALL THREE sibling tables must be present, not just the first.
+    assert f["Market Cap"] == "4.26B"
+    assert f["P/E"] == "36.24" and f["PEG"] == "1.27"
+    assert f["EPS next Y"] == "21.14%" and f["EPS next 5Y"] == "12.11%"
