@@ -127,13 +127,16 @@ PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
   - NTM PEG > 3.0: unjustified premium — negative signal
   BASE-EFFECT TRAP: a single rebound year (margin normalization, cost cuts, an easy compare,
   or a GAAP→non-GAAP basis jump) spikes next-year EPS growth and compresses the NTM PEG
-  without saying anything about years 2-5. No published long-horizon PEG is trustworthy
-  (third-party "PEG" figures carry unstated growth bases — ignore them). Before scoring a
-  sub-1.0 NTM PEG as underpriced growth, check durability directly:
-  - ratios_ttm.implied_ntm_growth (forward vs trailing EPS): when it towers over
-    fwd_revenue_growth, the EPS jump is margin catch-up or an SBC-blind non-GAAP basis gap,
-    not compounding;
-  - your web research: what growth do analysts project BEYOND the next fiscal year?
+  without saying anything about years 2-5. Ignore third-party published "PEG" figures — they
+  carry unstated growth bases. Before scoring a sub-1.0 NTM PEG as underpriced growth, check
+  durability:
+  - ratios_ttm.peg_lt (Fwd P/E ÷ FY+1→FY+3 consensus EPS CAGR — known basis; present only
+    for covered symbols): NTM PEG < 1.0 while peg_lt > 1.5 means the cheapness is one year
+    deep — call it out and weigh toward peg_lt;
+  - when peg_lt is absent: ratios_ttm.implied_ntm_growth (forward vs trailing EPS) towering
+    over fwd_revenue_growth means the EPS jump is margin catch-up or an SBC-blind non-GAAP
+    basis gap, not compounding — and use your web research for growth projected BEYOND the
+    next fiscal year.
   If the cheapness is one year deep, say so explicitly and value the business on normalized
   years-2-5 growth instead.
   Secondary: FCF Yield > 5% supports valuation. Rule of 40 >= 40 justifies a premium multiple.

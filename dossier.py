@@ -213,6 +213,29 @@ def _av(function: str, params: dict = None) -> dict:
         return {}
 
 
+def _fwd_eps_cagr(future: list) -> tuple[float, int] | None:
+    """(CAGR, years) from the NTM consensus EPS row to the furthest of the next
+    TWO fiscal years (rows past FY+3 are analyst-thin and noisy — e.g. NVDA's
+    FY2030 row sits BELOW its FY2029 row on a handful of estimates). The
+    long-horizon PEG denominator with a KNOWN basis (2026-07-13): third-party
+    published PEGs carry unstated growth bases and proved untrustworthy.
+    None when either endpoint is missing/non-positive — a CAGR through
+    negative EPS is noise, and one annual row can't make a growth rate."""
+    if not future or len(future) < 2:
+        return None
+    base = future[0].get("epsAvg")
+    if not base or base <= 0:
+        return None
+    horizon = [e for e in future[1:3] if e.get("epsAvg") and e.get("epsAvg") > 0]
+    if not horizon:
+        return None
+    tgt = horizon[-1]
+    years = future.index(tgt)  # annual rows → index distance = years past NTM row
+    if years < 1:
+        return None
+    return round((tgt["epsAvg"] / base) ** (1 / years) - 1, 4), years
+
+
 def _fmp_estimates(ticker: str) -> dict:
     """Fetch annual analyst consensus from FMP stable API (250 req/day free tier).
 
@@ -264,6 +287,12 @@ def _fmp_estimates(ticker: str) -> dict:
             result["fwd_rev_growth"] = round((ntm_rev - prior_rev) / prior_rev, 4)
         if ntm_eps is not None and prior_eps and prior_eps != 0:
             result["fwd_eps_growth"] = round((ntm_eps - prior_eps) / abs(prior_eps), 4)
+        # Multi-year depth: the free tier returns up to 5 future FYs for covered
+        # symbols — FY+1→FY+2/3 EPS CAGR is the durable-growth denominator the
+        # long-horizon PEG needs. Uncovered symbols (402) never reach here.
+        cagr = _fwd_eps_cagr(future)
+        if cagr:
+            result["eps_cagr_fwd"], result["eps_cagr_years"] = cagr
         return result
     except Exception as e:
         # Type only — the exception string can carry the apikey-bearing URL.
@@ -1295,6 +1324,12 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             # single rebound year spikes EPS off a low base — agents must cite
             # it as "NTM PEG" and apply the base-effect trap (agents.py PATH A).
             "fwd_peg":                 _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
+            # Long-horizon PEG: fwd PE ÷ FY+1→FY+2/3 consensus EPS CAGR (FMP,
+            # known basis — see _fwd_eps_cagr). None for FMP-uncovered symbols;
+            # the durable-growth cross-check on a compressed NTM PEG.
+            "eps_cagr_fwd":            _fmp_est.get("eps_cagr_fwd"),
+            "eps_cagr_fwd_years":      _fmp_est.get("eps_cagr_years"),
+            "peg_lt":                  _safe_div(_fwd_pe_clean, (_fmp_est.get("eps_cagr_fwd") or 0) * 100),
             "fcf_yield":               _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
             "rule_of_40":              _r40,
             "implied_ntm_growth":      _implied_ntm_growth,

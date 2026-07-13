@@ -64,7 +64,8 @@ _VERSION_REGISTER = {
        "input not an auto-reject, DOWNGRADE surfaces flagged, calm-window "
        "re-verification of UNVERIFIED holds",
     4: "since 2026-07-13 — NTM-PEG disambiguation (PEG cited by basis, "
-       "base-effect trap in ValuationEngine, AV PEGRatio dropped as junk-basis) "
+       "base-effect trap in ValuationEngine, AV PEGRatio dropped as junk-basis, "
+       "peg_lt = fwd PE ÷ FMP FY+1→FY+3 consensus EPS CAGR where covered) "
        "+ GICS-first cycle_type defect fix (live 07-12: semis SECULAR not HYBRID)",
 }
 

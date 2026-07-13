@@ -162,3 +162,37 @@ def test_sic_to_sector_returns_none_when_unmatched():
     assert dossier._sic_to_sector(None) is None
     assert dossier._sic_to_sector("") is None
     assert dossier._sic_to_sector("Blank Space Widgets") is None    # → HYBRID default
+
+
+# ── _fwd_eps_cagr: long-horizon PEG denominator (2026-07-13) ──────────────────
+# FMP analyst-estimates returns up to 5 future FYs on covered symbols; the
+# FY+1→FY+2/3 EPS CAGR is the known-basis long-growth read (rows past FY+3 are
+# analyst-thin — NVDA's FY2030 row sat BELOW FY2029 on a handful of estimates).
+
+
+def _fy(eps):
+    return {"epsAvg": eps}
+
+
+def test_fwd_eps_cagr_two_year_horizon():
+    # AAPL-shaped: 8.755 → 10.643 over 2 years = ~10.25% CAGR; FY+3/+4 ignored.
+    fut = [_fy(8.755), _fy(9.643), _fy(10.643), _fy(11.631), _fy(12.82)]
+    cagr, years = dossier._fwd_eps_cagr(fut)
+    assert years == 2
+    assert abs(cagr - ((10.643 / 8.755) ** 0.5 - 1)) < 1e-4
+
+
+def test_fwd_eps_cagr_single_extra_year():
+    cagr, years = dossier._fwd_eps_cagr([_fy(2.0), _fy(2.4)])
+    assert years == 1 and abs(cagr - 0.2) < 1e-9
+
+
+def test_fwd_eps_cagr_guards():
+    assert dossier._fwd_eps_cagr([]) is None
+    assert dossier._fwd_eps_cagr([_fy(5.0)]) is None                 # one row ≠ growth
+    assert dossier._fwd_eps_cagr([_fy(-1.0), _fy(2.0)]) is None      # negative base
+    assert dossier._fwd_eps_cagr([_fy(2.0), _fy(-1.0)]) is None      # negative target
+    assert dossier._fwd_eps_cagr([_fy(2.0), _fy(None)]) is None      # missing target
+    # Missing middle year: skips to the FY+2 row, years distance stays honest.
+    cagr, years = dossier._fwd_eps_cagr([_fy(2.0), _fy(None), _fy(2.88)])
+    assert years == 2 and abs(cagr - 0.2) < 1e-4
