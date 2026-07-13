@@ -643,6 +643,13 @@ def _yf_financials(ticker: str) -> dict:
                     estimates["eps_revision_momentum"] = round((cur - ago30) / abs(ago30), 4)
         except Exception:
             pass
+        # NB (2026-07-13, MNDY case): there is NO usable free long-horizon PEG
+        # denominator — Yahoo stopped publishing per-stock LTG (growth_estimates
+        # LTG row is NaN across the board) and Alpha Vantage's PEGRatio has an
+        # unstated basis that produced 0.28 for MNDY (built off the depressed
+        # GAAP base — the exact artifact a long PEG should correct). Durability
+        # is therefore guarded by ValuationEngine's base-effect-trap reasoning,
+        # not by a second PEG field.
 
         return {"ratios": ratios, "analyst": analyst,
                 "income": income, "balance": balance, "cashflow": cashflow,
@@ -1162,7 +1169,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     # feeds the dashboard Evidence tab and the debate's raw dump; not scoring.
     dossier["av_overview"] = {
         "analyst_target_price": _safe_float(av_overview_raw.get("AnalystTargetPrice")),
-        "peg_ratio":            _safe_float(av_overview_raw.get("PEGRatio")),
+        # AV "PEGRatio" deliberately dropped (2026-07-13): unstated growth basis,
+        # returned 0.28 for MNDY (computed off the depressed GAAP base) — an
+        # agent quoting it as "the PEG" would be worse than having no number.
         "dividend_yield":       _safe_float(av_overview_raw.get("DividendYield")),
         "roe_ttm":              _safe_float(av_overview_raw.get("ReturnOnEquityTTM")),
         "roa_ttm":              _safe_float(av_overview_raw.get("ReturnOnAssetsTTM")),
@@ -1282,6 +1291,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             # Growth & valuation metrics
             "fwd_revenue_growth":      _fwd_revenue_growth,
             "fwd_earnings_growth":     _fwd_earnings_growth,
+            # NTM PEG: fwd PE ÷ NEXT-YEAR analyst EPS growth. Compresses when a
+            # single rebound year spikes EPS off a low base — agents must cite
+            # it as "NTM PEG" and apply the base-effect trap (agents.py PATH A).
             "fwd_peg":                 _safe_div(_fwd_pe_clean, (_fwd_earnings_growth or 0) * 100),
             "fcf_yield":               _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
             "rule_of_40":              _r40,

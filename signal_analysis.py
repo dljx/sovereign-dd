@@ -63,6 +63,9 @@ _VERSION_REGISTER = {
     3: "since 2026-07-07 — gate grades not gates: R:R divergence is red-team "
        "input not an auto-reject, DOWNGRADE surfaces flagged, calm-window "
        "re-verification of UNVERIFIED holds",
+    4: "since 2026-07-13 — NTM-PEG disambiguation (PEG cited by basis, "
+       "base-effect trap in ValuationEngine, AV PEGRatio dropped as junk-basis) "
+       "+ GICS-first cycle_type defect fix (live 07-12: semis SECULAR not HYBRID)",
 }
 
 

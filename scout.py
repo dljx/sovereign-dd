@@ -430,7 +430,9 @@ def _compute_matched_filters(ratios: dict, sector: str = "") -> list[str]:
     else:
         fwd_peg = ratios.get("fwd_peg")
         if fwd_peg and fwd_peg < 1.5:
-            matched.append(f"Fwd PEG {fwd_peg:.1f}")
+            # Labelled NTM: this PEG uses next-year growth only — quote services'
+            # PEGs use 3-5y growth and read higher (2026-07-13, MNDY 0.84 case).
+            matched.append(f"NTM PEG {fwd_peg:.1f}")
         rule40 = ratios.get("rule_of_40") or 0
         if rule40 >= 40:
             matched.append(f"R40={rule40:.0f}")
@@ -454,7 +456,7 @@ compelling investment opportunities from a pre-screened candidate list.
 CANDIDATE SELECTION — apply the appropriate path based on revenue growth rate:
 
 PATH B — HYPERGROWTH CANDIDATES (revenue growth >= 50%):
-  Do NOT use forward PEG to evaluate these — it understates quality for fast growers.
+  Do NOT use the NTM PEG to evaluate these — it understates quality for fast growers.
   Prioritize when at least 2 of the following 3 fundamental conditions are met:
   - Revenue Q/Q acceleration (this quarter faster than last quarter)
   - Gross margin >= 60% and stable or expanding
@@ -463,9 +465,11 @@ PATH B — HYPERGROWTH CANDIDATES (revenue growth >= 50%):
   A high absolute multiple (30-60x forward earnings) does NOT disqualify a hypergrowth name.
 
 PATH A — STANDARD GROWTH CANDIDATES (revenue growth < 50%):
-  Forward PEG IS a valid screening signal here.
+  The NTM PEG (Fwd P/E ÷ next-year EPS growth) IS a valid screening signal here — cite it
+  as "NTM PEG" (it is NOT the 3-5y-growth PEG quote services publish, which reads higher),
+  and treat a sub-1 reading driven by one rebound year of EPS with suspicion.
   Prioritize when:
-  - Forward PEG < 1.5: market underpricing NTM growth
+  - NTM PEG < 1.5: market underpricing NTM growth
   - Rule of 40 >= 40 AND gross margin > 50%: execution quality
   - FCF yield > 5% with stable or growing revenue: capital-efficient compounder
   Also consider: clear near-term catalysts, insider buying, sector tailwinds, small/mid-cap asymmetric upside.

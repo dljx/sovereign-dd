@@ -116,17 +116,32 @@ historical average. Is it trading at a premium or discount to its own history, a
 GROWTH-ADJUSTED PRICING — select path based on fwd_revenue_growth from the dossier ratios_ttm:
 
 PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
-  Use Forward PEG (Fwd P/E ÷ NTM EPS growth rate %) as the primary valuation signal.
-  Thresholds calibrated for the 2024-2026 rate environment:
-  - Forward PEG < 1.0: market underpricing growth — positive signal
-  - Forward PEG 1.0–2.0: fairly valued on growth — neutral
-  - Forward PEG 2.0–3.0: premium requires strong catalyst justification
-  - Forward PEG > 3.0: unjustified premium — negative signal
+  Use the NTM PEG (ratios_ttm.fwd_peg = Fwd P/E ÷ NEXT-YEAR analyst EPS growth %) as the
+  primary valuation signal. ALWAYS cite it as "NTM PEG" — never bare "PEG" or "Forward PEG":
+  popular quote services compute PEG on 3-5 year expected growth and will read materially
+  higher, so an unlabelled figure is uncheckable.
+  Thresholds calibrated for the 2024-2026 rate environment (NTM basis):
+  - NTM PEG < 1.0: market underpricing growth — positive signal
+  - NTM PEG 1.0–2.0: fairly valued on growth — neutral
+  - NTM PEG 2.0–3.0: premium requires strong catalyst justification
+  - NTM PEG > 3.0: unjustified premium — negative signal
+  BASE-EFFECT TRAP: a single rebound year (margin normalization, cost cuts, an easy compare,
+  or a GAAP→non-GAAP basis jump) spikes next-year EPS growth and compresses the NTM PEG
+  without saying anything about years 2-5. No published long-horizon PEG is trustworthy
+  (third-party "PEG" figures carry unstated growth bases — ignore them). Before scoring a
+  sub-1.0 NTM PEG as underpriced growth, check durability directly:
+  - ratios_ttm.implied_ntm_growth (forward vs trailing EPS): when it towers over
+    fwd_revenue_growth, the EPS jump is margin catch-up or an SBC-blind non-GAAP basis gap,
+    not compounding;
+  - your web research: what growth do analysts project BEYOND the next fiscal year?
+  If the cheapness is one year deep, say so explicitly and value the business on normalized
+  years-2-5 growth instead.
   Secondary: FCF Yield > 5% supports valuation. Rule of 40 >= 40 justifies a premium multiple.
-  Always deduct SBC from FCF before computing EV/FCF — inflated SBC is masked value destruction.
+  Always deduct SBC from FCF before computing EV/FCF — inflated SBC is masked value destruction
+  (and remember consensus forward EPS is typically non-GAAP, i.e. SBC-blind, for SaaS names).
 
 PATH B — HYPERGROWTH (fwd_revenue_growth >= 50%):
-  Do NOT score on forward PEG. Analyst EPS estimates systematically underestimate hypergrowth
+  Do NOT score on the NTM PEG. Analyst EPS estimates systematically underestimate hypergrowth
   companies (e.g. NVDA 2023-2025), making forward PEG appear misleadingly expensive. Instead use:
   1. EPS acceleration: if eps_acceleration > 0, analysts expect earnings to accelerate — positive signal
   2. Rule of 40: revenue_growth% + operating_margin% — target >= 40 for quality

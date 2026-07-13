@@ -206,7 +206,12 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
     ratios = (dossier.get("financials") or {}).get("ratios_ttm") or {}
     result = result or {}
     return {
-        "v":            3,
+        # v4 (2026-07-13): NTM-PEG disambiguation — PEG labelled by basis in
+        # prompts/filters, base-effect trap added to ValuationEngine PATH A,
+        # junk-basis AV PEGRatio dropped from the dossier. Also covers the
+        # GICS-first cycle_type defect fix (live 2026-07-12). See
+        # docs/ADAPTATION_PROTOCOL.md §4.
+        "v":            4,
         "mom_12_1":     tech.get("mom_12_1"),
         "mom_6m":       tech.get("mom_6m"),
         "mom_1m":       tech.get("mom_1m"),

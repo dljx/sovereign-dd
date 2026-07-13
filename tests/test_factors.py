@@ -104,7 +104,7 @@ def test_factor_stamp_carries_signal_time_regime():
     stamped = _factor_stamp({"technicals": {}, "financials": {},
                              "macro": {"regime": "TIGHTENING"}}, {})
     assert stamped["regime"] == "TIGHTENING"
-    assert stamped["v"] == 3
+    assert stamped["v"] == 4
     assert _factor_stamp({"technicals": {}, "financials": {}}, {})["regime"] is None
 
 
@@ -113,5 +113,5 @@ def test_factor_stamp_carries_smart_money_tilt():
     from upload_kv import _factor_stamp
     d = {"technicals": {}, "financials": {}, "capital_flow": {"smart_tilt": 4.2e8}}
     stamped = _factor_stamp(d, {})
-    assert stamped["cap_smart_tilt"] == 4.2e8 and stamped["v"] == 3
+    assert stamped["cap_smart_tilt"] == 4.2e8 and stamped["v"] == 4
     assert _factor_stamp({"technicals": {}, "financials": {}}, {})["cap_smart_tilt"] is None

@@ -67,7 +67,7 @@ def test_scout_card_carries_dossier_fields():
     assert card["price"] == 123.45
     assert card["sector"] == "Technology"
     assert card["confirmed"] is True
-    assert card["factors"]["v"] == 3
+    assert card["factors"]["v"] == 4
     assert card["factors"]["mom_12_1"] == 0.31
     assert card["factors"]["roic"] == 18.2
     assert card["factors"]["quality"] is not None
