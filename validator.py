@@ -129,6 +129,33 @@ def validate_dossier(dossier: dict) -> dict:
             "verify whether beats reflect recurring earnings power or one-time items before trusting EPS trend"
         )
 
+    # 8b. LONG-HORIZON PEG DENOMINATOR HORIZON/COVERAGE (2026-07-13)
+    # peg_lt is meant to be a TRUE 5-year consensus read (Finviz "EPS next 5Y",
+    # basis-cross-checked against fwd_pe at fetch time — see dossier._resolve_
+    # eps_cagr_fwd). If Finviz's markup changes again or starts failing the
+    # basis check more often, every dossier quietly downgrades to FMP/AV's
+    # ~1-2yr fallback with NO other visible signal (fwd_peg's base-effect trap
+    # would still run, just on a shorter horizon than intended) — this makes
+    # that degradation visible per-ticker instead of silent.
+    cagr_years = ratios.get("eps_cagr_fwd_years")
+    cagr_src   = ratios.get("eps_cagr_fwd_src")
+    fwd_pe_val = ratios.get("fwd_pe")
+    if cagr_years is not None and cagr_years < 3:
+        warnings.append(
+            f"LONG-HORIZON PEG IS SHORT-HORIZON: peg_lt resolved via {cagr_src} "
+            f"({cagr_years}y reach), not the intended 5-year Finviz consensus — "
+            "either Finviz has no coverage for this name or its data diverged "
+            ">25% from our own forward PE. Treat peg_lt as a near-term signal "
+            "only; use web research for a true multi-year growth view."
+        )
+    elif cagr_years is None and fwd_pe_val:
+        warnings.append(
+            "NO LONG-HORIZON PEG: peg_lt unavailable from any source (Finviz, "
+            "FMP, Alpha Vantage) — the base-effect durability check has no "
+            "quantitative cross-check; rely on implied_ntm_growth vs "
+            "fwd_revenue_growth and web research instead."
+        )
+
     # 8. UPCOMING EARNINGS STALENESS
     try:
         from datetime import datetime, timezone

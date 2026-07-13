@@ -144,10 +144,13 @@ PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
     can stay cheap right alongside the NTM PEG with no divergence between them to catch —
     a lack of divergence is not proof of durability. implied_ntm_growth towering over
     fwd_revenue_growth is the tell regardless of what peg_lt shows: it means the EPS jump is
-    margin catch-up or a GAAP-recovery/non-GAAP basis gap, not organic compounding. Use your
-    web research to see whether trailing GAAP earnings were recently depressed by a one-time
-    item — if so, both PEG readings are measuring a recovery, not a growth rate, and neither
-    should be scored as "cheap, durable growth" on its own.
+    margin catch-up or a GAAP-recovery/non-GAAP basis gap, not organic compounding. Check
+    ratios_ttm.trailing_earnings_growth_yoy directly (most-recent-quarter EPS growth — a large
+    negative value alongside healthy forward growth confirms a recovery-from-depressed-base
+    pattern, not durable compounding) and use web research to see whether trailing GAAP
+    earnings were recently depressed by a one-time item — if so, both PEG readings are
+    measuring a recovery, not a growth rate, and neither should be scored as "cheap, durable
+    growth" on its own.
   If the cheapness turns out to be short-horizon or recovery-driven, say so explicitly and
   value the business on normalized steady-state growth instead.
   Secondary: FCF Yield > 5% supports valuation. Rule of 40 >= 40 justifies a premium multiple.

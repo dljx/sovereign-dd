@@ -459,6 +459,82 @@ def _fmp_estimates(ticker: str) -> dict:
         return {}
 
 
+# ── Insider transactions (2026-07-13) ───────────────────────────────────────
+# Finnhub's actual response field is "transactionCode" (single-letter SEC Form
+# 4 codes), NOT "transactionType" — verified live across 1,511 real
+# transactions (AAPL/MRVL/NVDA): transactionType appeared on ZERO of them.
+# The old key made buys/sells PERMANENTLY EMPTY, so every dossier ever built
+# reported buy_count/sell_count/cluster_buying/net_insider_usd as 0 regardless
+# of real insider activity — a silent, 100%-failure-rate bug on a signal
+# FundamentalForensics' prompt explicitly asks agents to weigh. "P" = open-
+# market purchase, "S" = open-market sale — genuine discretionary market
+# activity, unlike "A" (grant/award), "G" (gift), "F" (tax-withholding
+# disposition) or "M" (derivative exercise), none of which are a conviction
+# signal either way.
+def _has_insider_cluster(transactions: list, window_days: int = 14) -> bool:
+    """3+ insiders transacting within a window_days-day span — a cluster is a
+    stronger signal than any single transaction."""
+    from datetime import datetime
+    dates = []
+    for t in transactions:
+        d = str(t.get("transactionDate", ""))[:10]
+        try:
+            dates.append(datetime.strptime(d, "%Y-%m-%d"))
+        except ValueError:
+            continue
+    if len(dates) < 3:
+        return False
+    dates.sort()
+    for i in range(len(dates) - 2):
+        if (dates[i + 2] - dates[i]).days <= window_days:
+            return True
+    return False
+
+
+def _insider_tx_value(t: dict) -> float:
+    """Dollar value of one transaction. "change" (the actual per-transaction
+    share delta) is preferred; "share" (cumulative post-transaction holding)
+    is only a fallback for the rare row missing "change"."""
+    shares = abs(t.get("change", 0) or t.get("share", 0) or 0)
+    price  = t.get("transactionPrice") or 0
+    return shares * price
+
+
+def process_insider_transactions(txns: list) -> dict:
+    """Finnhub /stock/insider-transactions rows -> the dossier's `insiders`
+    summary block. Pure function — the network fetch happens in build()."""
+    txns  = txns or []
+    buys  = [t for t in txns if t.get("transactionCode") == "P"]
+    sells = [t for t in txns if t.get("transactionCode") == "S"]
+
+    significant_buys  = [t for t in buys  if _insider_tx_value(t) >= 100_000]
+    significant_sells = [t for t in sells if _insider_tx_value(t) >= 100_000]
+    buyer_names = list({t.get("name", "") for t in buys if t.get("name")})
+    total_buy_usd  = round(sum(_insider_tx_value(t) for t in buys))
+    total_sell_usd = round(sum(_insider_tx_value(t) for t in sells))
+
+    return {
+        "buy_count":        len(buys),
+        "sell_count":       len(sells),
+        # "share" is the insider's CUMULATIVE post-transaction holding, not the
+        # transaction size — summing it across multiple insiders/transactions
+        # is meaningless. "change" is the actual per-transaction share delta
+        # (verified live: consistently positive for "P" codes, negative for
+        # "S"); abs() makes the buy/sell direction explicit rather than
+        # trusting the sign convention to hold on every future row.
+        "net_shares":       (sum(abs(t.get("change") or 0) for t in buys)
+                             - sum(abs(t.get("change") or 0) for t in sells)),
+        "cluster_buying":   _has_insider_cluster(buys),
+        "significant_buys": len(significant_buys),
+        "significant_sells": len(significant_sells),
+        "buyer_roles":      buyer_names[:5],
+        "total_buy_usd":    total_buy_usd,
+        "total_sell_usd":   total_sell_usd,
+        "net_insider_usd":  total_buy_usd - total_sell_usd,
+        "recent":           txns[:10],
+    }
+
+
 def _get_vix() -> float | None:
     try:
         return float(yf.Ticker("^VIX").history(period="2d")["Close"].iloc[-1])
@@ -582,6 +658,37 @@ def _earnings_upcoming(ticker: str, earnings_cal_raw) -> list:
     return []
 
 
+def _wilder_rsi(close, period: int = 14) -> float | None:
+    """RSI using Wilder's original smoothing (seed = SMA(period), then
+    recursive avg = (prev_avg*(period-1) + current)/period) — the textbook
+    definition and what every mainstream charting platform (TradingView,
+    most brokers) actually displays. A plain N-period rolling-mean RSI
+    ("Cutler's RSI") is a real but non-standard variant that diverges from
+    Wilder's by ~1+ points (verified live on AAPL, 2026-07-13) — since RSI
+    feeds MarketStructure's qualitative entry-timing judgment, it should
+    match what a human checking a chart elsewhere would see. None when the
+    series is too short."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean().to_numpy(copy=True)
+    avg_loss = loss.rolling(period).mean().to_numpy(copy=True)
+    import numpy as np
+    valid = ~np.isnan(avg_gain)
+    if not valid.any():
+        return None
+    start = int(np.argmax(valid))
+    gain_arr, loss_arr = gain.to_numpy(), loss.to_numpy()
+    for i in range(start + 1, len(avg_gain)):
+        avg_gain[i] = (avg_gain[i - 1] * (period - 1) + gain_arr[i]) / period
+        avg_loss[i] = (avg_loss[i - 1] * (period - 1) + loss_arr[i]) / period
+    last_gain, last_loss = avg_gain[-1], avg_loss[-1]
+    if np.isnan(last_gain) or np.isnan(last_loss):
+        return None
+    rs = last_gain / last_loss if last_loss != 0 else float("inf")
+    return 100.0 - 100.0 / (1.0 + rs)
+
+
 def _technicals(ticker: str) -> dict:
     try:
         # Tiger adjusted daily bars primary (probe-verified split-adjustment
@@ -605,11 +712,7 @@ def _technicals(ticker: str) -> dict:
         sma200 = float(close.rolling(200).mean().iloc[-1])
         price = float(close.iloc[-1])
 
-        delta = close.diff()
-        gain = delta.clip(lower=0).rolling(14).mean()
-        loss = (-delta.clip(upper=0)).rolling(14).mean()
-        rs = gain / loss.replace(0, 1e-9)
-        rsi = float(100 - 100 / (1 + rs.iloc[-1]))
+        rsi = _wilder_rsi(close, 14)
 
         ema12 = close.ewm(span=12).mean()
         ema26 = close.ewm(span=26).mean()
@@ -628,7 +731,7 @@ def _technicals(ticker: str) -> dict:
             "sma200": round(sma200, 2),
             "above_sma50": price > sma50,
             "above_sma200": price > sma200,
-            "rsi_14": round(rsi, 1),
+            "rsi_14": round(rsi, 1) if rsi is not None else None,
             "macd_line": round(macd_line, 3),
             "macd_signal": round(signal_line, 3),
             "macd_bullish": macd_line > signal_line,
@@ -845,8 +948,19 @@ def _yf_financials(ticker: str) -> dict:
                 "sector": info.get("sector", ""),
                 "company_name": info.get("longName") or info.get("shortName", ""),
                 "market_cap": info.get("marketCap"),
-                "fwd_revenue_growth": info.get("revenueGrowth"),
-                "fwd_earnings_growth": info.get("earningsGrowth"),
+                # NB (2026-07-13): despite the names Yahoo gives these fields,
+                # they are NOT forward-looking — verified live across 4 tickers,
+                # info['earningsGrowth'] tracks info['earningsQuarterlyGrowth']
+                # almost exactly (MRVL: -80.4% vs -80.6%), while the CONFIRMED
+                # forward figure (t.earnings_estimate '+1y' growth) read +52.6%
+                # — opposite sign. revenueGrowth diverges 30-100%+ from its
+                # forward counterpart too, with no consistent conversion factor.
+                # Kept under an honest name (trailing, not forward) — genuinely
+                # useful for spotting an earnings-recovery base effect (see
+                # agents.py's BASE-EFFECT TRAP) — but MUST NOT feed a forward-
+                # growth fallback chain (removed from both, below).
+                "trailing_revenue_growth_yoy":  info.get("revenueGrowth"),
+                "trailing_earnings_growth_yoy": info.get("earningsGrowth"),
                 "previous_close": info.get("previousClose"),
                 "financials_currency": _fin_currency if _is_fx_mismatch else None,
                 "estimates": estimates}
@@ -1427,16 +1541,21 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
                 return v
         return None
 
+    # NOTE (2026-07-13): yf_fin's "trailing_*_growth_yoy" fields are deliberately
+    # NOT in these chains — verified live to not represent forward growth
+    # despite Yahoo's field names suggesting otherwise (see _yf_financials).
+    # When FMP AND yfinance's own +1y estimate both miss, these now correctly
+    # resolve to None rather than silently substituting a trailing figure.
     _fwd_earnings_growth = _first_not_none(
         _fmp_est.get("fwd_eps_growth"),
         _yf_est.get("fwd_eps_growth"),
-        yf_fin.get("fwd_earnings_growth"),
     )
     _fwd_revenue_growth = _first_not_none(
         _fmp_est.get("fwd_rev_growth"),
         _yf_est.get("fwd_rev_growth"),
-        yf_fin.get("fwd_revenue_growth"),
     )
+    _trailing_earnings_growth = yf_fin.get("trailing_earnings_growth_yoy")
+    _trailing_revenue_growth  = yf_fin.get("trailing_revenue_growth_yoy")
     _eps_revision_momentum = _yf_est.get("eps_revision_momentum")  # yfinance eps_trend, no FMP equivalent on free tier
 
     # WACC — computed from existing data, zero new API calls.
@@ -1486,6 +1605,13 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             # Growth & valuation metrics
             "fwd_revenue_growth":      _fwd_revenue_growth,
             "fwd_earnings_growth":     _fwd_earnings_growth,
+            # TRAILING (most-recent-quarter YoY), NOT forward — despite Yahoo's
+            # field names, verified NOT to represent forward consensus (see
+            # _yf_financials). A large negative trailing figure alongside
+            # healthy forward growth is exactly the "earnings recovering from
+            # a depressed/impaired base" pattern the BASE-EFFECT TRAP looks for.
+            "trailing_earnings_growth_yoy": _trailing_earnings_growth,
+            "trailing_revenue_growth_yoy":  _trailing_revenue_growth,
             # NTM PEG: fwd PE ÷ NEXT-YEAR analyst EPS growth. Compresses when a
             # single rebound year spikes EPS off a low base — agents must cite
             # it as "NTM PEG" and apply the base-effect trap (agents.py PATH A).
@@ -1576,54 +1702,10 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         })
     dossier["earnings_surprises"] = _surprises
 
-    # â"€â"€ Insider transactions â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    txns  = insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else []
-    buys  = [t for t in txns if t.get("transactionType") == "P - Purchase"]
-    sells = [t for t in txns if t.get("transactionType") == "S - Sale"]
-
-    # Cluster detection: 3+ insiders buying within a 14-day window
-    def _has_cluster(transactions: list, window_days: int = 14) -> bool:
-        from datetime import datetime
-        dates = []
-        for t in transactions:
-            d = t.get("transactionDate", "")[:10]
-            try:
-                dates.append(datetime.strptime(d, "%Y-%m-%d"))
-            except ValueError:
-                continue
-        if len(dates) < 3:
-            return False
-        dates.sort()
-        for i in range(len(dates) - 2):
-            if (dates[i + 2] - dates[i]).days <= window_days:
-                return True
-        return False
-
-    # Significant transactions: value > $100K (uses transactionPrice from Finnhub)
-    def _tx_value(t: dict) -> float:
-        shares = abs(t.get("change", 0) or t.get("share", 0) or 0)
-        price  = t.get("transactionPrice") or 0
-        return shares * price
-
-    significant_buys  = [t for t in buys  if _tx_value(t) >= 100_000]
-    significant_sells = [t for t in sells if _tx_value(t) >= 100_000]
-    buyer_names = list({t.get("name", "") for t in buys if t.get("name")})
-    total_buy_usd  = round(sum(_tx_value(t) for t in buys))
-    total_sell_usd = round(sum(_tx_value(t) for t in sells))
-
-    dossier["insiders"] = {
-        "buy_count":        len(buys),
-        "sell_count":       len(sells),
-        "net_shares":       sum(t.get("share", 0) for t in buys) - sum(t.get("share", 0) for t in sells),
-        "cluster_buying":   _has_cluster(buys),
-        "significant_buys": len(significant_buys),
-        "significant_sells": len(significant_sells),
-        "buyer_roles":      buyer_names[:5],
-        "total_buy_usd":    total_buy_usd,
-        "total_sell_usd":   total_sell_usd,
-        "net_insider_usd":  total_buy_usd - total_sell_usd,
-        "recent":           txns[:10],
-    }
+    # ── Insider transactions (see process_insider_transactions docstring for
+    # the 2026-07-13 transactionType->transactionCode fix history) ────────────
+    dossier["insiders"] = process_insider_transactions(
+        insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else [])
 
     # â"€â"€ News â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     fh_news = fh_news_raw[:10] if isinstance(fh_news_raw, list) else []
@@ -1656,11 +1738,13 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
                 "year":     s.get("year"),
                 "month":    s.get("month"),
                 "mspr":     s.get("mspr"),     # positive = net buying pressure
-                "change":   s.get("change"),
-                "purchase": s.get("purchase"),
-                "sales":    s.get("sales"),
+                "change":   s.get("change"),   # net insider share change this month
             }
             for s in _sent_recent
+            # "purchase"/"sales" dropped 2026-07-13: verified live (47 rows,
+            # AAPL/MRVL/NVDA) — Finnhub's actual /stock/insider-sentiment shape
+            # is only {change, month, mspr, symbol, year}; those two keys were
+            # always None. mspr/change are the real signal this endpoint gives.
         ],
         "avg_mspr_3m": (round(sum(s.get("mspr") or 0 for s in _sent_recent) / len(_sent_recent), 4)
                         if _sent_recent else None),
