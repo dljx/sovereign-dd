@@ -111,3 +111,45 @@ def test_yf_financials_exposes_trailing_growth_under_honest_names(monkeypatch):
     # yf_fin.get("fwd_earnings_growth") must get None, never the trailing value.
     assert "fwd_earnings_growth" not in out
     assert "fwd_revenue_growth" not in out
+
+
+# ── _volume_profile (2026-07-14 enrichment batch) ───────────────────────────
+# MarketStructure's prompt has always asked for the 30-60d up/down-volume
+# asymmetry read; the Volume column was fetched and dropped before this.
+
+from dossier import _volume_profile
+
+
+def _px_vol(closes, volumes):
+    return _series(closes), pd.Series([float(v) for v in volumes])
+
+
+def test_volume_profile_updown_split_hand_derived():
+    # closes: 10 →11(up) →10(down) →12(up) →12(flat)
+    # volumes on those change-days: up=100+300=400, down=200, flat=50 ignored.
+    c, v = _px_vol([10, 11, 10, 12, 12], [999, 100, 200, 300, 50])
+    r = _volume_profile(c, v, window=10)
+    assert r["updown_volume_ratio_60d"] == pytest.approx(400 / 200)
+    assert r["volume_window_days"] == 4
+    # avg over the 4 change-days = (100+200+300+50)/4 = 162.5 → hi bar 243.75:
+    # only the 300-share up-day crosses it.
+    assert r["avg_volume_60d"] == 162
+    assert r["high_vol_up_days_60d"] == 1
+    assert r["high_vol_down_days_60d"] == 0
+
+
+def test_volume_profile_no_down_days_ratio_is_none_not_inf():
+    c, v = _px_vol([10, 11, 12, 13], [100, 100, 100, 100])
+    r = _volume_profile(c, v, window=10)
+    assert r["updown_volume_ratio_60d"] is None
+    assert r["high_vol_up_days_60d"] == 0
+
+
+def test_volume_profile_missing_volume_returns_empty():
+    c, _ = _px_vol([10, 11, 12], [1, 1, 1])
+    assert _volume_profile(c, None) == {}
+
+
+def test_volume_profile_zero_volume_returns_empty_not_div_by_zero():
+    c, v = _px_vol([10, 11, 12], [0, 0, 0])
+    assert _volume_profile(c, v) == {}

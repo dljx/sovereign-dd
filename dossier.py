@@ -659,6 +659,38 @@ def _earnings_upcoming(ticker: str, earnings_cal_raw) -> list:
     return []
 
 
+def _volume_profile(close, volume, window: int = 60) -> dict:
+    """Up/down-volume split over the last `window` trading days (2026-07-14).
+    MarketStructure's prompt has always asked for exactly this asymmetry read
+    ("large up-volume days, small down-volume days ... strongest signals of
+    institutional demand") but the Volume column was fetched and dropped.
+    high_vol_* counts days with volume >1.5x the window average, split by the
+    day's price direction. Empty dict (never fabricated zeros) when volume
+    data is missing — same degradation contract as the rest of _technicals."""
+    try:
+        if volume is None or close is None or len(volume) < 2 or len(close) < 2:
+            return {}
+        c = close.iloc[-(window + 1):]
+        v = volume.iloc[-(window + 1):]
+        chg = c.diff().iloc[1:]
+        v = v.iloc[1:]
+        up_vol, down_vol = float(v[chg > 0].sum()), float(v[chg < 0].sum())
+        avg_vol = float(v.mean())
+        if avg_vol <= 0:
+            return {}
+        hi = 1.5 * avg_vol
+        return {
+            "avg_volume_60d":           int(avg_vol),
+            "updown_volume_ratio_60d":  round(up_vol / down_vol, 2) if down_vol > 0 else None,
+            "high_vol_up_days_60d":     int(((chg > 0) & (v > hi)).sum()),
+            "high_vol_down_days_60d":   int(((chg < 0) & (v > hi)).sum()),
+            # Honest window: a recent listing may have fewer than 60 days.
+            "volume_window_days":       int(len(chg)),
+        }
+    except Exception:
+        return {}
+
+
 def _wilder_rsi(close, period: int = 14) -> float | None:
     """RSI using Wilder's original smoothing (seed = SMA(period), then
     recursive avg = (prev_avg*(period-1) + current)/period) — the textbook
@@ -709,6 +741,9 @@ def _technicals(ticker: str) -> dict:
         if hist.empty:
             return {}
         close = hist["Close"]
+        # sma20 (2026-07-14): MarketStructure's trend mandate assesses the full
+        # 20/50/200 stack; only 50/200 were computed from this same history.
+        sma20 = float(close.rolling(20).mean().iloc[-1])
         sma50 = float(close.rolling(50).mean().iloc[-1])
         sma200 = float(close.rolling(200).mean().iloc[-1])
         price = float(close.iloc[-1])
@@ -726,12 +761,17 @@ def _technicals(ticker: str) -> dict:
 
         momentum = _price_momentum(close)
 
+        vol_stats = _volume_profile(close, hist["Volume"] if "Volume" in hist else None)
+
         return {
             "price": round(price, 2),
+            "sma20": round(sma20, 2),
             "sma50": round(sma50, 2),
             "sma200": round(sma200, 2),
+            "above_sma20": price > sma20,
             "above_sma50": price > sma50,
             "above_sma200": price > sma200,
+            **vol_stats,
             "rsi_14": round(rsi, 1) if rsi is not None else None,
             "macd_line": round(macd_line, 3),
             "macd_signal": round(signal_line, 3),
@@ -846,6 +886,9 @@ def _yf_financials(ticker: str) -> dict:
             "beta":          _r(info.get("beta")),
             "shares_out":    _safe_shares,
             "short_pct":     _pct(info.get("shortPercentOfFloat")),
+            # Days-to-cover (2026-07-14): MarketStructure's short-interest mandate
+            # asks for it explicitly; free on this same info call.
+            "short_ratio":   _r(info.get("shortRatio")),
             "adr_mismatch":  _is_adr_mismatch,  # flag for downstream consumers
             "op_margin":     _pct(info.get("operatingMargins")),
             "trailing_eps":  info.get("trailingEps"),
@@ -871,6 +914,10 @@ def _yf_financials(ticker: str) -> dict:
                     ni  = fin.loc["Net Income", col] if "Net Income" in fin.index else None
                     rd  = fin.loc["Research And Development", col] if "Research And Development" in fin.index else None
                     cor = fin.loc["Cost Of Revenue", col] if "Cost Of Revenue" in fin.index else None
+                    # Diluted average shares per fiscal year (2026-07-14): the
+                    # share-count TREND FundamentalForensics' buyback-effectiveness
+                    # mandate needs — only the current shares_out existed before.
+                    dsh = fin.loc["Diluted Average Shares", col] if "Diluted Average Shares" in fin.index else None
                     income.append({
                         "date": str(col.date()),
                         "revenue": int(rev) if rev is not None and str(rev) != "nan" else None,
@@ -879,6 +926,7 @@ def _yf_financials(ticker: str) -> dict:
                         "net_income": int(ni) if ni is not None and str(ni) != "nan" else None,
                         "research_development": int(rd) if rd is not None and str(rd) != "nan" else None,
                         "cost_of_revenue": int(cor) if cor is not None and str(cor) != "nan" else None,
+                        "diluted_shares": int(dsh) if dsh is not None and str(dsh) != "nan" else None,
                     })
         except Exception as e:
             print(f"  [dossier] income statement parse failed: {e}")

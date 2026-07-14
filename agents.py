@@ -612,6 +612,13 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
         summary["latest_fy_operating_income"] = latest.get("operating_income") or latest.get("operatingIncome")
         summary["latest_fy_net_income"]       = latest.get("net_income") or latest.get("netIncome")
         summary["revenue_growth_yoy"]         = _growth(income, "revenue")
+        # Multi-year trend table (2026-07-14): FundamentalForensics' mandate asks
+        # for margin TRENDS, growth VELOCITY, and share-count/buyback trends, but
+        # only the latest year survived into the prompt (slim strips financials).
+        # The dossier already holds up to 4 annual statements — supply them.
+        # Rows carry: date, revenue, gross_profit, operating_income, net_income,
+        # research_development, cost_of_revenue, diluted_shares (buyback trend).
+        summary["annual_income_history"]      = income[:4]
     else:
         summary["revenue_growth_yoy"] = None
 
@@ -629,6 +636,9 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
         # SBC from FCF, but SBC only reached the prompt for ASSET_LIGHT names
         # (via fair_value key_metrics) — supply it for every archetype.
         summary["latest_fy_sbc"]            = cf0.get("stock_based_compensation")
+        # FF's earnings-quality mandate cross-references net income vs FCF over
+        # time — supply the (2-year) annual cashflow rows for the trend read.
+        summary["annual_cashflow_history"]  = cashflow[:4]
 
     balance = fin.get("balance", [])
     if balance:

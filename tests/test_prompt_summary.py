@@ -89,3 +89,34 @@ def test_missing_statements_degrade_gracefully():
     assert s["fcf_ttm"] == 55_000
     assert s["revenue_growth_yoy"] is None
     assert "latest_fy_revenue" not in s
+
+
+# ── multi-year history tables (2026-07-14 enrichment batch) ─────────────────
+# FF's mandate asks for margin trends / growth velocity / buyback trends but
+# only the latest year survived into the prompt (slim strips financials).
+
+def test_annual_income_history_rides_the_summary():
+    d = _dossier()
+    d["financials"]["income"][0]["diluted_shares"] = 24_000
+    d["financials"]["income"][1]["diluted_shares"] = 25_000
+    s = _summary(d)
+    hist = s["annual_income_history"]
+    assert [r["date"] for r in hist] == ["2026-01-31", "2025-01-31"]
+    assert hist[0]["revenue"] == 100_000 and hist[1]["revenue"] == 80_000
+    assert hist[0]["diluted_shares"] == 24_000   # share-count trend for buybacks
+    assert hist[1]["diluted_shares"] == 25_000
+
+
+def test_annual_cashflow_history_rides_the_summary():
+    s = _summary(_dossier())
+    hist = s["annual_cashflow_history"]
+    assert hist[0]["free_cash_flow"] == 40_000
+    assert hist[0]["stock_based_compensation"] == 7_000
+
+
+def test_history_tables_absent_when_statements_missing():
+    d = _dossier()
+    d["financials"] = {"ratios_ttm": {"revenue_ttm": 1, "fcf": 1}}
+    s = _summary(d)
+    assert "annual_income_history" not in s
+    assert "annual_cashflow_history" not in s
