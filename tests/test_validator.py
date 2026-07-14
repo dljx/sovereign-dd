@@ -178,3 +178,34 @@ def test_confidence_degrades_with_warnings():
     r = validate_dossier(d)
     assert r["data_confidence"] in ("MEDIUM", "LOW")
     assert len(r["warnings"]) >= 2
+
+
+# ── period-matched PE cross-check (2026-07-14) ──────────────────────────────
+# yfinance trailingPE is TTM; computing the cross-check from the latest ANNUAL
+# net income fired spurious divergence warnings on off-cycle fast growers
+# (live NVDA: 42.5 annual-computed vs 31.1 TTM → false MEDIUM confidence).
+
+def _pe_dossier(yf_pe, annual_ni, ttm_ni=None, mcap_bn=100.0):
+    return {
+        "profile": {"market_cap_bn": mcap_bn, "country": "US"},
+        "financials": {
+            "income": [{"net_income": annual_ni}],
+            "ratios_ttm": {"pe": yf_pe, "net_income_ttm": ttm_ni},
+        },
+        "quote": {}, "valuation": {},
+    }
+
+
+def test_pe_check_prefers_ttm_net_income_over_annual():
+    # yf PE 31.1 with mcap 100B → TTM NI ≈ 3.215B matches; the STALE annual
+    # 2.35B alone would compute 42.5 and fire a false 27% divergence.
+    d = _pe_dossier(yf_pe=31.1, annual_ni=2_350_000_000, ttm_ni=3_215_000_000)
+    r = validate_dossier(d)
+    assert not any("Trailing PE divergence" in w for w in r["warnings"])
+
+
+def test_pe_check_falls_back_to_annual_when_ttm_missing():
+    # Without TTM NI the annual fallback still catches a REAL divergence.
+    d = _pe_dossier(yf_pe=10.0, annual_ni=2_000_000_000, ttm_ni=None)
+    r = validate_dossier(d)
+    assert any("Trailing PE divergence" in w for w in r["warnings"])

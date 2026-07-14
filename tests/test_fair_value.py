@@ -368,3 +368,38 @@ def test_early_stage_falls_back_to_sector_table_without_peers():
     result = _value_early_stage(d)
     assert result["key_metrics"]["used_peer_ev_sales"] is False
     assert result["secondary"][0]["assumptions"]["target_ev_rev"] == 8  # Technology static tier
+
+
+# ── hypergrowth leg source-labelling (2026-07-14, visibility only) ──────────
+# The static 25x/40x EV/NTM-Revenue override is the last unreformed static-
+# multiple path post-v5 and takes 70-100% composite weight when active — the
+# label rides fair_value_key_metrics into every agent's prompt. Deliberately
+# NOT a blind_spot flag (risk_reward penalizes >=2 flags; asset-light already
+# carries NRR_NOT_COMPUTED, so a flag would silently change R/R).
+
+def test_hypergrowth_leg_is_source_labelled_when_active():
+    d = _dossier(financials={"ratios_ttm": {
+        "shares_out": 1_000_000_000, "revenue_ttm": 10_000_000_000,
+        "gross_margin": 72.0, "fcf": 2_000_000_000,
+        "fwd_revenue_growth": 0.60,
+    }})
+    fv = compute_fair_values(d)
+    km = fv["archetype_metrics"]
+    assert km["hypergrowth_active"] is True
+    assert km["hypergrowth_ntm_multiple"] == 25          # 0.5 < growth <= 1.0 tier
+    assert km["hypergrowth_multiple_source"] == "static_2024_2026_ai_cycle_calibration"
+    # Positive SBC-adjusted FCF + a primary leg -> the 70/30 blend.
+    assert km["hypergrowth_composite_weight"] == 0.70
+    # Visibility only — must NOT have added a blind_spot flag (risk_reward
+    # penalizes >=2 flags and asset-light already carries NRR_NOT_COMPUTED).
+    assert not any("HYPERGROWTH" in f for f in fv["blind_spot_flags"])
+
+
+def test_hypergrowth_labels_absent_when_inactive():
+    d = _dossier()   # base fixture: fwd_revenue_growth 0.15 — below the cutoff
+    fv = compute_fair_values(d)
+    km = fv["archetype_metrics"]
+    assert km["hypergrowth_active"] is False
+    assert km["hypergrowth_ntm_multiple"] is None
+    assert km["hypergrowth_multiple_source"] is None
+    assert km["hypergrowth_composite_weight"] is None

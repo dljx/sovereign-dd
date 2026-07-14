@@ -821,6 +821,34 @@ def _ttm_fcf_from_quarterly(t) -> float | None:
         return None
 
 
+def _ttm_net_income_from_quarterly(t) -> float | None:
+    """Sum the last 4 REAL quarterly Net Income statements into a genuine TTM
+    (2026-07-14). validator.py's PE cross-check computed PE from the latest
+    ANNUAL net income while yfinance's trailingPE is TTM-based — a period
+    mismatch that fired spurious divergence warnings on any off-cycle fast
+    grower (live NVDA: computed 42.5 vs yfinance 31.1 → 27% "gap" → MEDIUM
+    data confidence on clean data; at 3+ warnings the same noise could tip a
+    name into LOW, which docks the score). Same 4-real-quarters/None contract
+    as _ttm_fcf_from_quarterly — caller falls back to the annual statement."""
+    try:
+        qis = t.quarterly_income_stmt
+        if qis is None or qis.empty:
+            return None
+        ni_row = next((r for r in ("Net Income", "Net Income Common Stockholders")
+                       if r in qis.index), None)
+        if ni_row is None:
+            return None
+        cols = list(qis.columns[:4])
+        if len(cols) < 4:
+            return None
+        vals = [qis.loc[ni_row, c] for c in cols]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals):
+            return None
+        return float(sum(vals))
+    except Exception:
+        return None
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -881,6 +909,7 @@ def _yf_financials(ticker: str) -> dict:
             "fcf":           _fcf,
             "fcf_per_share": _fcf_ps,
             "fcf_source":    _fcf_source,
+            "net_income_ttm": _ttm_net_income_from_quarterly(t),
             "revenue_ttm":   info.get("totalRevenue"),
             "ebitda":        info.get("ebitda"),
             "beta":          _r(info.get("beta")),
@@ -1741,6 +1770,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "fcf_per_share": yf_r.get("fcf_per_share"),
             "fcf":           yf_r.get("fcf"),
             "fcf_source":    yf_r.get("fcf_source"),
+            "net_income_ttm": yf_r.get("net_income_ttm"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
             "beta":          yf_r.get("beta"),

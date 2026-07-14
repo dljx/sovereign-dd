@@ -139,3 +139,49 @@ def test_handles_a_real_negative_ocf_quarter_correctly_ko_shape():
     ))
     fcf = _ttm_fcf_from_quarterly(t)
     assert fcf == pytest.approx(12_562_000_000)
+
+
+# ── _ttm_net_income_from_quarterly (2026-07-14, validator PE cross-check) ───
+# Same 4-real-quarters/None contract as the FCF helper; feeds the validator's
+# period-matched computed PE (annual-vs-TTM mismatch fired spurious divergence
+# warnings on off-cycle fast growers — live NVDA 42.5 vs 31.1).
+
+from dossier import _ttm_net_income_from_quarterly
+
+
+class _FakeIncomeTicker:
+    def __init__(self, qis):
+        self._qis = qis
+
+    @property
+    def quarterly_income_stmt(self):
+        return self._qis
+
+
+def _qis(row, vals, n_cols=4):
+    cols = pd.date_range("2026-01-31", periods=n_cols, freq="-3ME")
+    return pd.DataFrame({row: (vals + [None] * n_cols)[:n_cols]}, index=cols).T
+
+
+def test_ttm_net_income_sums_last_4_quarters():
+    t = _FakeIncomeTicker(_qis("Net Income", [10.0, 20.0, 30.0, 40.0, 99.0], n_cols=5))
+    assert _ttm_net_income_from_quarterly(t) == pytest.approx(100.0)
+
+
+def test_ttm_net_income_falls_back_to_common_stockholders_row():
+    t = _FakeIncomeTicker(_qis("Net Income Common Stockholders", [1.0, 2.0, 3.0, 4.0]))
+    assert _ttm_net_income_from_quarterly(t) == pytest.approx(10.0)
+
+
+def test_ttm_net_income_none_when_fewer_than_4_quarters():
+    t = _FakeIncomeTicker(_qis("Net Income", [10.0, 20.0, 30.0], n_cols=3))
+    assert _ttm_net_income_from_quarterly(t) is None
+
+
+def test_ttm_net_income_none_when_a_quarter_is_nan():
+    t = _FakeIncomeTicker(_qis("Net Income", [10.0, float("nan"), 30.0, 40.0]))
+    assert _ttm_net_income_from_quarterly(t) is None
+
+
+def test_ttm_net_income_none_when_statement_missing():
+    assert _ttm_net_income_from_quarterly(_FakeIncomeTicker(None)) is None

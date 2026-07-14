@@ -55,8 +55,17 @@ def validate_dossier(dossier: dict) -> dict:
 
     mcap_bn = profile.get("market_cap_bn") or 0
     mcap = mcap_bn * 1e9
+    # Period-matched (2026-07-14): yfinance's trailingPE is TTM-based, so the
+    # first-principles side must be too — computing from the latest ANNUAL net
+    # income fired spurious divergence warnings on any off-cycle fast grower
+    # (live NVDA: 42.5 annual-computed vs 31.1 TTM → 27% "gap" → MEDIUM
+    # confidence on clean data; at 3+ warnings the same noise could tip a name
+    # into LOW, which docks the score). Annual stays as the fallback when
+    # fewer than 4 real quarters exist.
     income = fin.get("income") or []
-    net_income = income[0].get("net_income") if income else None
+    net_income = ratios.get("net_income_ttm")
+    if not net_income and income:
+        net_income = income[0].get("net_income")
     computed_pe: float | None = None
     if net_income and net_income > 0 and mcap > 0:
         computed_pe = round(mcap / net_income, 2)

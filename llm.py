@@ -148,6 +148,17 @@ def _jittered(base: float) -> float:
     return base * (0.75 + random.random() * 0.5)
 
 
+def _is_transient_network(err_str: str) -> bool:
+    """Read/connect timeouts and dropped connections deserve the same retry
+    treatment as a 5xx. Takes the ALREADY-LOWERCASED error string. Deliberately
+    narrow: quota/auth/safety-block errors must never match (they're handled by
+    their own branches or should raise)."""
+    return any(s in err_str for s in (
+        "timed out", "timeout", "connection reset", "connection aborted",
+        "connection refused", "remote end closed", "temporarily unavailable",
+    ))
+
+
 def _key_label(key: str) -> str:
     """Stable, non-secret label for a key (its 1-based position in the pool)."""
     try:
@@ -262,10 +273,15 @@ def call_gemini(
                 _cool_key(cur_key, wait)
                 if api_key is not None:
                     time.sleep(wait)  # sync path: sleep here; async path handles sleep outside
-            elif "500" in err_str or "502" in err_str:
+            elif "500" in err_str or "502" in err_str or _is_transient_network(err_str):
+                # Network timeouts/drops are as transient as a 502 but carry none
+                # of the retryable status substrings — verified live 2026-07-14:
+                # a single "The read operation timed out" on the scout triage
+                # call fell through to the else-raise and forfeited the whole
+                # 4-hour discovery window.
                 if attempt < max_retries - 1:
                     wait = _jittered(min(2 ** (attempt + 1), 30))
-                    print(f"  [llm] server error on attempt {attempt + 1}, retrying in {wait:.0f}s...")
+                    print(f"  [llm] transient error on attempt {attempt + 1}, retrying in {wait:.0f}s...")
                     time.sleep(wait)
                 else:
                     raise

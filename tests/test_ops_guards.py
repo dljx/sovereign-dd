@@ -128,3 +128,30 @@ def test_resolve_model_failure_not_cached(monkeypatch):
     c = _fake_client(set())
     assert llm._resolve_model(c, "k1", "model-a") == "model-a"   # default returned
     assert llm._model_ids == {}                                  # nothing poisoned
+
+
+# ── llm._is_transient_network (2026-07-14) ──────────────────────────────────
+# A single "The read operation timed out" on the scout triage call raised
+# immediately (only 429/5xx were retryable) and forfeited a whole 4-hour
+# discovery window (live 2026-07-14 09:57 run). Timeouts are as transient as
+# a 502; quota/auth/safety errors must never match.
+
+from llm import _is_transient_network
+
+
+def test_transient_network_matches_the_live_failure():
+    assert _is_transient_network("the read operation timed out")
+
+
+def test_transient_network_matches_connection_drops():
+    for s in ("connection reset by peer", "connection aborted",
+              "remote end closed connection without response",
+              "connect timeout", "service temporarily unavailable"):
+        assert _is_transient_network(s), s
+
+
+def test_transient_network_never_matches_quota_or_auth():
+    for s in ("429 resource exhausted: quota exceeded",
+              "permission denied: api key invalid",
+              "blocked by safety settings", "invalid argument"):
+        assert not _is_transient_network(s), s

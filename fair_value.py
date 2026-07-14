@@ -520,6 +520,7 @@ def _value_asset_light(dossier: dict) -> dict:
     fwd_rev_growth = _safe(ratios.get("fwd_revenue_growth"))
     hypergrowth_fv = None
     hypergrowth_active = False
+    ntm_multiple = None
     if fwd_rev_growth is not None and fwd_rev_growth > 0.50 and gross_margin is not None and gross_margin > 0.60:
         hypergrowth_active = True
         ntm_multiple = 40 if fwd_rev_growth > 1.0 else 25
@@ -667,6 +668,21 @@ def _value_asset_light(dossier: dict) -> dict:
             "gross_margin": gross_margin,
             "hypergrowth_active": hypergrowth_active,
             "hypergrowth_fv": hypergrowth_fv,
+            # Source-label the hypergrowth leg (2026-07-14, visibility only —
+            # deliberately NOT a blind_spot flag: risk_reward.py penalizes
+            # names at >=2 flags and asset-light already carries one, so a
+            # flag would silently change R/R for every hypergrowth name
+            # without its own protocol sign-off). When active this static
+            # 25x/40x EV/NTM-Revenue leg is the LAST unreformed static-
+            # multiple path post-v5 and takes 70-100% composite weight —
+            # agents should weigh it as a calibrated prior, not market data.
+            "hypergrowth_ntm_multiple": ntm_multiple,
+            "hypergrowth_multiple_source": ("static_2024_2026_ai_cycle_calibration"
+                                            if hypergrowth_active else None),
+            "hypergrowth_composite_weight": (
+                None if not (hypergrowth_active and hypergrowth_fv is not None)
+                else (0.70 if (sbc_adjusted_fcf is not None and sbc_adjusted_fcf > 0
+                               and primary_fv is not None) else 1.0)),
             "fwd_rev_growth": fwd_rev_growth,
             "peer_count": len(peers),
             "used_peer_ev_fcf": used_peer_fcf,
