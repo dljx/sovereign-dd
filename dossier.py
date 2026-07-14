@@ -1200,9 +1200,21 @@ def _apply_fx_conversion(yf_fin: dict, currency: str, verbose: bool = False) -> 
 
 def _fetch_peer(peer_ticker: str) -> dict | None:
     try:
-        info = yf.Ticker(peer_ticker).info
+        t = yf.Ticker(peer_ticker)
+        info = t.info
         ev    = info.get("enterpriseValue")
-        fcf   = info.get("freeCashflow")
+        # Peer FCF (2026-07-14): same treatment as the subject's own
+        # ratios_ttm.fcf — info['freeCashflow'] is the opaque Yahoo figure
+        # verified 20-70%+ off a real TTM (see _ttm_fcf_from_quarterly).
+        # Live-measured the day after the subject-side fix: the info-dict
+        # basis inflated the peer EV/FCF median +110% on a semis peer set
+        # (AVGO/AMD/TXN/QCOM/MU) and +25% on industrials, so the subject's
+        # now-genuine TTM FCF was being multiplied by a broken-basis peer
+        # multiple (live NVDA: composite $471 / MoS +57% on a $203 price;
+        # ~$230 on the truthful 57x median). The multiple's denominator must
+        # share the subject FCF's basis or the comp is apples-to-oranges.
+        _ttm = _ttm_fcf_from_quarterly(t)
+        fcf   = _ttm if _ttm is not None else info.get("freeCashflow")
         rev   = info.get("totalRevenue")
         debt  = info.get("totalDebt")
         bvps  = info.get("bookValue")          # per-share book value
@@ -1238,6 +1250,7 @@ def _fetch_peer(peer_ticker: str) -> dict | None:
             # P/B is the closest single-field approximation and is what
             # info.get("priceToBook") already directly provides.
             "price_to_book": round(p2b, 2) if p2b and p2b > 0 else None,
+            "fcf_basis":     "ttm_quarterly_sum" if _ttm is not None else "info_dict_fallback",
         }
     except Exception:
         return None
@@ -1875,7 +1888,12 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         peers = [p for p in fh_peers_raw if p != ticker and re.match(r'^[A-Z]{1,5}$', p)][:4]
     else:
         peers = [p for p in SECTOR_PEERS.get(gics_sector, ["SPY", "QQQ", "DIA", "IWM"]) if p != ticker][:4]
-    peer_results = await asyncio.gather(*[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers") for p in peers])
+    # 12h-cached per peer (2026-07-14): peers repeat heavily across dossiers
+    # (curated SECTOR_PEERS + megacap Finnhub suggestions), and _fetch_peer now
+    # makes a second yfinance call (quarterly_cashflow, for the real-TTM FCF
+    # basis) — the cache more than pays that back. cached() never stores a
+    # falsy result, so a failed fetch (None) retries instead of poisoning 12h.
+    peer_results = await asyncio.gather(*[_fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:peer:v1:{p}", 12, _fetch_peer, p), "peers") for p in peers])
     peer_comps = [r for r in peer_results if r]
 
     # Quality gate (2026-07-13, fair_value peer-median recalibration): Finnhub's
@@ -1893,7 +1911,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
                             if p != ticker and p not in peers][:4]
         if fallback_tickers:
             fallback_results = await asyncio.gather(
-                *[_fetch_and_emit(ticker, asyncio.to_thread(_fetch_peer, p), "peers")
+                *[_fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:peer:v1:{p}", 12, _fetch_peer, p), "peers")
                   for p in fallback_tickers])
             peer_comps = _better_peer_set(peer_comps, [r for r in fallback_results if r])
 
