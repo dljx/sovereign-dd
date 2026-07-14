@@ -597,32 +597,43 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
 
     summary: dict = {"ratios": ratios}
 
+    # Period labels must be honest (2026-07-14): income[]/cashflow[] hold ANNUAL
+    # statements, but these keys used to be *_ttm-suffixed (and free_cash_flow
+    # preferred the annual figure over ratios.fcf — the genuine, EDGAR-reconciled
+    # TTM). For an off-cycle grower the two differ hugely (NVDA: FY-ended-Jan
+    # revenue vs a TTM through Apr; annual FCF ~half the real TTM), so agents were
+    # citing "TTM" numbers that weren't. Both periods stay available, labelled.
+    summary["revenue_ttm"] = ratios.get("revenue_ttm")
     if income:
         latest = income[0]
-        summary["revenue_ttm"]          = latest.get("revenue") or ratios.get("revenue_ttm")
-        summary["gross_profit_ttm"]     = latest.get("gross_profit") or latest.get("grossProfit")
-        summary["operating_income_ttm"] = latest.get("operating_income") or latest.get("operatingIncome")
-        summary["net_income_ttm"]       = latest.get("net_income") or latest.get("netIncome")
-        summary["revenue_growth_yoy"]   = _growth(income, "revenue")
+        summary["latest_fy_date"]             = latest.get("date")
+        summary["latest_fy_revenue"]          = latest.get("revenue")
+        summary["latest_fy_gross_profit"]     = latest.get("gross_profit") or latest.get("grossProfit")
+        summary["latest_fy_operating_income"] = latest.get("operating_income") or latest.get("operatingIncome")
+        summary["latest_fy_net_income"]       = latest.get("net_income") or latest.get("netIncome")
+        summary["revenue_growth_yoy"]         = _growth(income, "revenue")
     else:
-        summary["revenue_ttm"]          = ratios.get("revenue_ttm")
-        summary["gross_profit_ttm"]     = None
-        summary["operating_income_ttm"] = None
-        summary["net_income_ttm"]       = None
-        summary["revenue_growth_yoy"]   = None
+        summary["revenue_growth_yoy"] = None
 
+    # TTM FCF is the EDGAR-reconciled figure fair_value/risk_reward run on —
+    # lead with it (plus its provenance) so agents anchor on the same number.
+    summary["fcf_ttm"]        = ratios.get("fcf")
+    summary["fcf_ttm_source"] = ratios.get("fcf_source")
     cashflow = fin.get("cashflow", [])
     if cashflow:
         cf0 = cashflow[0]
-        summary["operating_cf"]   = cf0.get("operating_cf")
-        summary["capex"]          = cf0.get("capex")
-        summary["free_cash_flow"] = cf0.get("free_cash_flow") or ratios.get("fcf")
-    else:
-        summary["free_cash_flow"] = ratios.get("fcf")
+        summary["latest_fy_operating_cf"]   = cf0.get("operating_cf")
+        summary["latest_fy_capex"]          = cf0.get("capex")
+        summary["latest_fy_free_cash_flow"] = cf0.get("free_cash_flow")
+        # FundamentalForensics + ValuationEngine are both instructed to subtract
+        # SBC from FCF, but SBC only reached the prompt for ASSET_LIGHT names
+        # (via fair_value key_metrics) — supply it for every archetype.
+        summary["latest_fy_sbc"]            = cf0.get("stock_based_compensation")
 
     balance = fin.get("balance", [])
     if balance:
         bs0 = balance[0]
+        summary["balance_date"]        = bs0.get("date")
         summary["total_debt"]          = bs0.get("total_debt")
         summary["stockholders_equity"] = bs0.get("stockholders_equity")
         summary["cash"]                = bs0.get("cash")
