@@ -970,6 +970,89 @@ def _own_multiple_history(monthly: dict, income: list, cashflow: list, ratios: d
     }
 
 
+def _safe_attr(t, name):
+    """yfinance property access that degrades to None instead of raising."""
+    try:
+        return getattr(t, name)
+    except Exception:
+        return None
+
+
+def _parse_estimates(ee, re_est, et) -> dict:
+    """Yahoo analyst-consensus frames → estimates dict. Pure (takes the three
+    DataFrames), so the column semantics are unit-testable — the frames were
+    basis-verified live 2026-07-17 (MU/NVDA/PTC): rows 0q/+1q/0y/+1y; columns
+    avg/low/high/numberOfAnalysts/growth.
+
+    Dispersion fields (2026-07-17): (high−low)/|avg| on the +1y row. Consensus
+    TIGHTNESS is information the point estimate hides — live MU +1y EPS ran
+    $70.77–$221.27 around a $150 avg (±100%: the street has NO consensus on
+    the memory cycle's duration) while PTC sat within ±13%. Supply-side only.
+    """
+    estimates: dict = {}
+    try:
+        if ee is not None and not ee.empty:
+            def _ee_val(idx, col):
+                try:
+                    if idx not in ee.index or col not in ee.columns or ee.loc[idx, col] is None:
+                        return None
+                    v = float(ee.loc[idx, col])
+                    return v if math.isfinite(v) else None  # frames carry NaN
+                except (TypeError, ValueError):
+                    return None
+
+            estimates["fwd_eps_growth"]          = _ee_val("+1y", "growth")
+            estimates["fwd_eps_ntm"]             = _ee_val("+1y", "avg")
+            estimates["est_eps_current_q"]       = _ee_val("0q",  "avg")
+            estimates["est_eps_current_q_growth"] = _ee_val("0q", "growth")
+            estimates["est_eps_next_q"]          = _ee_val("+1q", "avg")
+            estimates["est_eps_next_q_growth"]   = _ee_val("+1q", "growth")
+            lo, hi, av = _ee_val("+1y", "low"), _ee_val("+1y", "high"), _ee_val("+1y", "avg")
+            if lo is not None and hi is not None and av:
+                estimates["fwd_eps_ntm_low"]        = lo
+                estimates["fwd_eps_ntm_high"]       = hi
+                estimates["eps_est_dispersion_pct"] = round((hi - lo) / abs(av) * 100, 1)
+            na = _ee_val("+1y", "numberOfAnalysts")
+            if na:
+                estimates["num_analysts_eps_yf"] = int(na)
+            # Strip None values so _first_not_none chains work cleanly
+            estimates = {k: v for k, v in estimates.items() if v is not None}
+    except Exception:
+        pass
+    try:
+        if re_est is not None and not re_est.empty and "+1y" in re_est.index:
+            row = re_est.loc["+1y"]
+            if "growth" in re_est.columns and row["growth"] is not None:
+                try:
+                    estimates["fwd_rev_growth"] = float(row["growth"])
+                except (TypeError, ValueError):
+                    pass
+            def _re_val(col):
+                try:
+                    if col not in re_est.columns or row[col] is None:
+                        return None
+                    v = float(row[col])
+                    return v if math.isfinite(v) else None
+                except (TypeError, ValueError):
+                    return None
+
+            lo, hi, av = _re_val("low"), _re_val("high"), _re_val("avg")
+            if lo is not None and hi is not None and av:
+                estimates["rev_est_dispersion_pct"] = round((hi - lo) / abs(av) * 100, 1)
+    except Exception:
+        pass
+    try:
+        if et is not None and not et.empty and "+1y" in et.index:
+            row = et.loc["+1y"]
+            cur = float(row["current"]) if "current" in et.columns and row["current"] is not None else None
+            ago30 = float(row["30daysAgo"]) if "30daysAgo" in et.columns and row["30daysAgo"] is not None else None
+            if cur is not None and ago30 is not None and ago30 != 0:
+                estimates["eps_revision_momentum"] = round((cur - ago30) / abs(ago30), 4)
+    except Exception:
+        pass
+    return estimates
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -1141,47 +1224,11 @@ def _yf_financials(ticker: str) -> dict:
         # Fresh NTM consensus from Yahoo analyst estimates — more current than info dict.
         # info['earningsGrowth'] / info['revenueGrowth'] can lag 6-12 months; these
         # attributes parse the live analyst consensus page and update daily/weekly.
-        estimates: dict = {}
-        try:
-            ee = t.earnings_estimate
-            if ee is not None and not ee.empty:
-                def _ee_val(idx, col):
-                    try:
-                        return float(ee.loc[idx, col]) if idx in ee.index and col in ee.columns and ee.loc[idx, col] is not None else None
-                    except (TypeError, ValueError):
-                        return None
-
-                estimates["fwd_eps_growth"]          = _ee_val("+1y", "growth")
-                estimates["fwd_eps_ntm"]             = _ee_val("+1y", "avg")
-                estimates["est_eps_current_q"]       = _ee_val("0q",  "avg")
-                estimates["est_eps_current_q_growth"] = _ee_val("0q", "growth")
-                estimates["est_eps_next_q"]          = _ee_val("+1q", "avg")
-                estimates["est_eps_next_q_growth"]   = _ee_val("+1q", "growth")
-                # Strip None values so _first_not_none chains work cleanly
-                estimates = {k: v for k, v in estimates.items() if v is not None}
-        except Exception:
-            pass
-        try:
-            re_est = t.revenue_estimate
-            if re_est is not None and not re_est.empty and "+1y" in re_est.index:
-                row = re_est.loc["+1y"]
-                if "growth" in re_est.columns and row["growth"] is not None:
-                    try:
-                        estimates["fwd_rev_growth"] = float(row["growth"])
-                    except (TypeError, ValueError):
-                        pass
-        except Exception:
-            pass
-        try:
-            et = t.eps_trend
-            if et is not None and not et.empty and "+1y" in et.index:
-                row = et.loc["+1y"]
-                cur = float(row["current"]) if "current" in et.columns and row["current"] is not None else None
-                ago30 = float(row["30daysAgo"]) if "30daysAgo" in et.columns and row["30daysAgo"] is not None else None
-                if cur is not None and ago30 is not None and ago30 != 0:
-                    estimates["eps_revision_momentum"] = round((cur - ago30) / abs(ago30), 4)
-        except Exception:
-            pass
+        estimates = _parse_estimates(
+            _safe_attr(t, "earnings_estimate"),
+            _safe_attr(t, "revenue_estimate"),
+            _safe_attr(t, "eps_trend"),
+        )
         # NB (2026-07-13, MNDY case): there is NO usable free long-horizon PEG
         # denominator — Yahoo stopped publishing per-stock LTG (growth_estimates
         # LTG row is NaN across the board) and Alpha Vantage's PEGRatio has an
@@ -1961,6 +2008,15 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "est_eps_current_q_growth": _yf_est.get("est_eps_current_q_growth"),
             "est_eps_next_q":           _yf_est.get("est_eps_next_q"),
             "est_eps_next_q_growth":    _yf_est.get("est_eps_next_q_growth"),
+            # Consensus tightness (2026-07-17): (high−low)/|avg| on the NTM
+            # analyst estimates — a wide band means the point estimate every
+            # PEG/growth field above is built on carries little conviction
+            # (live MU +1y EPS: $70.77–$221.27, ±100%). Supply-side only.
+            "fwd_eps_ntm_low":          _yf_est.get("fwd_eps_ntm_low"),
+            "fwd_eps_ntm_high":         _yf_est.get("fwd_eps_ntm_high"),
+            "eps_est_dispersion_pct":   _yf_est.get("eps_est_dispersion_pct"),
+            "rev_est_dispersion_pct":   _yf_est.get("rev_est_dispersion_pct"),
+            "num_analysts_eps_yf":      _yf_est.get("num_analysts_eps_yf"),
         },
     }
 
