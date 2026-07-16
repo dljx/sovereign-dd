@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from cache import cached
 from forensics import compute_forensics
+from guidance import guidance_for_ticker
 from live_events import emit_live
 
 load_dotenv()
@@ -877,6 +878,98 @@ def _ttm_cfo_from_quarterly(t) -> float | None:
         return None
 
 
+def _monthly_closes_5y(ticker: str) -> dict:
+    """{"YYYY-MM": close} month-end closes over ~5y — the price side of the
+    own-multiple history bands (2026-07-17). One cheap yfinance call, cached
+    7d at the call site (multiples history doesn't move intraday)."""
+    try:
+        hist = yf.Ticker(ticker).history(period="5y", interval="1mo")
+        if hist is None or hist.empty or "Close" not in hist:
+            return {}
+        out = {}
+        for ts, px in hist["Close"].items():
+            if px is not None and not (isinstance(px, float) and math.isnan(px)):
+                out[f"{ts.year:04d}-{ts.month:02d}"] = round(float(px), 4)
+        return out
+    except Exception:
+        return {}
+
+
+def _own_multiple_history(monthly: dict, income: list, cashflow: list, ratios: dict,
+                          price: float | None = None) -> dict:
+    """Own-history P/E and P/FCF bands (2026-07-17): closes ValuationEngine's
+    standing ask for the stock's multiple vs its OWN past, previously covered
+    only by web research. Per fiscal year: FY-average of monthly closes ÷
+    per-share EPS/FCF from the annual statement rows. Pure — unit-tested like
+    _volume_profile. HONEST LIMITS (also in _basis): ~4 annual observations
+    make a range anchor, not a precision instrument; negative-denominator
+    years are excluded and counted."""
+    monthly = monthly or {}
+    ratios = ratios or {}
+
+    def _fy_avg_price(fy_end: str):
+        try:
+            yy, mm = int(str(fy_end)[:4]), int(str(fy_end)[5:7])
+        except (TypeError, ValueError):
+            return None
+        px = []
+        for _ in range(12):
+            v = monthly.get(f"{yy:04d}-{mm:02d}")
+            if v:
+                px.append(v)
+            mm -= 1
+            if mm == 0:
+                yy, mm = yy - 1, 12
+        # <6 real months = a window too thin to call a fiscal-year average.
+        return (sum(px) / len(px)) if len(px) >= 6 else None
+
+    shares_by_date = {r.get("date"): r.get("diluted_shares") for r in income or []}
+
+    def _points(rows: list, numerator_key: str) -> tuple[list, int]:
+        pts, excluded = [], 0
+        for r in rows or []:
+            avg_px = _fy_avg_price(r.get("date"))
+            val = r.get(numerator_key)
+            sh = shares_by_date.get(r.get("date"))
+            if avg_px is None or val is None or not sh:
+                continue
+            if val <= 0:
+                excluded += 1
+                continue
+            pts.append(avg_px / (val / sh))
+        return pts, excluded
+
+    def _band(pts: list, excluded: int, current) -> dict:
+        if len(pts) < 2:
+            return {"median": None, "high": None, "low": None,
+                    "current": current, "years_used": len(pts),
+                    "excluded_nonpositive_years": excluded}
+        s = sorted(pts)
+        n = len(s)
+        med = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+        band = {"median": round(med, 1), "high": round(s[-1], 1),
+                "low": round(s[0], 1), "current": current,
+                "years_used": n, "excluded_nonpositive_years": excluded}
+        if current and med:
+            band["current_vs_median_pct"] = round((current / med - 1) * 100, 1)
+        return band
+
+    pe_pts, pe_excl = _points(income, "net_income")
+    fcf_pts, fcf_excl = _points(cashflow, "free_cash_flow")
+    current_pe = ratios.get("pe")
+    fcf_ps = ratios.get("fcf_per_share")
+    current_pfcf = round(price / fcf_ps, 1) if price and fcf_ps and fcf_ps > 0 else None
+    return {
+        "pe_band": _band(pe_pts, pe_excl, current_pe),
+        "pfcf_band": _band(fcf_pts, fcf_excl, current_pfcf),
+        "_basis": ("per-FY multiple = FY-average monthly close / per-share annual "
+                   "statement figure (diluted shares); 'current' uses the live "
+                   "TTM ratios. ~4 annual observations - a range anchor for "
+                   "cheap/rich-vs-own-history, NOT a precision instrument; "
+                   "negative-denominator years excluded and counted"),
+    }
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -1025,7 +1118,10 @@ def _yf_financials(ticker: str) -> dict:
         try:
             cf = t.cashflow
             if cf is not None and not cf.empty:
-                for col in cf.columns[:2]:
+                # columns[:4] (2026-07-17, was [:2]): agents.py already supplies
+                # annual_cashflow_history = cashflow[:4] hoping for 4 years, and
+                # the own-multiple P/FCF band needs the same depth as income.
+                for col in cf.columns[:4]:
                     _cf = lambda key, c=col: int(cf.loc[key, c]) if key in cf.index and str(cf.loc[key, c]) != "nan" else None
                     op = _cf("Operating Cash Flow") or _cf("Cash Flow From Continuing Operating Activities")
                     capex = _cf("Capital Expenditure")
@@ -1562,6 +1658,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         usa_spending_raw,
         earnings_cal_raw,
         fmp_estimates_raw,
+        guidance_raw,
+        monthly_closes_raw,
     ) = await asyncio.gather(
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:profile:{ticker}",       72,  _fh, "/stock/profile2", {"symbol": ticker}), "profile"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"quote:{ticker}",             1,  _quote, ticker), "quote"),
@@ -1578,6 +1676,13 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:usa_spending:{ticker}",  24,  _fh, "/stock/usa-spending", {"symbol": ticker, "from": since, "to": to_date}), "usa_spending"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:earnings_cal:{ticker}",   6,  _fh, "/calendar/earnings", {"symbol": ticker, "from": to_date, "to": fwd_30}), "earnings_cal"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fmp:estimates:{ticker}",     6,  _fmp_estimates, ticker), "fmp_estimates"),
+        # Management guidance from the company's own 8-K Item 2.02 exhibit
+        # (2026-07-17). No outer cache: the submissions lookup is one cheap
+        # request; the expensive doc-fetch + flash extraction is cached inside
+        # guidance.py by immutable accession number (720h).
+        _fetch_and_emit(ticker, asyncio.to_thread(guidance_for_ticker, ticker), "guidance"),
+        # 5y month-end closes for the own-multiple history bands (2026-07-17).
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:monthly5y:v1:{ticker}", 168, _monthly_closes_5y, ticker), "monthly_closes"),
     )
 
     # ── Metadata overrides (from cleaner.clean_ticker_batch) ─────────────────
@@ -1912,6 +2017,18 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         sector=gics_sector,
     )
 
+    # ── Own-multiple history bands (see _own_multiple_history) ───────────────
+    # ValuationEngine's cheap/rich-vs-own-history anchor. Top-level → rides
+    # the slim dossier into every agent prompt, self-labelled via _basis.
+    dossier["own_multiple_history"] = _own_multiple_history(
+        monthly_closes_raw if isinstance(monthly_closes_raw, dict) else {},
+        dossier["financials"].get("income", []),
+        dossier["financials"].get("cashflow", []),
+        dossier["financials"]["ratios_ttm"],
+        price=(quote_raw.get("c")
+               or (technicals.get("price") if isinstance(technicals, dict) else None)),
+    )
+
     # â"€â"€ Earnings surprises â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     quarterly = earnings_raw.get("quarterlyEarnings", [])[:8]
     _surprises = []
@@ -1937,6 +2054,13 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
     # the 2026-07-13 transactionType->transactionCode fix history) ────────────
     dossier["insiders"] = process_insider_transactions(
         insiders_raw.get("data", []) if isinstance(insiders_raw, dict) else [])
+
+    # ── Management guidance (8-K Item 2.02 exhibit, see guidance.py) ─────────
+    # Primary-source guidance for CatalystHunter/ValuationEngine — previously
+    # only reachable via untrusted web search. Quote-anchored; agents.py
+    # sanitizes this section like news/sec_filing (press-release text is
+    # untrusted input).
+    dossier["guidance"] = guidance_raw if isinstance(guidance_raw, dict) else {"guidance": None}
 
     # â"€â"€ News â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     fh_news = fh_news_raw[:10] if isinstance(fh_news_raw, list) else []

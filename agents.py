@@ -587,7 +587,7 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
     # External free text rides inside the dossier too — same neutralisation as
     # web_research so a crafted headline can't fake fence markers or read as a
     # trusted directive.
-    for _key in ("news", "sec_filing", "profile"):
+    for _key in ("news", "sec_filing", "profile", "guidance"):
         if _key in slim:
             slim[_key] = _sanitize_deep(slim[_key])
 
