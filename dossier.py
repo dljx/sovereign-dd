@@ -1640,14 +1640,21 @@ async def _get_macro() -> dict:
     async with _macro_async_lock:
         if _macro_fetched:
             return _macro_cache
-        # All 5 FRED series + VIX in parallel
-        fed, cpi, unemp, t10, t2, vix = await asyncio.gather(
+        # All 7 FRED series + VIX in parallel
+        fed, cpi, unemp, t10, t2, vix, hy_oas, t10y3m = await asyncio.gather(
             asyncio.to_thread(_fred, "FEDFUNDS"),
             asyncio.to_thread(_fred_cpi_yoy),
             asyncio.to_thread(_fred, "UNRATE"),
             asyncio.to_thread(_fred, "DGS10"),
             asyncio.to_thread(_fred, "DGS2"),
             asyncio.to_thread(_get_vix),
+            # Credit-risk supply adds (2026-07-17): HY OAS is the classic
+            # risk-appetite series; 10y−3m the classic recession lead. DATA
+            # for agents/synthesis only — _detect_regime is deliberately
+            # UNTOUCHED (the regime attribution read (~Jan 2027) must not
+            # suffer a methodology break).
+            asyncio.to_thread(_fred, "BAMLH0A0HYM2"),
+            asyncio.to_thread(_fred, "T10Y3M"),
         )
         spread = round(t10 - t2, 2) if t10 and t2 else None
         _macro_cache = {
@@ -1658,6 +1665,8 @@ async def _get_macro() -> dict:
             "treasury_2y":        t2,
             "vix":                round(vix, 1) if vix else None,
             "yield_curve_spread": spread,
+            "hy_credit_spread":   hy_oas,   # ICE BofA US High Yield OAS, pct pts
+            "yield_curve_10y3m":  t10y3m,
         }
         _macro_fetched = True
         return _macro_cache
