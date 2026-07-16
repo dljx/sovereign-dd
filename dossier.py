@@ -13,6 +13,7 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 from cache import cached
+from forensics import compute_forensics
 from live_events import emit_live
 
 load_dotenv()
@@ -849,6 +850,33 @@ def _ttm_net_income_from_quarterly(t) -> float | None:
         return None
 
 
+def _ttm_cfo_from_quarterly(t) -> float | None:
+    """Sum the last 4 REAL quarterly Operating Cash Flow statements into a
+    genuine TTM CFO (2026-07-17, forensics batch). Feeds the accruals ratio —
+    (NI_ttm − CFO_ttm) must compare LIKE PERIODS, and net_income_ttm is already
+    quarterly-summed; pairing it with an annual CFO would manufacture a fake
+    accrual gap on any off-cycle name. Same 4-real-quarters/None contract as
+    _ttm_fcf_from_quarterly (yfinance caches quarterly_cashflow on the Ticker,
+    so this re-read costs no extra network call)."""
+    try:
+        qcf = t.quarterly_cashflow
+        if qcf is None or qcf.empty:
+            return None
+        ocf_row = next((r for r in ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities")
+                        if r in qcf.index), None)
+        if ocf_row is None:
+            return None
+        cols = list(qcf.columns[:4])
+        if len(cols) < 4:
+            return None
+        vals = [qcf.loc[ocf_row, c] for c in cols]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals):
+            return None
+        return float(sum(vals))
+    except Exception:
+        return None
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -910,6 +938,9 @@ def _yf_financials(ticker: str) -> dict:
             "fcf_per_share": _fcf_ps,
             "fcf_source":    _fcf_source,
             "net_income_ttm": _ttm_net_income_from_quarterly(t),
+            # TTM CFO (2026-07-17): accruals-ratio input — must be the same
+            # period basis as net_income_ttm above (see _ttm_cfo_from_quarterly).
+            "cfo_ttm":       _ttm_cfo_from_quarterly(t),
             "revenue_ttm":   info.get("totalRevenue"),
             "ebitda":        info.get("ebitda"),
             "beta":          _r(info.get("beta")),
@@ -947,6 +978,11 @@ def _yf_financials(ticker: str) -> dict:
                     # share-count TREND FundamentalForensics' buyback-effectiveness
                     # mandate needs — only the current shares_out existed before.
                     dsh = fin.loc["Diluted Average Shares", col] if "Diluted Average Shares" in fin.index else None
+                    # Interest expense + pretax income (2026-07-17): forensics'
+                    # interest-coverage input — FundamentalForensics' capital-
+                    # structure mandate had no debt-service number to interpret.
+                    ie  = fin.loc["Interest Expense", col] if "Interest Expense" in fin.index else None
+                    pti = fin.loc["Pretax Income", col] if "Pretax Income" in fin.index else None
                     income.append({
                         "date": str(col.date()),
                         "revenue": int(rev) if rev is not None and str(rev) != "nan" else None,
@@ -956,6 +992,8 @@ def _yf_financials(ticker: str) -> dict:
                         "research_development": int(rd) if rd is not None and str(rd) != "nan" else None,
                         "cost_of_revenue": int(cor) if cor is not None and str(cor) != "nan" else None,
                         "diluted_shares": int(dsh) if dsh is not None and str(dsh) != "nan" else None,
+                        "interest_expense": int(ie) if ie is not None and str(ie) != "nan" else None,
+                        "pretax_income": int(pti) if pti is not None and str(pti) != "nan" else None,
                     })
         except Exception as e:
             print(f"  [dossier] income statement parse failed: {e}")
@@ -977,6 +1015,8 @@ def _yf_financials(ticker: str) -> dict:
                         "goodwill": _bs("Goodwill"),
                         "intangible_assets": _bs("Other Intangible Assets"),
                         "inventory": _bs("Inventory"),
+                        # Altman Z's RE/TA factor (2026-07-17 forensics batch).
+                        "retained_earnings": _bs("Retained Earnings"),
                     })
         except Exception as e:
             print(f"  [dossier] balance sheet parse failed: {e}")
@@ -1771,6 +1811,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "fcf":           yf_r.get("fcf"),
             "fcf_source":    yf_r.get("fcf_source"),
             "net_income_ttm": yf_r.get("net_income_ttm"),
+            "cfo_ttm":       yf_r.get("cfo_ttm"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "ebitda":        yf_r.get("ebitda"),
             "beta":          yf_r.get("beta"),
@@ -1855,6 +1896,21 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         "analyst_consensus": yf_analyst or {},
         "analyst_targets":   fmp_targets,
     }
+
+    # ── Forensics (earnings quality / balance-sheet stress) ─────────────────
+    # Deterministic metrics over statement rows already fetched above — closes
+    # FundamentalForensics' "ALL numbers are pre-computed" promise for its
+    # earnings-quality mandate (2026-07-17). Top-level section: round1_prompt's
+    # slim dossier strips "financials" but keeps everything else, so this
+    # reaches every agent as-is, self-labelled via its _basis map.
+    dossier["forensics"] = compute_forensics(
+        income=dossier["financials"].get("income", []),
+        balance=dossier["financials"].get("balance", []),
+        cashflow=dossier["financials"].get("cashflow", []),
+        ratios_ttm=dossier["financials"]["ratios_ttm"],
+        market_cap=yf_fin.get("market_cap"),
+        sector=gics_sector,
+    )
 
     # â"€â"€ Earnings surprises â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     quarterly = earnings_raw.get("quarterlyEarnings", [])[:8]
