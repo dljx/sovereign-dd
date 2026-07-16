@@ -494,6 +494,137 @@ def _has_insider_cluster(transactions: list, window_days: int = 14) -> bool:
     return False
 
 
+_FH_INSIDER_CAP = 150  # observed silent per-response truncation (live MU, 2026-07-17)
+
+
+def _insider_transactions(ticker: str, since: str, to: str | None = None,
+                          _budget: list | None = None) -> dict:
+    """Finnhub /stock/insider-transactions with cap-aware window chunking
+    (2026-07-17 Batch-F reconciliation fix). The endpoint silently truncates
+    at ~150 rows per response: MU's 180d window overflowed and 49 of 50 June
+    sell rows vanished — dossier sell totals ran -22% vs EDGAR Form 4 ground
+    truth while 4/5 quieter names reconciled exact-to-the-dollar. Any window
+    that comes back at the cap is split in half recursively (min 7 days,
+    max 16 requests), then rows are deduped and returned in the same
+    {"data": [...]} shape process_insider_transactions expects."""
+    from datetime import date as _date
+
+    to = to or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    budget = _budget if _budget is not None else [16]
+
+    def _window(frm: str, until: str) -> list:
+        if budget[0] <= 0:
+            return []
+        budget[0] -= 1
+        data = _fh("/stock/insider-transactions",
+                   {"symbol": ticker, "from": frm, "to": until})
+        rows = data.get("data", []) if isinstance(data, dict) else []
+        try:
+            d0, d1 = _date.fromisoformat(frm), _date.fromisoformat(until)
+            span = (d1 - d0).days
+        except ValueError:
+            return rows
+        if len(rows) >= _FH_INSIDER_CAP and span > 7 and budget[0] > 0:
+            mid = d0 + timedelta(days=span // 2)
+            left = _window(frm, mid.strftime("%Y-%m-%d"))
+            right = _window((mid + timedelta(days=1)).strftime("%Y-%m-%d"), until)
+            return left + right
+        return rows
+
+    rows = _window(since, to)
+    seen, out = set(), []
+    for t in rows:
+        key = (t.get("name"), t.get("transactionDate"), t.get("transactionCode"),
+               t.get("change"), t.get("transactionPrice"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    out.sort(key=lambda t: str(t.get("transactionDate") or ""), reverse=True)
+    return {"data": out}
+
+
+def _edgar_insider_transactions(ticker: str, since: str) -> dict | None:
+    """Open-market insider transactions (Form 4, codes P/S) straight from
+    EDGAR (2026-07-17 Batch-F reconciliation). Finnhub's feed was proven
+    INCOMPLETE, not merely capped: MU's June-2026 window returned 1 of 50
+    EDGAR-verified sell rows even when queried alone (sell totals -22% over
+    180d), the same ingestion-gap family as the frozen /stock/filings
+    mappings that moved filings to EDGAR on 2026-07-09. Quiet names (NVDA/
+    ANET/PTC/ETN) reconciled exact-to-the-dollar, which is what made the gap
+    attributable to Finnhub rather than to parsing.
+
+    Returns rows in the FINNHUB SHAPE ({name, transactionDate,
+    transactionCode, change signed, transactionPrice}) so
+    process_insider_transactions is untouched; None when EDGAR has no CIK
+    for the ticker (foreign filers) so the caller can fall back."""
+    cik = (cached("sec:cik_map:v1", 168, _sec_cik_map) or {}).get(ticker.upper())
+    if not cik:
+        return None
+    try:
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                         headers=SEC_UA, timeout=20)
+        if not r.ok:
+            return None
+        rec = ((r.json().get("filings") or {}).get("recent") or {})
+    except Exception:
+        return None
+    rows_out: list = []
+    fours = [(a, d, p) for f, a, d, p in zip(rec.get("form") or [],
+                                             rec.get("accessionNumber") or [],
+                                             rec.get("filingDate") or [],
+                                             rec.get("primaryDocument") or [])
+             # plain Form 4 only — a 4/A amends a filing already counted
+             if f == "4" and d >= since][:150]
+    for accn, _fdate, pdoc in fours:
+        xml_name = pdoc.split("/")[-1]          # strip the xsl viewer prefix
+        if not xml_name.lower().endswith(".xml"):
+            continue
+        try:
+            xr = requests.get(
+                f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn.replace('-', '')}/{xml_name}",
+                headers=SEC_UA, timeout=20)
+            if not xr.ok:
+                continue
+        except Exception:
+            continue
+        time.sleep(0.1)  # SEC courtesy spacing
+        owner_m = re.search(r"<rptOwnerName>([^<]+)</rptOwnerName>", xr.text)
+        owner = owner_m.group(1).strip() if owner_m else ""
+        for block in re.findall(r"<nonDerivativeTransaction>.*?</nonDerivativeTransaction>",
+                                xr.text, re.S):
+            code_m = re.search(r"<transactionCode>([A-Z])</transactionCode>", block)
+            if not code_m or code_m.group(1) not in ("P", "S"):
+                continue
+            date_m = re.search(r"<transactionDate>\s*<value>([\d-]+)</value>", block)
+            sh_m = re.search(r"<transactionShares>\s*<value>([\d.]+)</value>", block)
+            px_m = re.search(r"<transactionPricePerShare>\s*<value>([\d.]+)</value>", block)
+            tdate = date_m.group(1) if date_m else ""
+            if tdate and tdate < since:
+                continue
+            shares = float(sh_m.group(1)) if sh_m else 0.0
+            code = code_m.group(1)
+            rows_out.append({
+                "name": owner,
+                "transactionDate": tdate,
+                "transactionCode": code,
+                "change": shares if code == "P" else -shares,
+                "transactionPrice": float(px_m.group(1)) if px_m else 0.0,
+            })
+    rows_out.sort(key=lambda t: str(t.get("transactionDate") or ""), reverse=True)
+    return {"data": rows_out, "source": "edgar_form4"}
+
+
+def _insider_transactions_primary(ticker: str, since: str) -> dict:
+    """EDGAR Form 4 primary; cap-aware chunked Finnhub only as fallback for
+    names EDGAR doesn't index. An empty EDGAR result for a covered CIK is
+    the truth (no open-market activity), not a miss."""
+    edgar = _edgar_insider_transactions(ticker, since)
+    if edgar is not None:
+        return edgar
+    return _insider_transactions(ticker, since)
+
+
 def _insider_tx_value(t: dict) -> float:
     """Dollar value of one transaction. "change" (the actual per-transaction
     share delta) is preferred; "share" (cumulative post-transaction holding)
@@ -1723,7 +1854,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:{ticker}",           12,  _yf_financials, ticker), "financials"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:EARNINGS:{ticker}",      24,  _av, "EARNINGS", {"symbol": ticker}), "earnings"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:OVERVIEW:{ticker}",      24,  _av, "OVERVIEW", {"symbol": ticker}), "av_overview"),
-        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:insiders:{ticker}",      12,  _fh, "/stock/insider-transactions", {"symbol": ticker, "from": since}), "insiders"),
+        # v3 key (2026-07-17): EDGAR Form 4 primary (Finnhub feed proven
+        # incomplete — see _edgar_insider_transactions), chunked Finnhub fallback.
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"insiders:v3:{ticker}",      12,  _insider_transactions_primary, ticker, since), "insiders"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:news:{ticker}",           2,  _fh, "/company-news", {"symbol": ticker, "from": from_date, "to": to_date}), "news"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"sec:filing:{ticker}",       48,  _latest_filing, ticker), "sec_filing"),
         _fetch_and_emit(ticker, _get_macro(), "macro"),
