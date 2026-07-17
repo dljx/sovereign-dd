@@ -19,6 +19,7 @@ _raw_keys = os.getenv("GEMINI_API_KEYS", os.getenv("GEMINI_API_KEY", ""))
 _keys = [k.strip() for k in _raw_keys.split(",") if k.strip()]
 if not _keys:
     raise RuntimeError("No GEMINI_API_KEYS found in .env")
+print(f"  [llm] {len(_keys)} API key(s) loaded")
 
 _key_cycle = cycle(_keys)
 _key_lock  = threading.Lock()       # thread-safe rotation for concurrent async calls

@@ -782,6 +782,14 @@ def synthesis_prompt(ticker: str, final_positions: list[dict]) -> tuple[str, str
     )
 
 
+# ≈13.5K tokens — keeps the moderator call admissible under gemma's 16K
+# TPM/project quota (2026-07-17 change): a prompt above the per-minute cap is
+# rejected on EVERY key, so an oversized transcript would fail the whole
+# ticker at this exact call. Multi-loop transcripts carrying 5 agents' raw
+# web_research are the case that exceeds it.
+_MODERATOR_MAX_USER_CHARS = 54_000
+
+
 def moderator_prompt(ticker: str, transcript: list[dict],
                      loops: int, spread: float, threshold: float = 2.5) -> tuple[str, str]:
     system = ("You are a senior investment committee moderator. "
@@ -794,16 +802,37 @@ def moderator_prompt(ticker: str, transcript: list[dict],
          if isinstance(t, dict) and "web_research" in t else t)
         for t in transcript
     ]
-    return (
-        system,
-        MODERATOR_TEMPLATE.format(
+
+    def _render(entries: list) -> str:
+        return MODERATOR_TEMPLATE.format(
             ticker=ticker,
             loops=loops,
             spread=spread,
             threshold=threshold,
-            transcript_json=json.dumps(transcript_sane, indent=2),
-        ),
-    )
+            transcript_json=json.dumps(entries, indent=2),
+        )
+
+    user = _render(transcript_sane)
+    if len(user) > _MODERATOR_MAX_USER_CHARS:
+        # Stage 1 — drop raw web_research: each agent already distilled it into
+        # its scored positions, and the moderator weighs arguments, not sources.
+        transcript_sane = [
+            ({**t, "web_research": "[omitted for length]"}
+             if isinstance(t, dict) and t.get("web_research") else t)
+            for t in transcript_sane
+        ]
+        user = _render(transcript_sane)
+    if len(user) > _MODERATOR_MAX_USER_CHARS and len(transcript_sane) > 15:
+        # Stage 2 — keep R1 positions (first 5) and the final loop (last 10);
+        # middle loops are superseded by the final loop's revisions anyway.
+        elided = len(transcript_sane) - 15
+        transcript_sane = (
+            transcript_sane[:5]
+            + [{"_elided": f"{elided} middle-loop entries omitted for length"}]
+            + transcript_sane[-10:]
+        )
+        user = _render(transcript_sane)
+    return (system, user)
 
 
 def _growth(income_list: list, field: str) -> float | None:

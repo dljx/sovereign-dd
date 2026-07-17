@@ -16,6 +16,14 @@ import scoring
 CONVERGENCE_THRESHOLD = 2.5
 MAX_LOOPS = 3
 
+# Grounded R1 research may emit up to 8,192 output tokens (~32K chars). Prompts
+# are already protected — agents._sanitize_untrusted caps research at 6K chars
+# wherever it enters a template — but the RAW string is stored on the result
+# (result["web_research"]) and rides the transcript into output files and the
+# KV board. This caps the stored copy so artifacts stay bounded; typical
+# research (~2-6K chars) is untouched.
+_WEB_RESEARCH_MAX_CHARS = 20_000
+
 
 from grading import grade as _grade, grade_hold as _grade_hold, BUY_THRESHOLD
 
@@ -85,6 +93,7 @@ async def _r1_agent(agent: str, ticker: str, dossier: dict, company_name: str, i
         sys_r, usr_r = research_prompt(agent, ticker, company_name)
         print(f"  [debate] R1-research / {agent}...")
         web_summary = await call_gemini_async(sys_r, usr_r, grounding=True, max_output_tokens=8192)
+        web_summary = (web_summary or "")[:_WEB_RESEARCH_MAX_CHARS]
 
         sys_p, usr_p = round1_prompt(agent, ticker, dossier, web_summary, is_holding=is_holding)
         print(f"  [debate] R1-analysis / {agent}...")

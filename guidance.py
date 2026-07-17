@@ -33,6 +33,10 @@ from cache import cached
 
 _UA = {"User-Agent": "SovereignEye/1.0 daryl.lee97@gmail.com"}
 _MAX_TEXT_CHARS = 60_000   # press releases run 15-40k; cap defends the token budget
+_GEMMA_MAX_TEXT_CHARS = 40_000  # gemma's 16K TPM/project (2026-07-17 quota change)
+                                # admits ~10-11K prompt tokens per minute; a 60k-char
+                                # exhibit (~15K tok) could never pass on ANY key, so
+                                # the gemma fallback re-truncates to stay admissible
 
 _EXTRACT_SYSTEM = """You are a precise financial-data extraction engine. From the company press
 release below (an SEC 8-K Item 2.02 exhibit), extract ONLY forward-looking
@@ -171,6 +175,10 @@ def _fetch_and_extract(cik: int, accession: str, primary_doc: str, ticker: str) 
                           max_output_tokens=8192, max_retries=8)
     except Exception:
         extracted_by = "gemma-4-31b-it"
+        user = (
+            "Company / ticker: {t}\n\n"
+            "--- BEGIN UNTRUSTED CONTENT ---\n{x}\n--- END UNTRUSTED CONTENT ---"
+        ).format(t=ticker, x=text[:_GEMMA_MAX_TEXT_CHARS])
         raw = call_gemini(_EXTRACT_SYSTEM, user, model="gemma-4-31b-it",
                           temperature=0.1, thinking_level=None,
                           max_output_tokens=8192, max_retries=6)
