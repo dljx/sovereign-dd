@@ -56,6 +56,26 @@ def test_check_thesis_clamps_adherence(monkeypatch):
     assert out["adherence"] == 10.0
 
 
+def test_flash_quota_dead_falls_back_to_gemma(monkeypatch):
+    """2026-07-17: flash's 20 RPD/project quota is routinely gone by the
+    portfolio run — the check must retry on gemma, not degrade to UNKNOWN."""
+    calls = []
+
+    async def fake(system, user, model=None, **kw):
+        calls.append(model)
+        if model == thesis_check.CHECK_MODEL:
+            raise RuntimeError(
+                "All API keys have exhausted their daily quota for "
+                "gemini-3.5-flash. Quota resets at midnight UTC.")
+        return json.dumps({"status": "INTACT", "adherence": 8.0,
+                           "reason": "moat holding"})
+
+    monkeypatch.setattr(thesis_check, "call_gemini_async", fake)
+    out = _run(thesis_check.check_thesis("MU", _REG, _RESULT, _DOSSIER))
+    assert out == {"status": "INTACT", "adherence": 8.0, "reason": "moat holding"}
+    assert calls == [thesis_check.CHECK_MODEL, thesis_check.FALLBACK_MODEL]
+
+
 def test_check_thesis_degrades_to_unknown(monkeypatch):
     for bad in ({"status": "MAYBE", "adherence": 5},         # bad enum
                 "not json at all",                            # unparseable

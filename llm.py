@@ -33,8 +33,13 @@ _model_ids: dict[tuple[str, str], str] = {}  # (key, model) -> verified model ID
 _HTTP_TIMEOUT_MS    = int(os.getenv("LLM_HTTP_TIMEOUT_MS", "240000"))   # 4 min
 _CALL_TIMEOUT_SECS  = int(os.getenv("LLM_CALL_TIMEOUT_SECS", "300"))    # 5 min
 
-_key_cooldowns: dict[str, float] = {}   # key -> unix timestamp when available again
-_key_daily_exhausted: set[str] = set() # keys with daily RPD quota consumed
+# Quota state is tracked per (key, model): Google's free-tier limits are scoped
+# per project AND per model (quotaId GenerateRequestsPerDayPerProjectPerModel).
+# Keyed by key alone (pre-2026-07-18), flash's new 20/day RPD marked whole keys
+# daily-dead and starved gemma debates that still had a full day's quota — one
+# uncached flash call could kill the entire pool for the rest of the process.
+_key_cooldowns: dict[tuple[str, str], float] = {}    # (key, model) -> unix ts when available again
+_key_daily_exhausted: set[tuple[str, str]] = set()   # (key, model) with daily quota consumed
 _cooldown_lock = threading.Lock()
 
 
@@ -82,41 +87,44 @@ def _client_for(key: str) -> genai.Client:
     return _clients[key]
 
 
-def _pick_key() -> tuple[str | None, float]:
-    """Return (key, wait_secs) for the soonest-available non-daily-exhausted key.
+def _pick_key(model: str) -> tuple[str | None, float]:
+    """Return (key, wait_secs) for the soonest-available key that is not
+    daily-exhausted FOR THIS MODEL.
 
-    Returns (None, 0) when every key has hit its daily RPD quota — callers
-    should raise immediately rather than burning retries on dead keys.
+    Returns (None, 0) when every key has hit this model's daily quota — callers
+    should raise immediately rather than burning retries on dead keys. A key
+    exhausted for one model (flash: 20 RPD) stays fully usable for another
+    (gemma: 14.4K RPD) — see the state-dict comment above.
     """
     now = time.time()
     with _cooldown_lock:
-        live = [k for k in _keys if k not in _key_daily_exhausted]
+        live = [k for k in _keys if (k, model) not in _key_daily_exhausted]
         if not live:
             return None, 0.0
-        best = min(live, key=lambda k: _key_cooldowns.get(k, 0.0))
-        wait = max(0.0, _key_cooldowns.get(best, 0.0) - now)
+        best = min(live, key=lambda k: _key_cooldowns.get((k, model), 0.0))
+        wait = max(0.0, _key_cooldowns.get((best, model), 0.0) - now)
         return best, wait
 
 
-def _cool_key(key: str, duration: float) -> None:
-    """Mark a key as RPM-throttled for duration seconds."""
+def _cool_key(key: str, model: str, duration: float) -> None:
+    """Mark a (key, model) pair as RPM/TPM-throttled for duration seconds."""
     with _cooldown_lock:
-        _key_cooldowns[key] = time.time() + duration
-    print(f"  [llm] key {_key_label(key)} cooling for {duration:.0f}s")
+        _key_cooldowns[(key, model)] = time.time() + duration
+    print(f"  [llm] key {_key_label(key)} cooling for {duration:.0f}s ({model})")
 
 
-def _exhaust_key(key: str) -> None:
-    """Mark a key as daily-quota-exhausted — offline until midnight UTC + 5 min buffer."""
+def _exhaust_key(key: str, model: str) -> None:
+    """Mark (key, model) daily-quota-exhausted — offline until midnight UTC + 5 min buffer."""
     from datetime import datetime, timezone, timedelta
     now_utc = datetime.now(timezone.utc)
     midnight = (now_utc + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     secs = (midnight - now_utc).total_seconds() + 300  # +5 min buffer
     with _cooldown_lock:
-        _key_cooldowns[key] = time.time() + secs
-        _key_daily_exhausted.add(key)
-    live = len(_keys) - len(_key_daily_exhausted)
-    print(f"  [llm] key {_key_label(key)} DAILY QUOTA EXHAUSTED "
-          f"({live}/{len(_keys)} keys remaining today)")
+        _key_cooldowns[(key, model)] = time.time() + secs
+        _key_daily_exhausted.add((key, model))
+        live = sum(1 for k in _keys if (k, model) not in _key_daily_exhausted)
+    print(f"  [llm] key {_key_label(key)} DAILY QUOTA EXHAUSTED for {model} "
+          f"({live}/{len(_keys)} keys remaining today for this model)")
 
 
 def _resolve_model(client: genai.Client, key: str, model: str) -> str:
@@ -199,10 +207,10 @@ def call_gemini(
         if api_key is not None:
             cur_key = api_key
         else:
-            cur_key, wait = _pick_key()
+            cur_key, wait = _pick_key(model)
             if cur_key is None:
                 raise RuntimeError(
-                    "All API keys have exhausted their daily quota. "
+                    f"All API keys have exhausted their daily quota for {model}. "
                     "Quota resets at midnight UTC."
                 )
             if wait > 0:
@@ -261,7 +269,7 @@ def call_gemini(
             err_str = str(e).lower()
             if "429" in err_str or "quota" in err_str or "503" in err_str:
                 if _is_daily_exhausted(err_str):
-                    _exhaust_key(cur_key)
+                    _exhaust_key(cur_key, model)
                     # If a specific key was passed in and it's daily-exhausted, nothing
                     # we can do here — the async wrapper picks the next key on re-entry.
                     if api_key is not None:
@@ -270,7 +278,7 @@ def call_gemini(
                     continue
                 wait = _jittered(min(2 ** (attempt + 1), 30))
                 print(f"  [llm] rate limit on attempt {attempt + 1}, retrying in {wait:.0f}s...")
-                _cool_key(cur_key, wait)
+                _cool_key(cur_key, model, wait)
                 if api_key is not None:
                     time.sleep(wait)  # sync path: sleep here; async path handles sleep outside
             elif "500" in err_str or "502" in err_str or _is_transient_network(err_str):
@@ -311,23 +319,24 @@ async def call_gemini_async(
     max_output_tokens: int = 32768,
     thinking_level: str | None = "high",
 ) -> str:
-    """Async wrapper with per-key cooldown tracking to prevent thundering herd.
+    """Async wrapper with per-(key, model) cooldown tracking to prevent thundering herd.
 
     On each attempt:
-      1. _pick_key() selects the soonest-available non-daily-exhausted key.
-         Returns None if every key has hit its daily RPD quota — raise immediately.
+      1. _pick_key(model) selects the soonest-available key not daily-exhausted
+         for THIS model. Returns None if every key has hit this model's daily
+         quota — raise immediately.
       2. If all live keys are RPM-cooling, sleep until the best one is ready.
-      3. On 429 + daily quota signal: _exhaust_key() marks it offline until midnight
-         UTC and loops to the next key without sleeping.
-      4. On 429 + RPM spike: _cool_key() for short backoff, then try next key.
+      3. On 429 + daily quota signal: _exhaust_key() marks (key, model) offline
+         until midnight UTC and loops to the next key without sleeping.
+      4. On 429 + RPM/TPM spike: _cool_key() for short backoff, then try next key.
       5. On 5xx: brief sleep without cooling the key.
     """
     last_err = None
     for attempt in range(max_retries):
-        key, wait = _pick_key()
+        key, wait = _pick_key(model)
         if key is None:
             raise RuntimeError(
-                "All API keys have exhausted their daily quota. "
+                f"All API keys have exhausted their daily quota for {model}. "
                 "Quota resets at midnight UTC."
             )
         if wait > 0:
@@ -355,7 +364,7 @@ async def call_gemini_async(
                     ) from e
                 print(f"  [llm] call timed out after {_CALL_TIMEOUT_SECS}s "
                       f"(attempt {attempt + 1}), retrying on another key...")
-                _cool_key(key, _jittered(30))
+                _cool_key(key, model, _jittered(30))
             except Exception as e:
                 last_err = e
                 err_str = str(e).lower()
@@ -374,13 +383,13 @@ async def call_gemini_async(
                 if "429" in err_str or "quota" in err_str:
                     if _is_daily_exhausted(err_str):
                         # Daily quota dead — no point sleeping; loop immediately,
-                        # _pick_key() will skip this key for the rest of the day.
-                        _exhaust_key(key)
+                        # _pick_key() will skip this (key, model) for the day.
+                        _exhaust_key(key, model)
                     else:
-                        # RPM spike — cool for a full 60s window + jitter so the
-                        # key is guaranteed clear before we retry it.  Other keys
-                        # are tried immediately via _pick_key() rotation.
-                        _cool_key(key, _jittered(65))
+                        # RPM/TPM spike — cool for a full 60s window + jitter so
+                        # the key is guaranteed clear before we retry it.  Other
+                        # keys are tried immediately via _pick_key() rotation.
+                        _cool_key(key, model, _jittered(65))
                 else:
                     server_err_wait = _jittered(min(2 ** (attempt + 1), 10))
 
@@ -451,10 +460,10 @@ async def call_gemini_with_tools_async(
         last_err = None
         response = None
         for attempt in range(max_retries):
-            key, wait = _pick_key()
+            key, wait = _pick_key(model)
             if key is None:
                 raise RuntimeError(
-                    "All API keys have exhausted their daily quota. "
+                    f"All API keys have exhausted their daily quota for {model}. "
                     "Quota resets at midnight UTC."
                 )
             if wait > 0:
@@ -484,7 +493,7 @@ async def call_gemini_with_tools_async(
                         ) from e
                     print(f"  [llm] tool call timed out after {_CALL_TIMEOUT_SECS}s "
                           f"(attempt {attempt + 1}), retrying on another key...")
-                    _cool_key(key, _jittered(30))
+                    _cool_key(key, model, _jittered(30))
                 except Exception as e:
                     last_err = e
                     err_str = str(e).lower()
@@ -504,9 +513,9 @@ async def call_gemini_with_tools_async(
                         raise
                     if "429" in err_str or "quota" in err_str:
                         if _is_daily_exhausted(err_str):
-                            _exhaust_key(key)
+                            _exhaust_key(key, model)
                         else:
-                            _cool_key(key, _jittered(min(2 ** (attempt + 1), 30)))
+                            _cool_key(key, model, _jittered(min(2 ** (attempt + 1), 30)))
                     else:
                         # Set the backoff but DON'T sleep while holding the semaphore —
                         # that serializes all retries under load. Sleep after release.

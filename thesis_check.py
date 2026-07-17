@@ -10,7 +10,8 @@ manual edit — because quietly rewriting the reason you own something is the
 exact behavioral failure this exists to catch.
 
 Display + alert only — never touches scores, boards, or the gate. Any failure
-degrades to UNKNOWN and never blocks the portfolio run.
+degrades to UNKNOWN and never blocks the portfolio run. Flash quota-dead days
+(20 RPD/project since 2026-07-17) fall back to gemma rather than UNKNOWN.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from llm import call_gemini_async, extract_json
 from text_utils import clip
 
 CHECK_MODEL = "gemini-3.5-flash"
+# Flash's free tier is 20 requests/day/project (2026-07-17 Google quota change);
+# scout-run guidance calls routinely drain it before the portfolio run starts.
+# The check mattering more than the model, fall back to the debate workhorse —
+# same pattern as guidance.py's extraction fallback.
+FALLBACK_MODEL = "gemma-4-31b-it"
 STATUSES = {"INTACT", "STRAINED", "BROKEN"}
 
 _SYSTEM = (
@@ -102,9 +108,16 @@ async def check_thesis(ticker: str, registered: dict, result: dict,
             "registered_at": registered.get("set_at"),
             "today": _evidence(result, dossier),
         }, default=str)
-        raw = await call_gemini_async(_SYSTEM, user, model=CHECK_MODEL,
-                                      temperature=0.2, max_output_tokens=2048,
-                                      thinking_level=None)
+        try:
+            raw = await call_gemini_async(_SYSTEM, user, model=CHECK_MODEL,
+                                          temperature=0.2, max_output_tokens=2048,
+                                          thinking_level=None)
+        except Exception as flash_err:
+            print(f"  [thesis] {ticker}: {CHECK_MODEL} unavailable "
+                  f"({flash_err}) — retrying on {FALLBACK_MODEL}")
+            raw = await call_gemini_async(_SYSTEM, user, model=FALLBACK_MODEL,
+                                          temperature=0.2, max_output_tokens=2048,
+                                          thinking_level=None)
         data = extract_json(raw)
         if not isinstance(data, dict):
             raise ValueError("non-dict response")
