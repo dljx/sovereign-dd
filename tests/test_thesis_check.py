@@ -76,6 +76,25 @@ def test_flash_quota_dead_falls_back_to_gemma(monkeypatch):
     assert calls == [thesis_check.CHECK_MODEL, thesis_check.FALLBACK_MODEL]
 
 
+def test_flash_and_gemma_dead_falls_back_to_flash_lite(monkeypatch):
+    """Full chain: flash quota-dead AND gemma TPM-starved → flash-lite (500 RPD,
+    250K TPM) still delivers a verdict instead of UNKNOWN."""
+    calls = []
+
+    async def fake(system, user, model=None, **kw):
+        calls.append(model)
+        if model != thesis_check.LITE_MODEL:
+            raise RuntimeError(f"All API keys have exhausted their daily quota for {model}.")
+        return json.dumps({"status": "STRAINED", "adherence": 4.0,
+                           "reason": "margin story wobbling"})
+
+    monkeypatch.setattr(thesis_check, "call_gemini_async", fake)
+    out = _run(thesis_check.check_thesis("MU", _REG, _RESULT, _DOSSIER))
+    assert out["status"] == "STRAINED" and out["adherence"] == 4.0
+    assert calls == [thesis_check.CHECK_MODEL, thesis_check.FALLBACK_MODEL,
+                     thesis_check.LITE_MODEL]
+
+
 def test_check_thesis_degrades_to_unknown(monkeypatch):
     for bad in ({"status": "MAYBE", "adherence": 5},         # bad enum
                 "not json at all",                            # unparseable

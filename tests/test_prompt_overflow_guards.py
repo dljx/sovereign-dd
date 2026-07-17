@@ -118,3 +118,34 @@ def test_gemma_fallback_gets_truncated_exhibit(monkeypatch):
     assert len(out["guidance"]) == 1                  # quote gate still passes
     # wrapper overhead (ticker line + fence markers) is ~100 chars
     assert len(seen["gemma_user"]) <= guidance._GEMMA_MAX_TEXT_CHARS + 200
+
+
+def test_flash_lite_last_resort_gets_full_text(monkeypatch):
+    """flash + gemma both dead → flash-lite (500 RPD, 250K TPM) takes the FULL
+    untruncated exhibit — its TPM admits it, so nothing is thrown away."""
+    big_html = _PRESS_HTML + "<p>" + "pad " * 20000 + "</p>"
+    _route_requests(monkeypatch, doc_html=big_html)
+    monkeypatch.setattr(guidance, "cached", _fake_cached)
+
+    calls, seen = [], {}
+
+    def fake_call(system, user, model=None, **kw):
+        calls.append(model)
+        if model in ("gemini-3.5-flash", "gemma-4-31b-it"):
+            raise RuntimeError(f"All API keys have exhausted their daily quota for {model}.")
+        seen["lite_user"] = user
+        return json.dumps({"guidance": [
+            {"metric": "revenue", "period": "Q1 FY2027", "low": 12.2e9,
+             "high": 12.8e9, "direction": "initiated",
+             "verbatim_quote": "we expect revenue of $12.2 billion to $12.8 billion"},
+        ]})
+
+    import llm
+    monkeypatch.setattr(llm, "call_gemini", fake_call)
+
+    out = guidance._fetch_and_extract(123, "000126000002", "er8k.htm", "FAKE")
+    assert calls == ["gemini-3.5-flash", "gemma-4-31b-it", "gemini-3.1-flash-lite"]
+    assert out["extracted_by"] == "gemini-3.1-flash-lite"
+    assert len(out["guidance"]) == 1
+    # full 60K text, not the 40K gemma truncation
+    assert len(seen["lite_user"]) > guidance._GEMMA_MAX_TEXT_CHARS + 200

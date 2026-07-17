@@ -174,14 +174,25 @@ def _fetch_and_extract(cik: int, accession: str, primary_doc: str, ticker: str) 
                           temperature=0.1, thinking_level="high",
                           max_output_tokens=8192, max_retries=8)
     except Exception:
-        extracted_by = "gemma-4-31b-it"
-        user = (
-            "Company / ticker: {t}\n\n"
-            "--- BEGIN UNTRUSTED CONTENT ---\n{x}\n--- END UNTRUSTED CONTENT ---"
-        ).format(t=ticker, x=text[:_GEMMA_MAX_TEXT_CHARS])
-        raw = call_gemini(_EXTRACT_SYSTEM, user, model="gemma-4-31b-it",
-                          temperature=0.1, thinking_level=None,
-                          max_output_tokens=8192, max_retries=6)
+        try:
+            extracted_by = "gemma-4-31b-it"
+            user_gemma = (
+                "Company / ticker: {t}\n\n"
+                "--- BEGIN UNTRUSTED CONTENT ---\n{x}\n--- END UNTRUSTED CONTENT ---"
+            ).format(t=ticker, x=text[:_GEMMA_MAX_TEXT_CHARS])
+            raw = call_gemini(_EXTRACT_SYSTEM, user_gemma, model="gemma-4-31b-it",
+                              temperature=0.1, thinking_level=None,
+                              max_output_tokens=8192, max_retries=6)
+        except Exception:
+            # Last-resort lane (Daryl-approved 2026-07-18, extraction jobs only):
+            # flash-lite's free tier is 500 RPD + 250K TPM/project — alive when
+            # both flash (20 RPD) and gemma (16K TPM) are not. Probe-verified:
+            # exact model ID, clean JSON, NO CoT leak with thinking omitted
+            # (unlike 3.5-flash). Its TPM admits the FULL untruncated text.
+            extracted_by = "gemini-3.1-flash-lite"
+            raw = call_gemini(_EXTRACT_SYSTEM, user, model="gemini-3.1-flash-lite",
+                              temperature=0.1, thinking_level=None,
+                              max_output_tokens=8192, max_retries=6)
     parsed = extract_json(raw)
     if not isinstance(parsed, dict):
         raise ValueError("extractor returned non-dict JSON")
