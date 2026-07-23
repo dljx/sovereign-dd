@@ -519,3 +519,110 @@ def test_backtest_no_lookahead():
     bt = sa.compute_backtest(signals, closes, vwra, date(2026, 7, 25), hold_weeks=8)
     # curve starts flat at 100 until the 06-20 entry (first day has no active pos)
     assert bt["equal"][0] == 100.0
+
+
+# ── score → forward-return IC (2026-07-24) ────────────────────────────
+
+
+def test_avg_ranks_handles_ties():
+    assert sa._avg_ranks([10, 20, 20, 30]) == [1.0, 2.5, 2.5, 4.0]
+    assert sa._avg_ranks([5, 5, 5]) == [2.0, 2.0, 2.0]          # all tied → mean rank
+
+
+def test_spearman_ic_edges():
+    inc = [(float(i), float(i)) for i in range(6)]
+    assert abs(sa.spearman_ic(inc) - 1.0) < 1e-9                # perfect monotone up
+    dec = [(float(i), float(-i)) for i in range(6)]
+    assert abs(sa.spearman_ic(dec) + 1.0) < 1e-9               # perfect monotone down
+    assert sa.spearman_ic([(5.0, float(i)) for i in range(6)]) is None  # constant score
+    assert sa.spearman_ic([(1.0, 2.0)]) is None                # <2 pairs
+    # rank-based: a monotone-but-nonlinear relation still reads +1
+    assert abs(sa.spearman_ic([(1, 1), (2, 4), (3, 9), (4, 16), (5, 25), (6, 36)]) - 1.0) < 1e-9
+
+
+def test_score_quantiles_shape_and_monotonic():
+    qs = sa.score_quantiles([(float(i), float(i)) for i in range(10)], q=5)
+    assert [q["n"] for q in qs] == [2, 2, 2, 2, 2]
+    assert [q["mean_excess"] for q in qs] == sorted(q["mean_excess"] for q in qs)
+    assert qs[0]["score_lo"] == 0.0 and qs[-1]["score_hi"] == 9.0
+    assert sa.score_quantiles([(1.0, 1.0)], q=5) == []          # too few → no shape
+
+
+def test_bootstrap_ci_deterministic_and_gated():
+    pairs = [(float(i), float(i) + (0.3 if i % 2 else -0.3)) for i in range(20)]
+    a, b = sa.bootstrap_ic_ci(pairs), sa.bootstrap_ic_ci(pairs)
+    assert a == b                                               # fixed seed → stable
+    assert a[0] <= a[1] and a[0] > 0                            # strong signal excludes 0
+    assert sa.bootstrap_ic_ci([(1.0, 1.0), (2.0, 2.0)]) is None  # n < _IC_MIN_N
+
+
+def test_compute_score_ic_block_shape_and_segments():
+    rows = [{"score": float(i + 1), "excess": float(i) * 0.01 + (0.002 if i % 2 else 0),
+             "factors_v": 3, "src": "scout"} for i in range(14)]
+    block = sa.compute_score_ic(rows)
+    assert block["n"] == 14 and block["ic"] is not None and block["ic"] > 0.8
+    assert block["ic_ci90"] and block["ic_ci90"][0] <= block["ic_ci90"][1]
+    assert len(block["quantiles"]) == sa._IC_QUANTILES
+    assert {s["k"] for s in block["by_version"]} == {"v3"}
+    assert {s["k"] for s in block["by_source"]} == {"scout"}
+
+
+def test_compute_score_ic_withholds_below_min_n():
+    rows = [{"score": float(i), "excess": float(i) * 0.01, "factors_v": 2, "src": "gems"}
+            for i in range(5)]                                  # n=5 < _IC_MIN_N
+    block = sa.compute_score_ic(rows)
+    assert block["n"] == 5 and block["ic"] is None              # withheld, n still carried
+    assert block["ic_ci90"] is None and block["quantiles"] == []
+
+
+def test_scoreboard_score_ic_end_to_end():
+    """12 signals, higher score → steeper stock → higher forward excess. The IC
+    must surface strongly positive with a CI clear of 0, monotone quintiles, and
+    a per-version split — and render into the text report."""
+    closes, rows = {}, []
+    for i in range(12):
+        closes[f"S{i}"] = _series("2026-06-01", 30, 100, (i - 5) * 0.5)
+        rows.append({"ticker": f"S{i}", "discovered_at": "2026-06-10T12:00:00+00:00",
+                     "price": None, "grade": "BUY", "score": float(i + 1),
+                     "confirmed": True, "verdict": "CONFIRM", "factors": {"v": 3}})
+    signals = sa.parse_rows(rows, "scout")
+    vwra = _series("2026-06-01", 30, 200, 0.1)
+    sb = sa.compute_scoreboard(signals, closes, vwra, [1], date(2026, 6, 30))
+    sic = sb["windows"][0]["score_ic"]
+    assert sic["n"] == 12 and sic["ic"] is not None and sic["ic"] > 0.8
+    assert sic["ic_ci90"] and sic["ic_ci90"][0] > 0            # distinguishable from 0
+    assert [q["mean_excess"] for q in sic["quantiles"]] == sorted(
+        q["mean_excess"] for q in sic["quantiles"])            # monotone low→high
+    assert any(s["k"] == "v3" and s["ic"] is not None for s in sic["by_version"])
+    import json
+    json.dumps(sb)                                             # still serializable
+    text = "\n".join(sa.render_report(sb))
+    assert "score IC" in text and "score quintiles" in text
+
+
+def test_holdings_analysis_surfaces_per_agent_ic():
+    """12 holdings, 6 win / 6 lose. The 'Skill' agent scores winners high and
+    losers low; 'Noise' varies independently. Skill's IC must be strongly
+    positive, both agents carried with n, and it must render."""
+    closes, rows = {}, []
+    for i in range(12):
+        win = i % 2 == 0
+        closes[f"T{i}"] = _series("2026-06-01", 40, 100, 2.0 if win else -1.0)
+        rows.append({"ticker": f"T{i}", "run_at": "2026-06-10T00:00:00+00:00",
+                     "price": None, "score": 7.0, "archetype": "X", "mos": 0.1,
+                     "agent_scores": {"Skill": 9.0 if win else 5.0,
+                                      "Noise": 8.0 if i % 3 == 0 else 6.0}})
+    obs = sa.parse_dd_rows(rows)
+    ha = sa.compute_holdings_analysis(obs, closes,
+                                      _series("2026-06-01", 40, 200, 0.1),
+                                      [1], date(2026, 6, 30))
+    ic = {e["k"]: e for e in ha["windows"][0]["buckets"]["agent_ic"]}
+    assert set(ic) == {"Skill", "Noise"} and ic["Skill"]["n"] == 12
+    assert ic["Skill"]["ic"] is not None and ic["Skill"]["ic"] > 0.7
+    text = "\n".join(sa.render_report({**_MIN_SB, "holdings_analysis": ha}))
+    assert "agent IC" in text
+
+
+# Minimal scoreboard scaffold for exercising render paths in isolation.
+_MIN_SB = {"as_of": "2026-06-30", "n_scout": 0, "n_gems": 0, "benchmark": "VWRA.L",
+           "note": "n", "versions": [], "windows": []}

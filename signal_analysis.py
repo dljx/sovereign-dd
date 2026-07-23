@@ -4,8 +4,12 @@ This is the system's arbiter (see docs/METHODOLOGY_REVIEW.md §6): each row in
 Supabase scout_history / gems_history is a signal event with an entry price and
 a factor stamp; this script measures each signal's forward return MINUS VWRA's
 forward return over the same window, then buckets by grade, gate outcome,
-verdict, momentum/quality terciles, factors version, and source. Every deferred
-methodology change graduates or dies on these numbers — never on vibes.
+verdict, momentum/quality terciles, factors version, and source. It also
+measures the continuous consensus SCORE against forward excess as a rank
+information coefficient (Spearman IC + bootstrap CI + score-quintile
+monotonicity), segmented by horizon / methodology version / source, plus a
+per-agent IC over dd_history (which lens predicts). Every deferred methodology
+change graduates or dies on these numbers — never on vibes.
 
 Outputs: a text report (stdout / --markdown), a JSON snapshot for the dashboard
 panel (--json → uploaded to KV dd:scoreboard by upload_kv.py), and an optional
@@ -246,6 +250,160 @@ def bucket_stats(rows: list[dict], key_fn) -> dict:
     return out
 
 
+# ── Score → forward-return correlation (2026-07-24) ───────────────────
+#
+# The buckets above answer "does the GRADE separate returns?"; this answers
+# the sharper question "does the continuous SCORE have skill?" — a rank
+# information coefficient (Spearman: the score is nonlinear and valuation-
+# entangled, so rank not linear) plus a score-quantile monotonicity read (a
+# lone coefficient has no shape; the quintiles show whether higher-score
+# buckets actually earn higher forward excess). Measurement only — it reads
+# the same `excess` the buckets use and never touches scoring.
+#
+# The CI is a percentile pairs-bootstrap, and it is OPTIMISTIC on stated
+# grounds: forward windows overlap in calendar time, so signals are NOT
+# independent and the honest interval is WIDER than this. Read a CI that
+# straddles 0 as "not yet distinguishable from no skill"; never read a tight
+# early CI as proof. n rides every number so a small sample can't hide.
+
+_IC_MIN_N = 10           # below this an IC is noise — carry n, withhold the number
+_IC_QUANTILES = 5        # score quintiles for the monotonicity read
+_BOOT_ITERS = 2000
+_BOOT_SEED = 20260724    # fixed so the dashboard IC/CI is stable run-to-run
+
+
+def _avg_ranks(xs: list) -> list:
+    """1-based average ranks (tied values share the mean of their positions) —
+    the basis for a Spearman correlation."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        shared = (i + j) / 2.0 + 1.0            # mean 1-based rank over the tie block
+        for k in range(i, j + 1):
+            ranks[order[k]] = shared
+        i = j + 1
+    return ranks
+
+
+def _pearson(xs: list, ys: list) -> float | None:
+    n = len(xs)
+    if n < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:                    # a constant column has no correlation
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return sxy / (sxx ** 0.5 * syy ** 0.5)
+
+
+def spearman_ic(pairs: list) -> float | None:
+    """Spearman rank correlation between the two columns of `pairs`
+    [(score, excess), ...]. None if <2 pairs or either side is constant."""
+    if len(pairs) < 2:
+        return None
+    return _pearson(_avg_ranks([p[0] for p in pairs]),
+                    _avg_ranks([p[1] for p in pairs]))
+
+
+def bootstrap_ic_ci(pairs: list, level: float = 0.90,
+                    iters: int = _BOOT_ITERS, seed: int = _BOOT_SEED):
+    """Percentile bootstrap CI for the Spearman IC, or None below _IC_MIN_N.
+    Deterministic (fixed seed) so the number is stable run-to-run. OPTIMISTIC —
+    resampling rows as independent ignores the calendar overlap of the forward
+    windows; the honest interval is wider (see section header)."""
+    import random
+    if len(pairs) < _IC_MIN_N:
+        return None
+    rng = random.Random(seed)
+    n = len(pairs)
+    ics = []
+    for _ in range(iters):
+        sample = [pairs[rng.randrange(n)] for _ in range(n)]
+        ic = spearman_ic(sample)
+        if ic is not None:
+            ics.append(ic)
+    if len(ics) < iters // 2:                   # too many degenerate resamples to trust
+        return None
+    ics.sort()
+    tail = (1.0 - level) / 2.0
+    lo = ics[int(tail * len(ics))]
+    hi = ics[min(len(ics) - 1, int((1.0 - tail) * len(ics)))]
+    return (lo, hi)
+
+
+def score_quantiles(pairs: list, q: int = _IC_QUANTILES) -> list:
+    """Split by score into `q` equal-count buckets low→high; per bucket the mean
+    forward excess + hit-rate + score range. The monotonicity read that turns a
+    single IC into a shape."""
+    pts = sorted(pairs, key=lambda p: p[0])
+    if len(pts) < q * 2:                        # <2 per bucket → the shape is noise
+        return []
+    n = len(pts)
+    out = []
+    for b in range(q):
+        block = pts[b * n // q:(b + 1) * n // q]
+        if not block:
+            continue
+        exc = [p[1] for p in block]
+        out.append({
+            "q":           b + 1,
+            "n":           len(block),
+            "score_lo":    round(min(p[0] for p in block), 2),
+            "score_hi":    round(max(p[0] for p in block), 2),
+            "mean_excess": round(statistics.fmean(exc), 4),
+            "hit":         round(sum(1 for e in exc if e > 0) / len(block), 4),
+        })
+    return out
+
+
+def _ic_pairs(rows: list, score_key: str = "score") -> list:
+    """(score, excess) pairs from measured rows, dropping either-side nulls."""
+    return [(float(r[score_key]), float(r["excess"])) for r in rows
+            if r.get(score_key) is not None and r.get("excess") is not None]
+
+
+def _seg_ic(rows: list, label_fn) -> list:
+    """IC per segment (methodology version, source, …) — k/n/ic, sorted."""
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(label_fn(r), []).append(r)
+    out = []
+    for k in sorted(groups, key=str):
+        pairs = _ic_pairs(groups[k])
+        ic = spearman_ic(pairs) if len(pairs) >= _IC_MIN_N else None
+        out.append({"k": str(k), "n": len(pairs),
+                    "ic": round(ic, 3) if ic is not None else None})
+    return out
+
+
+def compute_score_ic(rows: list, score_key: str = "score",
+                     segment: bool = True) -> dict:
+    """IC block for a set of measured rows (each carries `excess`): the overall
+    Spearman IC + bootstrap CI + score-quintile monotonicity, and — for the
+    signal scoreboard — the same IC split by methodology version and source
+    (so v3's predictive power becomes a measured number, not a hunch)."""
+    pairs = _ic_pairs(rows, score_key)
+    ic = spearman_ic(pairs) if len(pairs) >= _IC_MIN_N else None
+    ci = bootstrap_ic_ci(pairs)
+    block = {
+        "n":         len(pairs),
+        "ic":        round(ic, 3) if ic is not None else None,
+        "ic_ci90":   [round(ci[0], 3), round(ci[1], 3)] if ci else None,
+        "quantiles": score_quantiles(pairs),
+    }
+    if segment:
+        block["by_version"] = _seg_ic(
+            rows, lambda r: "unstamped" if r.get("factors_v") is None else f"v{r['factors_v']}")
+        block["by_source"] = _seg_ic(rows, lambda r: r.get("src", "?"))
+    return block
+
+
 # ── Scoreboard (data) ─────────────────────────────────────────────────
 
 # Factor fields that get tercile-bucketed at entry time (field, bucket key on
@@ -406,6 +564,8 @@ def compute_scoreboard(signals: list[dict], closes: dict, vwra: pd.Series,
             pick = lambda r: {"ticker": r["ticker"], "excess": round(r["excess"], 4)}
             win["top"] = [pick(r) for r in ranked[:5]]
             win["bottom"] = [pick(r) for r in ranked[-5:][::-1]]
+            # Does the continuous score predict, not just the grade bucket?
+            win["score_ic"] = compute_score_ic(measured)
         out_windows.append(win)
 
     return {
@@ -615,14 +775,29 @@ def compute_holdings_analysis(obs: list[dict], closes: dict, vwra: pd.Series,
             # agent tilt: one row can appear in several agent buckets — that's
             # the point (each agent's calibration is scored independently)
             tilt_rows = [{**m, "_tilt": t} for m in measured for t in _tilts(m)]
+            # Per-agent IC: which LENS's score actually predicts forward excess
+            # — the actionable "which agent has skill" read. Each agent's own
+            # number (agent_scores) is ranked against the same forward excess.
+            agent_pairs: dict = {}
+            for m in measured:
+                for agent, v in (m["agent_scores"] or {}).items():
+                    if isinstance(v, (int, float)):
+                        agent_pairs.setdefault(agent, []).append((float(v), float(m["excess"])))
             win["buckets"] = {
                 "agent_tilt": [{"k": str(k), **_round_stats(s)}
                                for k, s in bucket_stats(tilt_rows, lambda r: r["_tilt"]).items()] if tilt_rows else [],
+                "agent_ic":   [{"k": agent, "n": len(ps),
+                                "ic": (round(spearman_ic(ps), 3)
+                                       if len(ps) >= _IC_MIN_N and spearman_ic(ps) is not None else None)}
+                               for agent, ps in sorted(agent_pairs.items())],
                 "archetype":  [{"k": str(k), **_round_stats(s)}
                                for k, s in bucket_stats(measured, lambda r: r["archetype"]).items()],
                 "mos":        [{"k": str(k), **_round_stats(s)}
                                for k, s in bucket_stats(measured, lambda r: r["mos_bucket"] or "n/a").items()],
             }
+            # Consensus hold-mode score IC (segmentation off — dd rows carry no
+            # factors.v/source stamp).
+            win["score_ic"] = compute_score_ic(measured, segment=False)
         out_windows.append(win)
     return {
         "n_obs": len(obs),
@@ -646,6 +821,26 @@ def _bucket_lines(title: str, entries: list[dict]) -> list[str]:
         flag = "  ⚠ n<10" if s["n"] < 10 else ""
         lines.append(f"    {s['k']:<14} n={s['n']:<3} hit {s['hit'] * 100:4.0f}%  "
                      f"mean {_pct(s['mean']):>7}  median {_pct(s['median']):>7}{flag}")
+    return lines
+
+
+def _ic_lines(sic: dict | None) -> list[str]:
+    """Text for a score-IC block: headline IC + CI, per-version split, quintiles.
+    The CI is the honest-uncertainty read — one straddling 0 = no skill shown yet."""
+    if not sic:
+        return []
+    head = f"{sic['ic']:+.2f}" if sic["ic"] is not None else "n/a"
+    ci = (f"  90% CI [{sic['ic_ci90'][0]:+.2f}, {sic['ic_ci90'][1]:+.2f}]"
+          if sic.get("ic_ci90") else "")
+    lines = [f"  score IC (Spearman rank, score→excess): {head}  n={sic['n']}{ci}"]
+    bv = [s for s in sic.get("by_version", []) if s["ic"] is not None]
+    if bv:
+        lines.append("    by version: "
+                     + " · ".join(f"{s['k']} {s['ic']:+.2f}(n={s['n']})" for s in bv))
+    if sic.get("quantiles"):
+        lines.append("    score quintiles (low→high): " + "  ".join(
+            f"Q{q['q']}[{q['score_lo']:.1f}-{q['score_hi']:.1f}] "
+            f"{_pct(q['mean_excess'])}(n={q['n']})" for q in sic["quantiles"]))
     return lines
 
 
@@ -675,6 +870,7 @@ def render_report(sb: dict) -> list[str]:
         fmt = lambda e: f"{e['ticker']} {_pct(e['excess'])}"
         lines.append("  top:    " + " · ".join(fmt(e) for e in win["top"]))
         lines.append("  bottom: " + " · ".join(fmt(e) for e in win["bottom"]))
+        lines += _ic_lines(win.get("score_ic"))
 
     bg = sb.get("behavior_gap")
     if bg:
@@ -700,6 +896,12 @@ def render_report(sb: dict) -> list[str]:
                 continue
             lines.append(f"  {win['weeks']}-week · measurable {win['measurable']}")
             lines += _bucket_lines("agent tilt", win["buckets"]["agent_tilt"][:10])
+            ai = [e for e in win["buckets"].get("agent_ic", []) if e["ic"] is not None]
+            if ai:
+                lines.append("  agent IC (score→excess, best first): " + " · ".join(
+                    f"{e['k']} {e['ic']:+.2f}(n={e['n']})"
+                    for e in sorted(ai, key=lambda e: e["ic"], reverse=True)))
+            lines += _ic_lines(win.get("score_ic"))
         lines.append(f"  note: {ha['note']}")
     return lines
 
