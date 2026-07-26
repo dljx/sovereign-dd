@@ -58,6 +58,15 @@ def _supabase_insert(table: str, rows: list[dict]) -> bool:
     """
     if not SUPABASE_URL or not SUPABASE_KEY or not rows:
         return True
+    # NaN/Inf are not JSON-serializable by the strict encoder requests uses
+    # ("Out of range float values are not JSON compliant"), and the numeric
+    # fields flowing in from dossier technicals/ratios_ttm (yfinance/pandas
+    # frames carry NaN for missing/degenerate data) can be non-finite. dd_rows
+    # are pre-sanitized at their build site, but scout_history/gems_history rows
+    # are not — sanitizing here covers EVERY table at the one boundary they all
+    # pass through, so a non-finite float can never fail the run again
+    # (2026-07-25→26: an un-sanitized scout factor NaN did exactly that).
+    rows = _sanitize(rows)
     for attempt in range(_SB_ATTEMPTS):
         try:
             resp = requests.post(

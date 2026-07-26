@@ -69,6 +69,43 @@ def test_empty_rows_is_noop(monkeypatch):
     assert not called
 
 
+def test_non_finite_floats_are_sanitized_before_post(monkeypatch):
+    """A NaN/Inf in a row (e.g. a scout factor stamp sourced from a yfinance
+    frame) must be coerced to null at the insert boundary — the strict JSON
+    encoder requests uses rejects non-finite floats with "Out of range float
+    values are not JSON compliant", which failed the run 2026-07-25→26.
+    scout_history/gems_history rows are NOT pre-sanitized at their build site
+    the way dd_history rows are, so the guard has to live here.
+    """
+    import json as _json
+    captured = {}
+
+    def post(url, headers=None, json=None, timeout=None):
+        captured["rows"] = json
+        # Mirror production: requests serializes with the strict encoder.
+        _json.dumps(json, allow_nan=False)
+        return _Resp(201)
+
+    monkeypatch.setattr(upload_kv.requests, "post", post)
+
+    rows = [{
+        "ticker":  "TST",
+        "score":   float("nan"),
+        "price":   float("inf"),
+        "factors": {"roic": float("-inf"), "mom_12_1": float("nan"), "fcf_yield": 0.031},
+        "filters": ["ok", float("nan")],
+    }]
+    assert upload_kv._supabase_insert("scout_history", rows) is True
+
+    sent = captured["rows"][0]
+    assert sent["score"] is None
+    assert sent["price"] is None
+    assert sent["factors"]["roic"] is None
+    assert sent["factors"]["mom_12_1"] is None
+    assert sent["factors"]["fcf_yield"] == 0.031  # finite values untouched
+    assert sent["filters"] == ["ok", None]
+
+
 # ── main() exit contract ─────────────────────────────────────────────
 
 
