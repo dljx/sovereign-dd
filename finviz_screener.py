@@ -189,6 +189,37 @@ _SCREENS: list[dict] = [
 
 # ── Core helpers ───────────────────────────────────────────────────────────────
 
+def _repair_avatar_tickers(tickers: list[str]) -> list[str]:
+    """Undo the first-letter "avatar badge" Finviz began prepending to every
+    screener row's symbol cell (markup change ~2026-07-15).
+
+    ``Overview().screener_view()`` reads the symbol cell as plain ``td.text``
+    and so concatenates the badge letter onto the ticker — ``ABNB`` comes back
+    as ``AABNB``, ``BKNG`` as ``BBKNG`` — because the badge is always the
+    ticker's OWN first character. (finvizfinance's dedicated ``Ticker`` view,
+    which split the cell on ``\\xa0``, is broken by the same change and now
+    raises, so switching views is not an option.) The corrupted symbols 404 on
+    ``enrich_candidates`` or resolve to the wrong company, so every candidate's
+    pillar scores collapse to the neutral ~5 fallback — Gems surfaced 0 BUYs
+    for the three weeks after the change. Found live: gems_history's last BUY
+    row was 2026-07-15.
+
+    The badge decorates EVERY row, so when it is present essentially every
+    symbol has a doubled leading character; when Finviz drops it again only the
+    rare genuine double-letter name (AA, AAON) does. Detect the badge by that
+    fraction and strip exactly one leading char per doubled symbol only when it
+    is clearly present — so a future un-badged ``AAPL`` is never mangled to
+    ``APL``. Stripping one char also repairs genuine double-letter names, whose
+    badge merely adds a third leading letter (``AA`` → badge → ``AAA`` → ``AA``).
+    """
+    if not tickers:
+        return tickers
+    doubled = sum(1 for t in tickers if len(t) >= 2 and t[0] == t[1])
+    if doubled / len(tickers) < 0.6:
+        return tickers
+    return [t[1:] if (len(t) >= 2 and t[0] == t[1]) else t for t in tickers]
+
+
 def _run_single_screen(name: str, filters: dict, verbose: bool = False) -> list[str]:
     """Run one Finviz screen with the given filters. Returns list of ticker strings."""
     screener = Overview()
@@ -196,7 +227,8 @@ def _run_single_screen(name: str, filters: dict, verbose: bool = False) -> list[
     df = screener.screener_view()
     if df is None or df.empty:
         return []
-    return df["Ticker"].dropna().astype(str).tolist()
+    raw = [t.strip() for t in df["Ticker"].dropna().astype(str).tolist()]
+    return _repair_avatar_tickers(raw)
 
 
 def run_finviz_screens(verbose: bool = False) -> dict[str, list[str]]:

@@ -7,7 +7,7 @@ ticker_fundament() — the library crashes on Finviz's 2026-06 markup change
 
 from bs4 import BeautifulSoup
 
-from finviz_screener import _parse_fundament
+from finviz_screener import _parse_fundament, _repair_avatar_tickers
 
 # Minimal stand-in for the live Finviz quote page: the sector/industry/country
 # screener links + the snapshot-table2 metric grid the bot actually consumes.
@@ -94,3 +94,32 @@ def test_parse_fundament_merges_all_sibling_snapshot_tables():
     assert f["Market Cap"] == "4.26B"
     assert f["P/E"] == "36.24" and f["PEG"] == "1.27"
     assert f["EPS next Y"] == "21.14%" and f["EPS next 5Y"] == "12.11%"
+
+
+# Finviz's 2026-07-15 markup change: every screener row now prepends a
+# first-letter "avatar" badge to the symbol cell, and Overview().screener_view()
+# reads the cell as plain text — concatenating the badge letter onto the ticker
+# ('ABNB' -> 'AABNB', 'BKNG' -> 'BBKNG'). The corrupted symbols 404 on
+# enrichment (or resolve to wrong data), so pillar scores collapse to neutral
+# and Gems went 0-BUY for ~3 weeks. These lock the repair in place.
+
+def test_repair_avatar_tickers_strips_badge_when_present():
+    # Badge on every row: each real symbol arrives with its first char doubled.
+    # Genuine double-letter names (AA, AAPL) get a THIRD leading char and must
+    # end up correct after stripping exactly one.
+    raw = ["AABNB", "BBKNG", "DDECK", "EEXEL", "AAAPL", "AAA", "ZZVRA"]
+    assert _repair_avatar_tickers(raw) == [
+        "ABNB", "BKNG", "DECK", "EXEL", "AAPL", "AA", "ZVRA",
+    ]
+
+
+def test_repair_avatar_tickers_leaves_clean_symbols_untouched():
+    # Badge absent (Finviz reverts): only the rare genuine double-letter name
+    # has a doubled lead char — too small a fraction to look like a badge — so
+    # nothing is stripped and 'AAPL' is never mangled to 'APL'.
+    raw = ["ABNB", "MSFT", "AA", "AAON", "GOOG", "NVDA", "META", "TSLA"]
+    assert _repair_avatar_tickers(raw) == raw
+
+
+def test_repair_avatar_tickers_empty():
+    assert _repair_avatar_tickers([]) == []
