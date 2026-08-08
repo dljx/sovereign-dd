@@ -65,7 +65,13 @@ jobs:
           TELEGRAM_TOPIC_DEEP_DIVES:   ${{ secrets.TELEGRAM_TOPIC_DEEP_DIVES }}
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           TELEGRAM_TOPIC_WATCHLIST:    ${{ secrets.TELEGRAM_TOPIC_WATCHLIST }}
-          PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,PENG,AVGO,GOOG,MU,NOW,VST,DAVE,HPQ.V,NU,CEG,ETN"
+          # FALLBACK ONLY — the live holdings come from positions:daryl via the
+          # eye (main.py _portfolio_tickers); this list is used only when that
+          # fetch fails. Synced 2026-08-08 to the actual book: it had drifted to
+          # exited names (AMZN/NOW/DAVE/HPQ.V) while missing held ones
+          # (ADEA/APP/NTNX/PTC/VEEV), so a fetch failure would have analyzed the
+          # wrong portfolio. Re-sync when positions change materially.
+          PORTFOLIO_TICKERS: "ADEA,ANET,APP,AVGO,CEG,EME,ETN,GOOG,MRVL,MU,NTNX,NU,PENG,PTC,VEEV,VST"
           DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
           SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
           SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}

@@ -76,7 +76,12 @@ jobs:
           TELEGRAM_TOPIC_SCAN_RESULTS: ${{ secrets.TELEGRAM_TOPIC_SCAN_RESULTS }}
           TELEGRAM_TOPIC_WATCHLIST:    ${{ secrets.TELEGRAM_TOPIC_WATCHLIST }}
           TELEGRAM_TOPIC_SYSTEM:       ${{ secrets.TELEGRAM_TOPIC_SYSTEM }}
-          PORTFOLIO_TICKERS: "AMZN,ANET,EME,MRVL,PENG,AVGO,GOOG,MU,NOW,VST,DAVE,HPQ.V,NU,CEG,ETN"
+          # FALLBACK ONLY — live holdings come from positions:daryl via the eye;
+          # scout uses this to EXCLUDE names already owned from its picks, so a
+          # stale list means re-debating held names and missing real exclusions.
+          # Synced 2026-08-08 to the actual book (was carrying exited
+          # AMZN/NOW/DAVE/HPQ.V, missing held ADEA/APP/NTNX/PTC/VEEV).
+          PORTFOLIO_TICKERS: "ADEA,ANET,APP,AVGO,CEG,EME,ETN,GOOG,MRVL,MU,NTNX,NU,PENG,PTC,VEEV,VST"
           DD_UPLOAD_SECRET:   ${{ secrets.DD_UPLOAD_SECRET }}
           SOVEREIGN_EYE_URL:  https://sovereign-eye.pages.dev
           SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
