@@ -35,6 +35,10 @@ TOPIC_SCAN_RESULTS  = os.getenv("TELEGRAM_TOPIC_SCAN_RESULTS", "")
 # Under-Review watchlist — confirmed-gate rejects. Falls back to Scan Results
 # until a dedicated topic ID is set in TELEGRAM_TOPIC_WATCHLIST.
 TOPIC_WATCHLIST     = os.getenv("TELEGRAM_TOPIC_WATCHLIST", "") or TOPIC_SCAN_RESULTS
+# System / pipeline-health thread — silent-degradation warnings a human must see
+# same-day (e.g. the Finviz screener feeding corrupt tickers). Falls back to
+# Scan Results until a dedicated topic ID is set in TELEGRAM_TOPIC_SYSTEM.
+TOPIC_SYSTEM        = os.getenv("TELEGRAM_TOPIC_SYSTEM", "") or TOPIC_SCAN_RESULTS
 
 GRADE_EMOJI = {
     "CONVICTION BUY": "🟢🟢🟢",
@@ -150,6 +154,17 @@ def alert_ops(msg: str) -> bool:
     previously lived only in CI logs nobody reads and once ran silently for
     weeks (the pre-2026-07-03 UNVERIFIED incident)."""
     return _split_send(f"🔧 <b>PIPELINE HEALTH</b>\n\n{_esc(msg)}", TOPIC_SCAN_RESULTS)
+
+
+def alert_system(msg: str) -> bool:
+    """Silent-degradation / system-health warning → System topic.
+
+    Distinct from alert_ops (Scan Results): the System thread is for failures
+    that succeed quietly and so escape every other alarm — most notably the
+    Finviz screener feeding corrupt tickers, which produced a valid-looking run
+    with 0 gems for three weeks before anyone noticed (2026-07 avatar-badge
+    outage). Falls back to Scan Results until TELEGRAM_TOPIC_SYSTEM is set."""
+    return _split_send(f"⚙️ <b>SYSTEM</b>\n\n{_esc(msg)}", TOPIC_SYSTEM)
 
 
 def alert_portfolio_sync(resp: dict, cash: dict, failed_brokers: list[str],

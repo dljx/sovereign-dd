@@ -30,6 +30,46 @@ GEMS_DEBATE_COUNT   = int(os.getenv("GEMS_DEBATE_COUNT", "6"))
 GEMS_MAX_LOOPS      = int(os.getenv("GEMS_MAX_LOOPS", "3"))
 
 
+# ── Screener-health guards ──────────────────────────────────────────────────────
+#
+# Finviz breaks the scraper periodically (quote-links 2026-06, multi-table 07-13,
+# avatar-badge 08-07), and each time a DEGRADED run still "succeeds" — it just
+# produces 0 gems, indistinguishable from a genuinely quiet market. The
+# avatar-badge break ran three weeks unnoticed. These two cheap counts turn that
+# silent failure into a same-run System alert.
+
+_MIN_SCREEN_YIELD  = 10    # unique tickers across all 10 screens; below => broken
+_MIN_ENRICH_SAMPLE = 15    # need a real pool before the enrich rate means anything
+_MIN_ENRICH_RATE   = 0.5   # fraction resolving on Finviz; below => corrupt symbols
+
+
+def _screen_yield_warning(n_screened: int) -> str | None:
+    """All 10 screens together returned almost nothing → the screener (not the
+    market) is broken: a Finviz markup/filter change or an IP block."""
+    if n_screened < _MIN_SCREEN_YIELD:
+        return (f"Finviz gems screener returned only {n_screened} ticker(s) across all "
+                f"10 screens — the screener looks broken (Finviz markup/filter change "
+                f"or a block), not a quiet market. Gems will surface nothing until "
+                f"it's fixed.")
+    return None
+
+
+def _enrich_rate_warning(n_pre_enrich: int, n_enriched: int) -> str | None:
+    """A healthy screen's tickers overwhelmingly resolve on Finviz's quote page.
+    When most fail, the symbols themselves are corrupt (e.g. the avatar-badge bug
+    doubled every ticker's first letter → 404) and every surviving candidate
+    scores the neutral ~5 fallback, so nothing clears the BUY bar."""
+    if n_pre_enrich < _MIN_ENRICH_SAMPLE:
+        return None
+    rate = n_enriched / n_pre_enrich
+    if rate < _MIN_ENRICH_RATE:
+        return (f"Only {n_enriched}/{n_pre_enrich} gems candidates ({rate:.0%}) returned "
+                f"usable Finviz fundamentals — the screener may be feeding corrupt "
+                f"tickers (cf. the 2026-07/08 avatar-badge outage). Pillar scores will "
+                f"collapse to the neutral fallback and Gems will surface nothing.")
+    return None
+
+
 # ── History helpers ────────────────────────────────────────────────────────────
 
 def _load_history() -> dict:
@@ -243,6 +283,18 @@ async def run_gems(
     screen_results = await asyncio.to_thread(run_finviz_screens)
     raw_tickers = get_unique_candidates(screen_results)
 
+    # Screener-health guard: a broken screener yields ~nothing and the run would
+    # otherwise "succeed" silently with 0 gems (the recurring Finviz-breakage
+    # failure mode). Alert to the System topic BEFORE the cooldown early-return.
+    _yield_warn = _screen_yield_warning(len(raw_tickers))
+    if _yield_warn:
+        print(f"  [gems] SCREENER HEALTH: {_yield_warn}")
+        try:
+            from notify import alert_system
+            alert_system(_yield_warn)
+        except Exception as e:
+            print(f"  [gems] (could not send System alert: {e})")
+
     # get_unique_candidates returns a flat list of ticker strings
     raw_candidates = [{"ticker": t} for t in raw_tickers]
 
@@ -274,6 +326,19 @@ async def run_gems(
 
     if verbose:
         print(f"  [gems] {len(candidates)} candidates with fundament data")
+
+    # Screener-health guard: healthy screen tickers overwhelmingly resolve on
+    # Finviz; a low enrich rate means the symbols are corrupt (avatar-badge
+    # class), which would silently collapse every pillar score to the neutral
+    # fallback. Alert to System before the run continues on degraded data.
+    _enrich_warn = _enrich_rate_warning(len(raw_candidates), len(candidates))
+    if _enrich_warn:
+        print(f"  [gems] SCREENER HEALTH: {_enrich_warn}")
+        try:
+            from notify import alert_system
+            alert_system(_enrich_warn)
+        except Exception as e:
+            print(f"  [gems] (could not send System alert: {e})")
 
     if not candidates:
         if verbose:

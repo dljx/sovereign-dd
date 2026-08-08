@@ -92,6 +92,62 @@ def test_verifier_health_quiet_on_empty_run(monkeypatch):
     assert verify.alert_verifier_health([], "scout") is False
 
 
+# ── gems screener-health guards (2026-08 avatar-badge silent-outage net) ───────
+# A degraded Finviz screener still "succeeds" with 0 gems, so it ran 3 weeks
+# unnoticed. These fire a System alert the same run instead.
+
+def test_screen_yield_warning_fires_when_screener_returns_nothing():
+    assert gems._screen_yield_warning(0) is not None
+    assert gems._screen_yield_warning(3) is not None
+
+
+def test_screen_yield_warning_quiet_on_healthy_yield():
+    assert gems._screen_yield_warning(80) is None
+    assert gems._screen_yield_warning(gems._MIN_SCREEN_YIELD) is None
+
+
+def test_enrich_rate_warning_fires_when_most_tickers_fail_to_resolve():
+    # The avatar-badge outage shape: a big pool, almost none resolving.
+    msg = gems._enrich_rate_warning(90, 15)   # ~17%
+    assert msg is not None and "15/90" in msg
+
+
+def test_enrich_rate_warning_quiet_on_healthy_resolve_rate():
+    assert gems._enrich_rate_warning(40, 36) is None      # 90% resolve
+
+
+def test_enrich_rate_warning_quiet_on_small_sample():
+    # Too few candidates to judge — a couple of 404s must not false-alarm.
+    assert gems._enrich_rate_warning(6, 1) is None
+
+
+def test_alert_system_escapes_and_routes(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "_split_send",
+                        lambda msg, topic="": sent.append((msg, topic)) or True)
+    notify.alert_system("screener fed <5 corrupt & doubled tickers")
+    body, topic = sent[0]
+    assert "&lt;5 corrupt &amp; doubled" in body and "<5" not in body
+    assert topic == notify.TOPIC_SYSTEM
+
+
+def test_run_gems_alerts_system_when_screener_yields_nothing(monkeypatch):
+    """The guard must be wired into the pipeline, not just exist: a broken
+    screener (0 tickers) fires a System alert and the run returns [] cleanly —
+    without reaching enrichment/triage/debate."""
+    import asyncio
+
+    monkeypatch.setattr(gems, "_load_history", lambda: {})
+    monkeypatch.setattr("finviz_screener.run_finviz_screens", lambda verbose=False: {})
+    monkeypatch.setattr("finviz_screener.get_unique_candidates", lambda r: [])
+    sent = []
+    monkeypatch.setattr(notify, "alert_system", lambda msg: sent.append(msg) or True)
+
+    out = asyncio.run(gems.run_gems(verbose=False))
+    assert out == []
+    assert sent and "10 screens" in sent[0]
+
+
 # ── _resolve_model: metadata probe, per-(key, model) cache ─────────────────────
 
 def _fake_client(known: set[str]):
