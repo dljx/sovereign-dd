@@ -12,6 +12,7 @@ Usage:
                     "/stock/profile2", {"symbol": "MSFT"})
 """
 
+import math
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -74,23 +75,72 @@ def _sb_get(key: str, ttl_hours: float):
     return None
 
 
+# Depth cap for _json_safe: guards against pathologically nested or
+# self-referential payloads. Real API responses nest ~10 deep at most, and the
+# alternative (a RecursionError) would drop the whole write.
+_MAX_SANITIZE_DEPTH = 60
+
+# One cache-write failure is worth a line; one per call would flood CI logs.
+_sb_write_error_logged = False
+
+
+def _json_safe(obj, _depth: int = 0):
+    """Recursively replace non-finite floats (NaN/Inf) with None.
+
+    requests serialises with a STRICT encoder that rejects non-finite floats
+    ("Out of range float values are not JSON compliant" — the same encoder that
+    failed the scout run on 2026-07-25). Any cache payload carrying one was
+    silently dropped here, costing a re-fetch on every later run. Values of
+    other types are returned untouched: this sanitises, it does not coerce.
+    """
+    if _depth > _MAX_SANITIZE_DEPTH:
+        return None
+    if isinstance(obj, bool):
+        return obj                      # bool is an int subclass — keep as-is
+    if isinstance(obj, float):
+        try:
+            return obj if math.isfinite(obj) else None
+        except (TypeError, ValueError):  # exotic float subclasses (numpy)
+            return None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v, _depth + 1) for v in obj]
+    return obj
+
+
 def _sb_set(key: str, payload) -> None:
-    """Upsert payload into cache (merge-duplicates on primary key)."""
+    """Upsert payload into cache (merge-duplicates on primary key).
+
+    Best-effort by design — a cache write must never fail a run — but NOT
+    silent. The first failure per process is logged, so a systematically broken
+    cache (which burns real API quota on every subsequent run) is visible
+    instead of invisible.
+    """
+    global _sb_write_error_logged
     if not _ENABLED:
         return
     try:
-        requests.post(
+        r = requests.post(
             f"{_URL}/rest/v1/api_cache",
             json={
                 "cache_key":  key,
-                "payload":    payload,
+                "payload":    _json_safe(payload),
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             },
             headers={**_HEADERS, "Prefer": "resolution=merge-duplicates"},
             timeout=5,
         )
-    except Exception:
-        pass
+        if not getattr(r, "ok", False) and not _sb_write_error_logged:
+            print(f"  [cache] Supabase write failed HTTP "
+                  f"{getattr(r, 'status_code', '?')} for {key!r} — further "
+                  f"cache-write errors suppressed this run")
+            _sb_write_error_logged = True
+    except Exception as e:
+        if not _sb_write_error_logged:
+            print(f"  [cache] Supabase write failed: {type(e).__name__}: {e} "
+                  f"— further cache-write errors suppressed this run")
+            _sb_write_error_logged = True
 
 
 def cached(key: str, ttl_hours: float, fn, *args, **kwargs):
