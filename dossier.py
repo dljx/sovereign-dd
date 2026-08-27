@@ -1224,6 +1224,73 @@ def _adr_share_basis(info: dict) -> tuple[bool, int]:
     return is_foreign_listing, (float_shares if ratio_mismatch else shares_out)
 
 
+# Cross-source market-cap corroboration thresholds.
+_MCAP_SOURCES_AGREE_PCT = 15.0   # two sources this close corroborate each other
+_MCAP_DIVERGENCE_PCT    = 25.0   # computed vs that consensus -> warn
+_MCAP_MIN_BN            = 0.001  # $1M floor; below this, percentages are noise
+
+
+def _finite_positive(value) -> float | None:
+    """``float(value)`` when it is a finite, strictly positive number, else None.
+
+    Tolerates None, empty strings, dicts, lists, arbitrary objects and NaN/Inf
+    without raising — every caller here is reading third-party API payloads.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f) or f <= 0:
+        return None
+    return f
+
+
+def _market_cap_sanity(computed_bn, finnhub_mcap_musd, yf_mcap_usd) -> str | None:
+    """Warn when the dossier's own market cap contradicts corroborating sources.
+
+    The 2026-08-27 XZO incident cleared every downstream guardrail — red-team
+    verification CONFIRM 9.2, the BANGER conditions, the confirmation gate —
+    because the debate reasoned correctly over a bad INPUT: market cap computed
+    as price x FLOAT, $195M against a true $1.52B. Both independent sources were
+    fetched on that very build and both said ~$1.4-1.5B, so the contradiction
+    was already sitting in the dossier, unexamined.
+
+    Rule: only when the two INDEPENDENT sources agree with each other are they
+    treated as ground truth; a computed value that then diverges from them is a
+    share-basis or currency error. When the sources disagree (ADRs, where
+    Finnhub reports the local-exchange cap in local currency) the situation is
+    genuinely ambiguous and this stays silent rather than crying wolf every run.
+
+    Returns a warning string, or None when everything corroborates.
+    """
+    computed = _finite_positive(computed_bn)
+    if computed is None or computed < _MCAP_MIN_BN:
+        return None
+
+    refs: list[float] = []
+    finnhub_bn = _finite_positive(finnhub_mcap_musd)   # Finnhub reports millions
+    if finnhub_bn is not None:
+        refs.append(finnhub_bn / 1_000.0)
+    yf_bn = _finite_positive(yf_mcap_usd)              # yfinance reports dollars
+    if yf_bn is not None:
+        refs.append(yf_bn / 1e9)
+    refs = [r for r in refs if r >= _MCAP_MIN_BN]
+    if len(refs) < 2:
+        return None                                    # nothing to corroborate against
+
+    lo, hi = min(refs), max(refs)
+    if (hi - lo) / lo * 100.0 > _MCAP_SOURCES_AGREE_PCT:
+        return None                                    # sources disagree -> ambiguous
+
+    consensus = sum(refs) / len(refs)
+    divergence = abs(computed - consensus) / consensus * 100.0
+    if divergence <= _MCAP_DIVERGENCE_PCT:
+        return None
+    return (f"market cap ${computed:.2f}B diverges {divergence:.0f}% from two "
+            f"corroborating sources (~${consensus:.2f}B) — likely a share-basis "
+            f"or currency error, not a price move")
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -2425,6 +2492,29 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         dossier["data_quality"] = {"warnings": [], "data_confidence": "HIGH"}
         if verbose:
             print(f"  [dossier] {ticker}: validator error (skipped): {e}")
+
+    # Market-cap corroboration (see _market_cap_sanity). The XZO incident proved
+    # a wrong INPUT sails through every downstream guardrail, because the debate
+    # reasons correctly over it — so contradict the number here, at the source,
+    # and make it loud rather than leaving it in a log nobody reads.
+    try:
+        _mcap_warn = _market_cap_sanity(
+            (dossier.get("profile") or {}).get("market_cap_bn"),
+            profile_raw.get("marketCapitalization") if isinstance(profile_raw, dict) else None,
+            yf_fin.get("market_cap") if isinstance(yf_fin, dict) else None,
+        )
+        if _mcap_warn:
+            dq = dossier.setdefault("data_quality", {"warnings": [], "data_confidence": "HIGH"})
+            dq.setdefault("warnings", []).append(_mcap_warn)
+            print(f"  [dossier] {ticker}: DATA SANITY — {_mcap_warn}")
+            try:
+                from notify import alert_system
+                alert_system(f"{ticker}: {_mcap_warn}")
+            except Exception as _e:
+                print(f"  [dossier] {ticker}: (System alert failed: {_e})")
+    except Exception as e:
+        if verbose:
+            print(f"  [dossier] {ticker}: market-cap sanity check skipped: {e}")
 
     # ── Archetype-based fair value ──────────────────────────────────────────────
     try:
