@@ -1184,6 +1184,46 @@ def _parse_estimates(ee, re_est, et) -> dict:
     return estimates
 
 
+def _adr_share_basis(info: dict) -> tuple[bool, int]:
+    """Whether yfinance's share count needs the ADR/foreign correction, and the
+    share count to use for per-share math. Returns ``(adr_mismatch, safe_shares)``.
+
+    For ADRs / foreign listings yfinance mixes UNDERLYING share counts with the
+    ADR-level price, so market cap and per-share metrics must not use
+    ``sharesOutstanding`` naively. Two signals identify a genuinely foreign
+    listing:
+      1. ``quoteType == "ADR"`` — explicit yfinance flag
+      2. ``financialCurrency != currency`` — financials in a foreign currency
+         while the price is USD (catches NYSE-listed foreign companies such as
+         TSM that yfinance labels EQUITY)
+
+    A third signal, ``sharesOutstanding / floatShares > 2``, used to count on its
+    OWN. It must not: a small float is ordinary for a DOMESTIC recent IPO,
+    majority-owned subsidiary or dual-class company, whose share count and price
+    are already in the same units. Live 2026-08-27 that bare ratio rewrote XZO's
+    market cap as price x FLOAT — $195M instead of $1.52B, because HCI Group
+    holds 82.6% — which manufactured a false "market cap below cash" cash-box
+    thesis that scored a 7.79 BUY/BANGER, and understated BAM ($83B -> ~$17B).
+    The ratio is therefore only trusted as a units-mismatch proxy when the
+    listing is actually foreign.
+    """
+    shares_out = info.get("sharesOutstanding") or 0
+    float_shares = info.get("floatShares") or 0
+    fin_currency = info.get("financialCurrency") or "USD"
+    price_currency = info.get("currency") or "USD"
+
+    is_adr = (info.get("quoteType") or "").upper() == "ADR"
+    is_fx_mismatch = price_currency == "USD" and fin_currency != "USD"
+    is_foreign_listing = bool(is_adr or is_fx_mismatch)
+
+    ratio_mismatch = (
+        is_foreign_listing
+        and float_shares > 0 and shares_out > 0
+        and shares_out / float_shares > 2
+    )
+    return is_foreign_listing, (float_shares if ratio_mismatch else shares_out)
+
+
 def _yf_financials(ticker: str) -> dict:
     try:
         try:
@@ -1200,23 +1240,12 @@ def _yf_financials(ticker: str) -> dict:
         def _r(v, n=2):
             return round(v, n) if v is not None else None
 
-        # For ADRs / foreign stocks, yfinance mixes underlying share counts with ADR-level price.
-        # Detection uses three independent signals:
-        #   1. quoteType == "ADR" — explicit yfinance flag
-        #   2. sharesOutstanding / floatShares > 2 — implicit ratio heuristic
-        #   3. financialCurrency != currency — financials in foreign currency while price is USD
-        #      (catches NYSE-listed foreign companies like TSM that yfinance labels as EQUITY)
-        shares_out = info.get("sharesOutstanding") or 0
-        float_shares = info.get("floatShares") or 0
+        # ADR / foreign-listing share-basis correction — see _adr_share_basis for
+        # why a bare shares/float ratio is NOT sufficient evidence of an ADR.
         _fin_currency = info.get("financialCurrency") or "USD"
         _price_currency = info.get("currency") or "USD"
-        _is_adr = info.get("quoteType", "").upper() == "ADR"
-        _is_share_ratio_mismatch = float_shares > 0 and shares_out > 0 and shares_out / float_shares > 2
         _is_fx_mismatch = _price_currency == "USD" and _fin_currency != "USD"
-        _is_adr_mismatch = _is_adr or _is_share_ratio_mismatch or _is_fx_mismatch
-        # Only use floatShares when the ratio heuristic fires — for fx-mismatch ADRs (TSM),
-        # sharesOutstanding is already in ADR units and pairs correctly with the USD ADR price.
-        _safe_shares = float_shares if _is_share_ratio_mismatch else shares_out
+        _is_adr_mismatch, _safe_shares = _adr_share_basis(info)
 
         # P/B and P/S from yfinance are computed as price / (metric / sharesOutstanding).
         # For ADRs this produces wrong values; null them out and let agents use web research.
