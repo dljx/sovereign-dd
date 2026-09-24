@@ -80,7 +80,7 @@ jobs:
         run: python watch_triggers.py
 
       - name: Notify on failure
-        if: failure()
+        if: failure() || cancelled()   # timeouts report as cancelled, not failure — silent for 3 weeks in Sep 2026
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -89,4 +89,4 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TELEGRAM_CHAT_ID}" \
             -d message_thread_id="${TELEGRAM_TOPIC}" \
-            -d text="Broker portfolio sync FAILED (run ${GITHUB_RUN_ID}). Dashboard positions were NOT updated. Check GitHub Actions." || true
+            -d text="Broker portfolio sync ${{ job.status == 'cancelled' && 'TIMED OUT / CANCELLED' || 'FAILED' }} (run ${GITHUB_RUN_ID}). Dashboard positions were NOT updated. Check GitHub Actions." || true
