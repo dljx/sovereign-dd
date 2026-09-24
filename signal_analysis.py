@@ -82,6 +82,15 @@ _VERSION_REGISTER = {
        "opaque info['freeCashflow'], verified live to diverge 20-70%+ from "
        "a real TTM (NEE sign-flipped) — fixed via a genuine last-4-real-"
        "quarters sum",
+    6: "since 2026-09-24 — truthful EPS-growth inputs: implied_ntm_growth "
+       "was a mislabeled GAAP-TTM -> NEXT-FY consensus bridge (not NTM), "
+       "inflating with growth rate (ANET +64% vs like-for-like +26%); "
+       "renamed eps_growth_ttm_to_next_fy and confined to the recovery "
+       "check. eps_acceleration redefined as next-FY minus current-FY "
+       "consensus EPS growth (same frame; blank when current-FY growth "
+       "exceeds +/-100%) and no longer described as an "
+       "analyst-revision signal. Decoupling test now like-for-like "
+       "(fwd_earnings_growth vs fwd_revenue_growth)",
 }
 
 

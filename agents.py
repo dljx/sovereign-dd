@@ -137,14 +137,20 @@ PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
     symbols now, but check the years field before treating it as "long-term"): NTM PEG < 1.0
     while peg_lt > 1.5 means the cheapness is short-horizon only — call it out and weigh
     toward peg_lt.
-  - ALWAYS ALSO check ratios_ttm.implied_ntm_growth (forward vs trailing EPS) against
-    fwd_revenue_growth, even when peg_lt looks fine. A multi-year earnings-recovery bridge
-    (e.g. a name still climbing back from a prior-year impairment or one-time charge) can
-    depress BOTH the NTM and the long-horizon growth-rate denominator similarly, so peg_lt
-    can stay cheap right alongside the NTM PEG with no divergence between them to catch —
-    a lack of divergence is not proof of durability. implied_ntm_growth towering over
-    fwd_revenue_growth is the tell regardless of what peg_lt shows: it means the EPS jump is
-    margin catch-up or a GAAP-recovery/non-GAAP basis gap, not organic compounding. Check
+  - ALSO run the recovery check below, even when peg_lt looks fine. A multi-year
+    earnings-recovery bridge (e.g. a name still climbing back from a prior-year impairment or
+    one-time charge) can depress BOTH the NTM and the long-horizon growth-rate denominator
+    similarly, so peg_lt can stay cheap right alongside the NTM PEG with no divergence
+    between them to catch — a lack of divergence is not proof of durability.
+    Decoupling test (like-for-like, same fiscal years): compare fwd_earnings_growth (next-FY
+    vs current-FY consensus EPS growth) against fwd_revenue_growth (next-FY vs current-FY
+    revenue growth). EPS growth far above revenue growth over the SAME years means the EPS
+    jump is margin catch-up or a basis gap, not organic compounding.
+    Do NOT use ratios_ttm.eps_growth_ttm_to_next_fy for that comparison: it runs from GAAP
+    TRAILING-twelve-month EPS to NEXT-fiscal-year consensus EPS, so it spans up to ~18 months
+    and mixes GAAP with non-GAAP. For any company growing steadily it will sit well above a
+    one-year revenue growth rate by construction — that is arithmetic, not a trap. It is only
+    evidence of a depressed base when paired with the checks that follow. Check
     ratios_ttm.trailing_earnings_growth_yoy directly (most-recent-quarter EPS growth — a large
     negative value alongside healthy forward growth confirms a recovery-from-depressed-base
     pattern, not durable compounding) and use web research to see whether trailing GAAP
@@ -168,11 +174,16 @@ PATH B — HYPERGROWTH (fwd_revenue_growth >= 50%):
   Evaluate sustainability of the growth rate, not the multiple in isolation.
 
 EPS ACCELERATION SIGNAL (applies to both paths):
-  The dossier provides eps_acceleration = fwd_earnings_growth minus implied NTM growth from raw EPS.
-  Positive = analysts raising consensus above the implied EPS baseline → adds conviction to any bull thesis.
-  - eps_acceleration > 0.15: strong positive signal
-  - eps_acceleration 0.0–0.15: estimates stable or improving — neutral
-  - eps_acceleration < 0.0: analysts cutting consensus below implied baseline — red flag, downgrade conviction
+  The dossier provides eps_acceleration = next-FY consensus EPS growth minus current-FY consensus
+  EPS growth, both from the same analyst-consensus frame. It measures whether the GROWTH RATE is
+  speeding up or slowing down — it is NOT an analyst-revision signal.
+  - eps_acceleration > 0.15: growth accelerating — positive signal
+  - eps_acceleration -0.15–0.15: growth rate roughly steady — neutral
+  - eps_acceleration < -0.15: growth decelerating — weigh it against the LEVEL: slowing from 50%
+    to 30% is still strong growth and is normal after an exceptional year; it is a concern only
+    when the resulting growth rate no longer supports the valuation.
+  Whether analysts are CUTTING or RAISING estimates is ratios_ttm.eps_revision_momentum — read
+  that, not eps_acceleration, for revisions.
   CYCLICAL EXCEPTION: For energy, materials, mining, shipping, chemicals, and basic industrials,
   negative eps_acceleration at cycle trough (depressed margins, low utilization) is a contrarian
   BUY indicator, not a red flag. Contextualize within the commodity/demand cycle position.

@@ -161,8 +161,8 @@ def validate_dossier(dossier: dict) -> dict:
         warnings.append(
             "NO LONG-HORIZON PEG: peg_lt unavailable from any source (Finviz, "
             "FMP, Alpha Vantage) — the base-effect durability check has no "
-            "quantitative cross-check; rely on implied_ntm_growth vs "
-            "fwd_revenue_growth and web research instead."
+            "quantitative cross-check; rely on fwd_earnings_growth vs "
+            "fwd_revenue_growth (same fiscal years) and web research instead."
         )
 
     # 8. UPCOMING EARNINGS STALENESS

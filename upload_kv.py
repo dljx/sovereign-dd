@@ -223,7 +223,13 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
         # verified live to diverge 20-70%+ from a real TTM (NEE sign-
         # flipped) — fixed via a genuine last-4-real-quarters sum. See
         # docs/ADAPTATION_PROTOCOL.md §4.
-        "v":            5,
+        # v6 (2026-09-24): truthful EPS-growth inputs. implied_ntm_growth was a
+        # mislabeled GAAP-TTM -> NEXT-FY bridge (inflates with growth, zero
+        # predictive value, ANET's STRONG SELL swing factor) and was re-fed as
+        # eps_acceleration with a "downgrade conviction" instruction. Now
+        # eps_growth_ttm_to_next_fy (recovery check only) + a same-frame
+        # eps_acceleration (next-FY minus current-FY consensus EPS growth).
+        "v":            6,
         "mom_12_1":     tech.get("mom_12_1"),
         "mom_6m":       tech.get("mom_6m"),
         "mom_1m":       tech.get("mom_1m"),

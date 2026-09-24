@@ -1109,6 +1109,56 @@ def _safe_attr(t, name):
         return None
 
 
+# A TTM -> next-FY EPS bridge above this is a broken denominator (tiny or
+# FX-mismatched trailing EPS: KSPI read +60,972% live), not a growth rate.
+_EPS_BRIDGE_ABSURD = 10.0   # i.e. +1,000%
+# Current-FY EPS growth beyond +/-100% is a base effect, not a growth rate.
+_EPS_CUR_FY_BASE_EFFECT = 1.0
+
+
+def _eps_growth_signals(trailing_eps, forward_eps, cur_fy_growth, next_fy_growth) -> dict:
+    """Honest EPS-growth inputs for the debate (factors.v6, 2026-09-24).
+
+    Replaces ``implied_ntm_growth`` and the old ``eps_acceleration``. yfinance
+    ``forwardEps`` is the NEXT-FISCAL-YEAR consensus (live-verified identical
+    to earnings_estimate "+1y"), not next-12-months, and ``trailingEps`` is GAAP
+    TTM — so (forward - trailing)/trailing spans up to ~18 months of growth and
+    mixes bases, inflating with the growth rate (ANET: +64% vs a like-for-like
+    +26%). Across 54 stored dossiers that figure flagged 63% of names, had zero
+    predictive value, and was repeatedly the bear case's swing factor.
+
+    Returns:
+      eps_growth_ttm_to_next_fy — that same bridge, named for what it is; only
+        meaningful for spotting recovery from a depressed base. None when the
+        trailing base is non-positive or the ratio is absurd.
+      eps_acceleration — next-FY consensus EPS growth minus current-FY consensus
+        EPS growth, both from the SAME Yahoo frame: a true change in the growth
+        rate. Not a revision signal (that is eps_revision_momentum).
+    """
+    def _num(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+
+    t, f = _num(trailing_eps), _num(forward_eps)
+    bridge = None
+    if t is not None and f is not None and t > 0:
+        b = (f - t) / t
+        bridge = b if abs(b) <= _EPS_BRIDGE_ABSURD else None
+
+    g0, g1 = _num(cur_fy_growth), _num(next_fy_growth)
+    accel = None
+    # Beyond +/-100% the CURRENT year is itself a base effect (MU live: +787%
+    # recovery year -> "acceleration" -671%): arithmetically true, meaningless
+    # as a growth-rate signal. Those names belong to the recovery check.
+    if g0 is not None and g1 is not None and abs(g0) <= _EPS_CUR_FY_BASE_EFFECT:
+        accel = g1 - g0
+
+    return {"eps_growth_ttm_to_next_fy": bridge, "eps_acceleration": accel}
+
+
 def _parse_estimates(ee, re_est, et) -> dict:
     """Yahoo analyst-consensus frames → estimates dict. Pure (takes the three
     DataFrames), so the column semantics are unit-testable — the frames were
@@ -1134,6 +1184,10 @@ def _parse_estimates(ee, re_est, et) -> dict:
 
             estimates["fwd_eps_growth"]          = _ee_val("+1y", "growth")
             estimates["fwd_eps_ntm"]             = _ee_val("+1y", "avg")
+            # Current fiscal year (v6): with +1y growth this gives a like-for-like
+            # growth pair from ONE frame on ONE basis, for eps_acceleration.
+            estimates["est_eps_cur_fy"]          = _ee_val("0y",  "avg")
+            estimates["est_eps_cur_fy_growth"]   = _ee_val("0y",  "growth")
             estimates["est_eps_current_q"]       = _ee_val("0q",  "avg")
             estimates["est_eps_current_q_growth"] = _ee_val("0q", "growth")
             estimates["est_eps_next_q"]          = _ee_val("+1q", "avg")
@@ -2130,14 +2184,19 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _ttm_rev_growth_pct is not None and _op_margin_pct is not None
     ) else None
 
-    _trailing_eps = yf_r.get("trailing_eps") or 0
-    _forward_eps  = yf_r.get("forward_eps") or 0
-    _implied_ntm_growth = _safe_div(_forward_eps - _trailing_eps, abs(_trailing_eps)) if _trailing_eps else None
     # Forward growth: FMP analyst consensus (live, 250 req/day free) is the primary source.
     # Falls back to yfinance t.earnings_estimate (daily Yahoo consensus), then to stale
     # yfinance info dict (earningsGrowth/revenueGrowth can lag 6-12 months).
     _fmp_est  = fmp_estimates_raw if isinstance(fmp_estimates_raw, dict) else {}
     _yf_est   = yf_fin.get("estimates", {})
+    # v6: honest EPS-growth inputs — see _eps_growth_signals. Both growth rates
+    # come from the same Yahoo frame so the acceleration is same-basis.
+    _eps_sig = _eps_growth_signals(
+        yf_r.get("trailing_eps"),
+        yf_r.get("forward_eps"),
+        _yf_est.get("est_eps_cur_fy_growth"),
+        _yf_est.get("fwd_eps_growth"),
+    )
     def _first_not_none(*vals):
         for v in vals:
             if v is not None:
@@ -2235,8 +2294,12 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "peg_lt":                  _safe_div(_fwd_pe_clean, (_cagr_fwd or 0) * 100),
             "fcf_yield":               _safe_div(yf_r.get("fcf"), yf_fin.get("market_cap")),
             "rule_of_40":              _r40,
-            "implied_ntm_growth":      _implied_ntm_growth,
-            "eps_acceleration":        _safe_sub(_fwd_earnings_growth, _implied_ntm_growth),
+            # v6 (2026-09-24): was "implied_ntm_growth" — a mislabeled TTM ->
+            # NEXT-FY bridge (not NTM). Renamed so no reader mistakes it for a
+            # one-year growth rate; only meaningful for the recovery check.
+            "eps_growth_ttm_to_next_fy": _eps_sig["eps_growth_ttm_to_next_fy"],
+            "eps_acceleration":        _eps_sig["eps_acceleration"],
+            "eps_growth_cur_fy":       _yf_est.get("est_eps_cur_fy_growth"),
             "eps_revision_momentum":    _eps_revision_momentum,
             "wacc":                     _wacc,
             "fwd_eps_ntm":              _fmp_est.get("fwd_eps_ntm"),
