@@ -91,6 +91,13 @@ _VERSION_REGISTER = {
        "exceeds +/-100%) and no longer described as an "
        "analyst-revision signal. Decoupling test now like-for-like "
        "(fwd_earnings_growth vs fwd_revenue_growth)",
+    7: "since 2026-10-08 — period-honest ROIC and revenue: roic from the last "
+       "4 real quarters, not the latest annual statement (live MU 11.2% -> "
+       "43.7%, the 'ROIC < WACC' swing factor of both 10-08 A/B debates); "
+       "revenue_ttm on the same quarterly-statement period as NI/FCF; "
+       "trailing_*_growth_yoy renamed *_growth_latest_q_yoy (it was one "
+       "quarter's YoY, read as TTM). Folded-in defect fix: net_income_ttm/"
+       "cfo_ttm now FX-converted like fcf (live INTR fcf_conversion 0.19 -> ~0.95)",
 }
 
 

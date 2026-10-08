@@ -77,7 +77,7 @@ def test_sbc_supplied_for_every_archetype():
 def test_growth_yoy_still_computed_from_annual_series():
     # agents._growth returns a PERCENTAGE (25.0), not a fraction.
     s = _summary(_dossier())
-    assert s["revenue_growth_yoy"] == 25.0
+    assert s["latest_fy_revenue_growth"] == 25.0
 
 
 def test_missing_statements_degrade_gracefully():
@@ -87,7 +87,7 @@ def test_missing_statements_degrade_gracefully():
     s = _summary(d)
     assert s["revenue_ttm"] == 130_000
     assert s["fcf_ttm"] == 55_000
-    assert s["revenue_growth_yoy"] is None
+    assert s["latest_fy_revenue_growth"] is None
     assert "latest_fy_revenue" not in s
 
 

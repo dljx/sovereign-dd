@@ -151,7 +151,8 @@ PATH A — STANDARD GROWTH (fwd_revenue_growth < 50%):
     and mixes GAAP with non-GAAP. For any company growing steadily it will sit well above a
     one-year revenue growth rate by construction — that is arithmetic, not a trap. It is only
     evidence of a depressed base when paired with the checks that follow. Check
-    ratios_ttm.trailing_earnings_growth_yoy directly (most-recent-quarter EPS growth — a large
+    ratios_ttm.earnings_growth_latest_q_yoy directly (latest quarter vs the same quarter a year
+    earlier — one quarter, not a twelve-month rate; a large
     negative value alongside healthy forward growth confirms a recovery-from-depressed-base
     pattern, not durable compounding) and use web research to see whether trailing GAAP
     earnings were recently depressed by a one-time item — if so, both PEG readings are
@@ -622,7 +623,10 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
         summary["latest_fy_gross_profit"]     = latest.get("gross_profit") or latest.get("grossProfit")
         summary["latest_fy_operating_income"] = latest.get("operating_income") or latest.get("operatingIncome")
         summary["latest_fy_net_income"]       = latest.get("net_income") or latest.get("netIncome")
-        summary["revenue_growth_yoy"]         = _growth(income, "revenue")
+        # v7 (2026-10-08): was "revenue_growth_yoy" — read as TTM growth, but it
+        # is the last two FISCAL years (live VST: 3.0% cited as "anemic TTM
+        # growth", the swing factor of its v7 debate, while SEC TTM was ~+19%).
+        summary["latest_fy_revenue_growth"]   = _growth(income, "revenue")
         # Multi-year trend table (2026-07-14): FundamentalForensics' mandate asks
         # for margin TRENDS, growth VELOCITY, and share-count/buyback trends, but
         # only the latest year survived into the prompt (slim strips financials).
@@ -631,7 +635,7 @@ def round1_prompt(agent: str, ticker: str, dossier: dict, web_research: str, is_
         # research_development, cost_of_revenue, diluted_shares (buyback trend).
         summary["annual_income_history"]      = income[:4]
     else:
-        summary["revenue_growth_yoy"] = None
+        summary["latest_fy_revenue_growth"] = None
 
     # TTM FCF is the EDGAR-reconciled figure fair_value/risk_reward run on —
     # lead with it (plus its provenance) so agents anchor on the same number.

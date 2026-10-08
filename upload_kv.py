@@ -229,7 +229,10 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
         # eps_acceleration with a "downgrade conviction" instruction. Now
         # eps_growth_ttm_to_next_fy (recovery check only) + a same-frame
         # eps_acceleration (next-FY minus current-FY consensus EPS growth).
-        "v":            6,
+        # v7 (2026-10-08): period-honest ROIC (last 4 quarters, not the latest
+        # annual — MU 11.2% -> 43.7%) and revenue_ttm on the same quarterly-
+        # statement period as NI/FCF. See docs/ADAPTATION_PROTOCOL.md §4.
+        "v":            7,
         "mom_12_1":     tech.get("mom_12_1"),
         "mom_6m":       tech.get("mom_6m"),
         "mom_1m":       tech.get("mom_1m"),

@@ -1009,6 +1009,71 @@ def _ttm_cfo_from_quarterly(t) -> float | None:
         return None
 
 
+def _ttm_revenue_from_quarterly(t) -> float | None:
+    """Sum the last 4 REAL quarterly revenue statements (v7, 2026-10-08).
+    info['totalRevenue'] updates off the earnings press release, but
+    net_income_ttm / cfo_ttm / fcf are quarterly-STATEMENT sums that update off
+    the 10-Q — live MU had revenue through Aug-26 beside NI/FCF through May-26
+    in the same dossier, so every revenue-denominated ratio mixed periods.
+    Same 4-real-quarters/None contract as _ttm_fcf_from_quarterly."""
+    try:
+        qis = t.quarterly_income_stmt
+        if qis is None or qis.empty:
+            return None
+        rev_row = next((r for r in ("Total Revenue", "Operating Revenue")
+                        if r in qis.index), None)
+        if rev_row is None:
+            return None
+        cols = list(qis.columns[:4])
+        if len(cols) < 4:
+            return None
+        vals = [qis.loc[rev_row, c] for c in cols]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals):
+            return None
+        return float(sum(vals))
+    except Exception:
+        return None
+
+
+def _ttm_roic_from_quarterly(t) -> float | None:
+    """ROIC on the last 4 REAL quarters (v7, 2026-10-08): TTM operating income
+    × 0.79 / (latest-quarter equity + total debt), percent. Same NOPAT/capital
+    definition as _compute_roic, which reads only the latest ANNUAL statement —
+    up to ~14 months stale. Live MU: annual (FY to 2025-08) 11.16%, below its
+    17% WACC and the swing factor of both A/B debates; TTM ~44%. None (caller
+    falls back to annual) unless 4 real quarters and a latest balance exist."""
+    try:
+        qis = t.quarterly_income_stmt
+        qbs = t.quarterly_balance_sheet
+        if qis is None or qis.empty or qbs is None or qbs.empty:
+            return None
+        if "Operating Income" not in qis.index:
+            return None
+        cols = list(qis.columns[:4])
+        if len(cols) < 4:
+            return None
+        vals = [qis.loc["Operating Income", c] for c in cols]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals):
+            return None
+        eq_row = next((r for r in ("Stockholders Equity", "Common Stock Equity")
+                       if r in qbs.index), None)
+        if eq_row is None:
+            return None
+        latest = qbs.columns[0]
+        equity = qbs.loc[eq_row, latest]
+        if equity is None or (isinstance(equity, float) and math.isnan(equity)):
+            return None
+        debt = qbs.loc["Total Debt", latest] if "Total Debt" in qbs.index else 0
+        if debt is None or (isinstance(debt, float) and math.isnan(debt)):
+            debt = 0
+        invested_capital = float(equity) + float(debt)
+        if invested_capital <= 0:
+            return None
+        return round(float(sum(vals)) * 0.79 / invested_capital * 100, 2)
+    except Exception:
+        return None
+
+
 def _monthly_closes_5y(ticker: str) -> dict:
     """{"YYYY-MM": close} month-end closes over ~5y — the price side of the
     own-multiple history bands (2026-07-17). One cheap yfinance call, cached
@@ -1376,6 +1441,7 @@ def _yf_financials(ticker: str) -> dict:
         _ttm_fcf = _ttm_fcf_from_quarterly(t)
         _fcf = _ttm_fcf if _ttm_fcf is not None else info.get("freeCashflow")
         _fcf_source = "ttm_quarterly_sum" if _ttm_fcf is not None else "info_dict_fallback"
+        _ttm_rev = _ttm_revenue_from_quarterly(t)
         if _fcf and _safe_shares:
             _fcf_ps = _r(_fcf / _safe_shares)
 
@@ -1398,7 +1464,12 @@ def _yf_financials(ticker: str) -> dict:
             # TTM CFO (2026-07-17): accruals-ratio input — must be the same
             # period basis as net_income_ttm above (see _ttm_cfo_from_quarterly).
             "cfo_ttm":       _ttm_cfo_from_quarterly(t),
-            "revenue_ttm":   info.get("totalRevenue"),
+            # v7 (2026-10-08): same quarterly-statement period as NI/CFO/FCF
+            # above; info['totalRevenue'] (press-release-fresh, can run a
+            # quarter ahead) only when 4 real quarters aren't available.
+            "revenue_ttm":   _ttm_rev if _ttm_rev is not None else info.get("totalRevenue"),
+            "revenue_ttm_source": "ttm_quarterly_sum" if _ttm_rev is not None else "info_dict_fallback",
+            "roic_ttm":      _ttm_roic_from_quarterly(t),
             "ebitda":        info.get("ebitda"),
             "beta":          _r(info.get("beta")),
             "shares_out":    _safe_shares,
@@ -1535,8 +1606,12 @@ def _yf_financials(ticker: str) -> dict:
                 # useful for spotting an earnings-recovery base effect (see
                 # agents.py's BASE-EFFECT TRAP) — but MUST NOT feed a forward-
                 # growth fallback chain (removed from both, below).
-                "trailing_revenue_growth_yoy":  info.get("revenueGrowth"),
-                "trailing_earnings_growth_yoy": info.get("earningsGrowth"),
+                # v7 (2026-10-08): renamed again — "trailing" read as TTM, but
+                # both are LATEST-QUARTER vs same-quarter-last-year (live MU:
+                # revenue +379% quarter-YoY vs +167% on a TTM basis; PTC -6.8%
+                # was one divestiture-hit quarter).
+                "revenue_growth_latest_q_yoy":  info.get("revenueGrowth"),
+                "earnings_growth_latest_q_yoy": info.get("earningsGrowth"),
                 "previous_close": info.get("previousClose"),
                 "financials_currency": _fin_currency if _is_fx_mismatch else None,
                 "estimates": estimates}
@@ -1591,6 +1666,16 @@ def _compute_roic(yf_fin: dict) -> float | None:
         return round(nopat / invested_capital * 100, 2)
     except Exception:
         return None
+
+
+def _resolve_roic(yf_fin: dict) -> tuple[float | None, str | None]:
+    """(roic, basis): the TTM-quarterly figure when available (v7), else the
+    annual-statement one. Basis is recorded so a reader can tell which."""
+    ttm = (yf_fin.get("ratios") or {}).get("roic_ttm")
+    if ttm is not None:
+        return ttm, "ttm_quarterly"
+    annual = _compute_roic(yf_fin)
+    return (annual, "annual") if annual is not None else (None, None)
 
 
 def _dynamic_dcf(
@@ -1727,9 +1812,12 @@ def _apply_fx_conversion(yf_fin: dict, currency: str, verbose: bool = False) -> 
         if yf_fin.get(key):
             yf_fin[key] = _conv_stmt(yf_fin[key])
 
-    # Convert absolute-dollar fields in ratios TTM; leave ratios/percentages untouched
+    # Convert absolute-dollar fields in ratios TTM; leave ratios/percentages untouched.
+    # net_income_ttm / cfo_ttm added v7 (2026-10-08): left in local currency they
+    # broke every cross-field ratio — live INTR fcf_conversion read 0.19 (USD FCF
+    # over BRL NI) instead of ~0.95, the swing factor of its 31B debate.
     ratios = yf_fin.get("ratios", {})
-    for field in ("fcf", "revenue_ttm", "ebitda"):
+    for field in ("fcf", "revenue_ttm", "ebitda", "net_income_ttm", "cfo_ttm"):
         if ratios.get(field) is not None:
             ratios[field] = ratios[field] * fx_rate
     # Recompute fcf_per_share from the now-USD fcf and ADR share count
@@ -2001,7 +2089,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:profile:{ticker}",       72,  _fh, "/stock/profile2", {"symbol": ticker}), "profile"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"quote:{ticker}",             1,  _quote, ticker), "quote"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:tech:{ticker}",           1,  _technicals, ticker), "technicals"),
-        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:{ticker}",           12,  _yf_financials, ticker), "financials"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:v7:{ticker}",        12,  _yf_financials, ticker), "financials"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:EARNINGS:{ticker}",      24,  _av, "EARNINGS", {"symbol": ticker}), "earnings"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:OVERVIEW:{ticker}",      24,  _av, "OVERVIEW", {"symbol": ticker}), "av_overview"),
         # v3 key (2026-07-17): EDGAR Form 4 primary (Finnhub feed proven
@@ -2203,7 +2291,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
                 return v
         return None
 
-    # NOTE (2026-07-13): yf_fin's "trailing_*_growth_yoy" fields are deliberately
+    # NOTE (2026-07-13): yf_fin's "*_growth_latest_q_yoy" fields are deliberately
     # NOT in these chains — verified live to not represent forward growth
     # despite Yahoo's field names suggesting otherwise (see _yf_financials).
     # When FMP AND yfinance's own +1y estimate both miss, these now correctly
@@ -2216,8 +2304,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fmp_est.get("fwd_rev_growth"),
         _yf_est.get("fwd_rev_growth"),
     )
-    _trailing_earnings_growth = yf_fin.get("trailing_earnings_growth_yoy")
-    _trailing_revenue_growth  = yf_fin.get("trailing_revenue_growth_yoy")
+    _latest_q_earnings_growth = yf_fin.get("earnings_growth_latest_q_yoy")
+    _latest_q_revenue_growth  = yf_fin.get("revenue_growth_latest_q_yoy")
+    _roic, _roic_basis = _resolve_roic(yf_fin)
     _eps_revision_momentum = _yf_est.get("eps_revision_momentum")  # yfinance eps_trend, no FMP equivalent on free tier
 
     # WACC — computed from existing data, zero new API calls.
@@ -2252,7 +2341,9 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "gross_margin":  yf_r.get("gross_margin"),
             "net_margin":    yf_r.get("net_margin"),
             "roe":           yf_r.get("roe"),
-            "roic":          _compute_roic(yf_fin),
+            "roic":          _roic,
+            # v7: "ttm_quarterly" (last 4 quarters) or "annual" (fallback only)
+            "roic_basis":    _roic_basis,
             "roa":           yf_r.get("roa"),
             "debt_equity":   yf_r.get("debt_equity"),
             "current_ratio": yf_r.get("current_ratio"),
@@ -2262,6 +2353,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "net_income_ttm": yf_r.get("net_income_ttm"),
             "cfo_ttm":       yf_r.get("cfo_ttm"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
+            "revenue_ttm_source": yf_r.get("revenue_ttm_source"),
             "ebitda":        yf_r.get("ebitda"),
             "beta":          yf_r.get("beta"),
             "short_pct":     yf_r.get("short_pct"),
@@ -2270,13 +2362,13 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             # Growth & valuation metrics
             "fwd_revenue_growth":      _fwd_revenue_growth,
             "fwd_earnings_growth":     _fwd_earnings_growth,
-            # TRAILING (most-recent-quarter YoY), NOT forward — despite Yahoo's
+            # LATEST QUARTER vs same quarter a year ago — NOT TTM, NOT forward — despite Yahoo's
             # field names, verified NOT to represent forward consensus (see
             # _yf_financials). A large negative trailing figure alongside
             # healthy forward growth is exactly the "earnings recovering from
             # a depressed/impaired base" pattern the BASE-EFFECT TRAP looks for.
-            "trailing_earnings_growth_yoy": _trailing_earnings_growth,
-            "trailing_revenue_growth_yoy":  _trailing_revenue_growth,
+            "earnings_growth_latest_q_yoy": _latest_q_earnings_growth,
+            "revenue_growth_latest_q_yoy":  _latest_q_revenue_growth,
             # NTM PEG: fwd PE ÷ NEXT-YEAR analyst EPS growth. Compresses when a
             # single rebound year spikes EPS off a low base — agents must cite
             # it as "NTM PEG" and apply the base-effect trap (agents.py PATH A).

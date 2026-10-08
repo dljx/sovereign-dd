@@ -105,8 +105,8 @@ class _MinimalFakeTicker:
 def test_yf_financials_exposes_trailing_growth_under_honest_names(monkeypatch):
     monkeypatch.setattr(dossier.yf, "Ticker", _MinimalFakeTicker)
     out = dossier._yf_financials("FAKE")
-    assert out["trailing_earnings_growth_yoy"] == -0.804
-    assert out["trailing_revenue_growth_yoy"] == 0.276
+    assert out["earnings_growth_latest_q_yoy"] == -0.804
+    assert out["revenue_growth_latest_q_yoy"] == 0.276
     # The misleading names must be GONE, not just duplicated — a caller doing
     # yf_fin.get("fwd_earnings_growth") must get None, never the trailing value.
     assert "fwd_earnings_growth" not in out
