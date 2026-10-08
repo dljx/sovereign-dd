@@ -30,9 +30,12 @@ jobs:
   analyze:
     name: Run analysis
     runs-on: ubuntu-latest
-    # Portfolio scan is ~15 hold-mode debates (well under an hour); 90 min stops
-    # a hung LLM call from occupying the runner for GitHub's full 6-hour limit.
-    timeout-minutes: 90
+    # Portfolio scan is ~15 hold-mode debates. Normally well under an hour, but
+    # with gemma-4-31b degraded (Sep–Oct 2026: 12–26 min/debate, trivial calls
+    # 40–120s) every run since 09-17 died at 90 min with ~12/16 done and nothing
+    # uploaded. 180 min lets it finish; still bounds a hung call well below
+    # GitHub's 6-hour limit.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
