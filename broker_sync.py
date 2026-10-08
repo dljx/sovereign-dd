@@ -51,22 +51,27 @@ _EXCHANGE_SUFFIX = {
     "TSXV": ".V", "VENTURE": ".V", "TSX-V": ".V",
     "TSE": ".TO", "TSX": ".TO",
     "SEHK": ".HK",
+    # London (2026-10-08): IBKR lists UCITS ETFs under LSEETF. Yahoo's .L
+    # symbol is the trading line, so a USD line keeps its USD price (VALU.L).
+    "LSE": ".L", "LSEETF": ".L",
 }
 _US_EXCHANGES = {"NYSE", "NASDAQ", "ARCA", "AMEX", "BATS", "PINK", "OTCBB",
-                 "NMS", "ISLAND", "IEXG", ""}
+                 "NMS", "ISLAND", "IEXG", "US", ""}
 
 
 def map_symbol(symbol: str, exchange: str = "", currency: str = "USD") -> tuple[str, bool]:
     """(dashboard_ticker, mapped_ok). Unmapped foreign listings keep the raw
-    symbol with mapped_ok=False so the sync alert asks a human to verify."""
+    symbol with mapped_ok=False so the sync alert asks a human to verify.
+
+    A USD price does NOT make a listing American: there used to be a USD
+    fallback here, and the USD line of a London ETF (IBKR VALU @ LSEETF) came
+    out as bare "VALU" — Value Line Inc on NASDAQ, $44.44 vs $4.97."""
     sym = (symbol or "").upper().strip().replace(" ", ".")
     ex = (exchange or "").upper().strip()
-    if ex in _US_EXCHANGES or (currency or "").upper() == "USD" and not ex:
+    if ex in _US_EXCHANGES:
         return sym, True
     if ex in _EXCHANGE_SUFFIX:
         return f"{sym}{_EXCHANGE_SUFFIX[ex]}", True
-    if (currency or "").upper() == "USD":
-        return sym, True
     return sym, False
 
 

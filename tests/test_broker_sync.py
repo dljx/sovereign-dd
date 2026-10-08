@@ -57,6 +57,22 @@ def test_map_symbol_rules():
     assert sym == "XYZ" and ok is False
 
 
+def test_map_symbol_usd_line_on_foreign_exchange():
+    # Live 2026-10-08: IBKR "VALL @LSEETF" (Vanguard FTSE Global All-Cap,
+    # USD line) arrived as symbol VALU / listingExchange LSEETF / USD. The
+    # USD fallback returned bare "VALU" — Value Line Inc on NASDAQ ($44.44
+    # vs the ETF's $4.97). Yahoo's symbol for the USD LSE line is VALU.L.
+    assert broker_sync.map_symbol("VALU", "LSEETF", "USD") == ("VALU.L", True)
+    assert broker_sync.map_symbol("VUSA", "LSE", "GBP") == ("VUSA.L", True)
+    # A USD-priced line on a venue we can't map is flagged for a human, never
+    # silently treated as a US ticker (a same-letters US stock may exist).
+    sym, ok = broker_sync.map_symbol("ABC", "IBIS", "USD")
+    assert sym == "ABC" and ok is False
+    # Tiger reports US listings as market="US"; no-exchange USD stays US.
+    assert broker_sync.map_symbol("NU", "US", "USD") == ("NU", True)
+    assert broker_sync.map_symbol("NU", "", "USD") == ("NU", True)
+
+
 def test_map_tiger_objects():
     pos = [
         SimpleNamespace(contract=SimpleNamespace(symbol="NU", currency="USD", market="US"),
