@@ -146,3 +146,13 @@ def test_fx_conversion_converts_all_absolute_ttm_fields(monkeypatch):
     assert r["roic"] == 12.5  # a percentage — must NOT be scaled
     # FCF conversion is currency-neutral again: 200 / 220, not 200 / 1100
     assert r["fcf"] / r["net_income_ttm"] == pytest.approx(1000.0 / 1100.0)
+
+
+def test_fx_conversion_covers_headline_ttm_fields(monkeypatch):
+    # validator compares Yahoo's USD P/S / PE against these — a BRL headline
+    # figure would manufacture a 5x "divergence" on every BRL reporter.
+    monkeypatch.setattr(dossier.yf, "Ticker", _FxTicker)
+    yf_fin = {"ratios": {"revenue_ttm_headline": 5000.0, "net_income_ttm_headline": 1000.0}}
+    dossier._apply_fx_conversion(yf_fin, "BRL")
+    assert yf_fin["ratios"]["revenue_ttm_headline"] == pytest.approx(1000.0)
+    assert yf_fin["ratios"]["net_income_ttm_headline"] == pytest.approx(200.0)

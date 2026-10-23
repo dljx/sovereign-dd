@@ -232,7 +232,10 @@ def _factor_stamp(dossier: dict | None, result: dict | None = None) -> dict | No
         # v7 (2026-10-08): period-honest ROIC (last 4 quarters, not the latest
         # annual — MU 11.2% -> 43.7%) and revenue_ttm on the same quarterly-
         # statement period as NI/FCF. See docs/ADAPTATION_PROTOCOL.md §4.
-        "v":            7,
+        # v8 (2026-10-23): pipeline restoration — Finviz screens back (all 16
+        # calls had failed since ~09-30), funds/ETFs out of the DD, P/S + PE
+        # cross-checks on a same-period basis (MU's spurious LOW-confidence risk).
+        "v":            8,
         "mom_12_1":     tech.get("mom_12_1"),
         "mom_6m":       tech.get("mom_6m"),
         "mom_1m":       tech.get("mom_1m"),

@@ -123,3 +123,67 @@ def test_repair_avatar_tickers_leaves_clean_symbols_untouched():
 
 def test_repair_avatar_tickers_empty():
     assert _repair_avatar_tickers([]) == []
+
+
+# ── New Finviz screener page (live since ~2026-09-30) ───────────────────────
+# screener.ashx now 301s to /screener/stocks, which 403s finvizfinance's
+# malformed User-Agent and renders results as embedded JSON (20 rows/page,
+# "totalCount", r=21/41/... paging) — no <table>, so screener_view() read
+# nothing. All 16 scout screen calls failed every run for 3+ weeks.
+
+import pytest
+
+import finviz_screener
+
+_SCREEN_PAGE = ('<script>{"columns":["ticker"],"flags":{},"data":{"rows":['
+         '{"text":{"ticker":"AACI","company":"A"},"numbers":{}},'
+         '{"text":{"ticker":"BRK.B","company":"B"},"numbers":{}}],'
+         '"totalCount":%d}}</script>')
+
+
+def test_parse_screener_page_reads_json_rows_and_total():
+    tickers, total = finviz_screener._parse_screener_page(_SCREEN_PAGE % 2)
+    assert tickers == ["AACI", "BRK.B"] and total == 2
+
+
+def test_parse_screener_page_empty_result():
+    assert finviz_screener._parse_screener_page('{"data":{"rows":[],"totalCount":0}}') == ([], 0)
+
+
+class _Resp:
+    def __init__(self, text, status=200):
+        self.text, self.status_code = text, status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def test_fetch_screen_pages_until_total(monkeypatch):
+    pages = {1: _SCREEN_PAGE % 3, 21: ('{"data":{"rows":[{"text":{"ticker":"ZZZ"}}],'
+                                '"totalCount":3}}')}
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append((url, dict(params), headers["User-Agent"]))
+        return _Resp(pages[params.get("r", 1)])
+
+    monkeypatch.setattr(finviz_screener.requests, "get", fake_get)
+    monkeypatch.setattr(finviz_screener.time, "sleep", lambda s: None)
+    out = finviz_screener._fetch_screen({"v": 111, "f": "cap_small,geo_usa"})
+    assert out == ["AACI", "BRK.B", "ZZZ"]
+    assert calls[0][0] == "https://finviz.com/screener/stocks"
+    assert calls[0][1]["f"] == "cap_small,geo_usa" and calls[1][1]["r"] == 21
+    assert "  " not in calls[0][2]   # a clean UA — the library's has a run of spaces
+
+
+def test_fetch_screen_raises_on_http_error(monkeypatch):
+    monkeypatch.setattr(finviz_screener.requests, "get",
+                        lambda *a, **k: _Resp("blocked", 403))
+    with pytest.raises(RuntimeError):
+        finviz_screener._fetch_screen({"v": 111, "f": "geo_usa"})
+
+
+def test_library_user_agent_is_replaced():
+    import finvizfinance.util as fv_util
+    assert fv_util.headers["User-Agent"] == finviz_screener._FINVIZ_UA

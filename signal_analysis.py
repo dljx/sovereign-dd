@@ -98,6 +98,12 @@ _VERSION_REGISTER = {
        "trailing_*_growth_yoy renamed *_growth_latest_q_yoy (it was one "
        "quarter's YoY, read as TTM). Folded-in defect fix: net_income_ttm/"
        "cfo_ttm now FX-converted like fcf (live INTR fcf_conversion 0.19 -> ~0.95)",
+    8: "since 2026-10-23 — pipeline restoration: the scout's 11 Finviz "
+       "screens are back (every call had 403'd since ~2026-09-30 — new "
+       "/screener/stocks JSON page + finvizfinance's malformed User-Agent); "
+       "index ETFs/funds skipped by the portfolio DD; validator P/S and PE "
+       "cross-checks compare same-period (headline) figures, ending a "
+       "spurious data-confidence penalty on statement-lag names (MU)",
 }
 
 

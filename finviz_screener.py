@@ -10,9 +10,33 @@ Entry points:
   enrich_candidates()      → {ticker: {finviz_fundamentals}}
 """
 
+import re
 import time
+
+import finvizfinance.util as _fv_util
+import requests
 from finvizfinance.screener.overview import Overview
 from finvizfinance.quote import finvizfinance as FinvizQuote
+
+# Finviz 403s finvizfinance's own User-Agent (a line continuation in the
+# library source embeds a run of spaces mid-string — reads as a bot). Live
+# since ~2026-09-30; every scout screen and quote enrichment failed for 3+
+# weeks. Same clean UA dossier.py already uses for its Finviz fetch. The
+# library's web_scrap reads this module-level dict, so patching it in place
+# fixes FinvizQuote (enrich_candidates) too.
+_FINVIZ_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+_fv_util.headers["User-Agent"] = _FINVIZ_UA
+
+# The screener moved to /screener/stocks and renders results as embedded JSON
+# (data.rows[].text.ticker, 20 per page, "totalCount", paged with r=21/41/...)
+# instead of an HTML table, so Overview().screener_view() parses nothing. The
+# library still builds the URL filter codes (set_filter); we fetch and parse.
+_SCREENER_URL = "https://finviz.com/screener/stocks"
+_PAGE_SIZE = 20
+_MAX_PAGES = 25   # 500 tickers/screen — far above any real screen; bounds a runaway loop
+_ROW_TICKER = re.compile(r'"text":\{"ticker":"([A-Z0-9.\-]+)"')
+_TOTAL = re.compile(r'"totalCount":(\d+)')
 
 
 # ── Screen definitions ─────────────────────────────────────────────────────────
@@ -220,15 +244,38 @@ def _repair_avatar_tickers(tickers: list[str]) -> list[str]:
     return [t[1:] if (len(t) >= 2 and t[0] == t[1]) else t for t in tickers]
 
 
+def _parse_screener_page(html: str) -> tuple[list[str], int]:
+    """(tickers on this page, totalCount) from the new JSON-rendered page."""
+    tickers = _ROW_TICKER.findall(html)
+    m = _TOTAL.search(html)
+    return tickers, int(m.group(1)) if m else len(tickers)
+
+
+def _fetch_screen(params: dict) -> list[str]:
+    """Every result ticker for one filter set, walking the r=1/21/41 pages.
+    Raises on an HTTP error so the caller logs the screen as failed rather
+    than silently reporting an empty screen."""
+    out: list[str] = []
+    for page in range(_MAX_PAGES):
+        q = dict(params)
+        if page:
+            q["r"] = page * _PAGE_SIZE + 1
+            time.sleep(1.0)
+        r = requests.get(_SCREENER_URL, params=q,
+                         headers={"User-Agent": _FINVIZ_UA}, timeout=20)
+        r.raise_for_status()
+        tickers, total = _parse_screener_page(r.text)
+        out.extend(t for t in tickers if t not in out)
+        if not tickers or len(out) >= total:
+            break
+    return out
+
+
 def _run_single_screen(name: str, filters: dict, verbose: bool = False) -> list[str]:
     """Run one Finviz screen with the given filters. Returns list of ticker strings."""
     screener = Overview()
-    screener.set_filter(filters_dict=filters)
-    df = screener.screener_view()
-    if df is None or df.empty:
-        return []
-    raw = [t.strip() for t in df["Ticker"].dropna().astype(str).tolist()]
-    return _repair_avatar_tickers(raw)
+    screener.set_filter(filters_dict=filters)   # human filter names -> URL codes
+    return _repair_avatar_tickers(_fetch_screen(screener.request_params))
 
 
 def run_finviz_screens(verbose: bool = False) -> dict[str, list[str]]:

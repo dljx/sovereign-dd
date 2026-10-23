@@ -39,7 +39,7 @@ jobs:
 
       - name: Restore scout history
         id: restore-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             output/scout_history.json
@@ -93,7 +93,7 @@ jobs:
         run: python main.py --scout --gems --save --notify
 
       - name: Save scout history
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: always()
         with:
           path: |

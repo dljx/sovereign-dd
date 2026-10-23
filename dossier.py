@@ -1469,6 +1469,10 @@ def _yf_financials(ticker: str) -> dict:
             # quarter ahead) only when 4 real quarters aren't available.
             "revenue_ttm":   _ttm_rev if _ttm_rev is not None else info.get("totalRevenue"),
             "revenue_ttm_source": "ttm_quarterly_sum" if _ttm_rev is not None else "info_dict_fallback",
+            # Yahoo's headline TTM (press-release-fresh) — kept only so the
+            # validator's P/S and PE cross-checks compare like with like.
+            "revenue_ttm_headline":    info.get("totalRevenue"),
+            "net_income_ttm_headline": info.get("netIncomeToCommon"),
             "roic_ttm":      _ttm_roic_from_quarterly(t),
             "ebitda":        info.get("ebitda"),
             "beta":          _r(info.get("beta")),
@@ -1817,7 +1821,8 @@ def _apply_fx_conversion(yf_fin: dict, currency: str, verbose: bool = False) -> 
     # broke every cross-field ratio — live INTR fcf_conversion read 0.19 (USD FCF
     # over BRL NI) instead of ~0.95, the swing factor of its 31B debate.
     ratios = yf_fin.get("ratios", {})
-    for field in ("fcf", "revenue_ttm", "ebitda", "net_income_ttm", "cfo_ttm"):
+    for field in ("fcf", "revenue_ttm", "ebitda", "net_income_ttm", "cfo_ttm",
+                  "revenue_ttm_headline", "net_income_ttm_headline"):
         if ratios.get(field) is not None:
             ratios[field] = ratios[field] * fx_rate
     # Recompute fcf_per_share from the now-USD fcf and ADR share count
@@ -2089,7 +2094,7 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:profile:{ticker}",       72,  _fh, "/stock/profile2", {"symbol": ticker}), "profile"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"quote:{ticker}",             1,  _quote, ticker), "quote"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"fh:tech:{ticker}",           1,  _technicals, ticker), "technicals"),
-        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:v7:{ticker}",        12,  _yf_financials, ticker), "financials"),
+        _fetch_and_emit(ticker, asyncio.to_thread(cached, f"yf:fin:v8:{ticker}",        12,  _yf_financials, ticker), "financials"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:EARNINGS:{ticker}",      24,  _av, "EARNINGS", {"symbol": ticker}), "earnings"),
         _fetch_and_emit(ticker, asyncio.to_thread(cached, f"av:OVERVIEW:{ticker}",      24,  _av, "OVERVIEW", {"symbol": ticker}), "av_overview"),
         # v3 key (2026-07-17): EDGAR Form 4 primary (Finnhub feed proven
@@ -2354,6 +2359,8 @@ async def build(ticker: str, verbose: bool = True, meta: dict | None = None) -> 
             "cfo_ttm":       yf_r.get("cfo_ttm"),
             "revenue_ttm":   yf_r.get("revenue_ttm"),
             "revenue_ttm_source": yf_r.get("revenue_ttm_source"),
+            "revenue_ttm_headline":    yf_r.get("revenue_ttm_headline"),
+            "net_income_ttm_headline": yf_r.get("net_income_ttm_headline"),
             "ebitda":        yf_r.get("ebitda"),
             "beta":          yf_r.get("beta"),
             "short_pct":     yf_r.get("short_pct"),

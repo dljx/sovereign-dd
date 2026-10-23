@@ -62,8 +62,12 @@ def validate_dossier(dossier: dict) -> dict:
     # confidence on clean data; at 3+ warnings the same noise could tip a name
     # into LOW, which docks the score). Annual stays as the fallback when
     # fewer than 4 real quarters exist.
+    # Same-basis (2026-10-23): yfinance's trailingPE uses Yahoo's headline TTM,
+    # which updates off the earnings release; net_income_ttm is a quarterly-
+    # STATEMENT sum that can lag it a full quarter (live MU: 50bn vs 84bn). The
+    # headline figure is preferred so the check catches bad data, not timing.
     income = fin.get("income") or []
-    net_income = ratios.get("net_income_ttm")
+    net_income = ratios.get("net_income_ttm_headline") or ratios.get("net_income_ttm")
     if not net_income and income:
         net_income = income[0].get("net_income")
     computed_pe: float | None = None
@@ -76,7 +80,9 @@ def validate_dossier(dossier: dict) -> dict:
 
     # 2. P/S SANITY CHECK
     reported_ps = ratios.get("ps")
-    revenue_ttm = ratios.get("revenue_ttm")
+    # Same basis as the reported P/S (Yahoo headline revenue) — v7 put
+    # revenue_ttm on the quarterly statements, a quarter behind for MU.
+    revenue_ttm = ratios.get("revenue_ttm_headline") or ratios.get("revenue_ttm")
     if mcap > 0 and revenue_ttm and revenue_ttm > 0:
         computed_ps = round(mcap / revenue_ttm, 2)
         _flag_divergence(warnings, "P/S ratio",

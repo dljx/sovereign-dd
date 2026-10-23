@@ -209,3 +209,40 @@ def test_pe_check_falls_back_to_annual_when_ttm_missing():
     d = _pe_dossier(yf_pe=10.0, annual_ni=2_000_000_000, ttm_ni=None)
     r = validate_dossier(d)
     assert any("Trailing PE divergence" in w for w in r["warnings"])
+
+
+# ── Same-basis cross-checks (2026-10-23) ─────────────────────────────────────
+# v7 moved revenue_ttm (and earlier net_income_ttm) onto the quarterly
+# STATEMENTS, which lag Yahoo's press-release-fresh headline TTM by up to a
+# quarter. Comparing Yahoo's P/S and trailingPE (headline basis) against
+# statement-basis figures flagged a timing gap as "divergence" — live MU
+# (revenue 90.3bn statements vs 133.2bn headline) carried two such warnings,
+# one short of LOW confidence's -0.5 score dock.
+
+def _mu_like(**ratio_overrides):
+    # mcap 1,200bn; headline revenue 133bn (P/S ~9.0) and NI 84bn (PE ~14.3);
+    # statements a quarter behind: revenue 90bn, NI 50bn.
+    ratios = {"pe": 14.3, "fwd_pe": 5.3, "ps": 9.0,
+              "revenue_ttm": 90e9, "revenue_ttm_headline": 133e9,
+              "net_income_ttm": 50e9, "net_income_ttm_headline": 84e9,
+              "eps_cagr_fwd_years": 5, "eps_cagr_fwd_src": "finviz", **ratio_overrides}
+    return _dossier(profile={"market_cap_bn": 1200.0},
+                    financials={"income": [{"net_income": 8e9}], "ratios_ttm": ratios})
+
+
+def test_statement_lag_is_not_flagged_as_divergence():
+    w = validate_dossier(_mu_like())["warnings"]
+    assert not any("P/S ratio divergence" in x for x in w)
+    assert not any("Trailing PE divergence" in x for x in w)
+
+
+def test_headline_basis_still_catches_bad_vendor_ratios():
+    w = validate_dossier(_mu_like(ps=30.0, pe=60.0))["warnings"]
+    assert any("P/S ratio divergence" in x for x in w)
+    assert any("Trailing PE divergence" in x for x in w)
+
+
+def test_statement_basis_fallback_when_no_headline():
+    # Old dossiers / fallback paths without the headline fields behave as before.
+    w = validate_dossier(_mu_like(revenue_ttm_headline=None, net_income_ttm_headline=None))["warnings"]
+    assert any("P/S ratio divergence" in x for x in w)

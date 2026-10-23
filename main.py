@@ -20,6 +20,8 @@ sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yfinance as yf
+
 from dossier import build as build_dossier
 from debate import run as run_debate
 from report import render, console
@@ -83,6 +85,24 @@ def _portfolio_tickers() -> list[str]:
         return tickers
     console.print("[red]No live positions and PORTFOLIO_TICKERS env var is empty or not set[/red]")
     sys.exit(1)
+
+
+_FUND_TYPES = {"ETF", "MUTUALFUND"}
+
+
+def _drop_funds(tickers: list[str]) -> tuple[list[str], list[str]]:
+    """(kept, skipped): index ETFs/funds out of the portfolio scan (2026-10-23).
+    A hold-mode stock debate on a broad fund is a category error (its own
+    agents said so on VALU.L) and its rating pollutes the signal history.
+    Any lookup failure KEEPS the ticker — never drop a stock silently."""
+    kept, skipped = [], []
+    for t in tickers:
+        try:
+            qtype = (yf.Ticker(t).info or {}).get("quoteType")
+        except Exception:
+            qtype = None
+        (skipped if qtype in _FUND_TYPES else kept).append(t)
+    return kept, skipped
 
 
 def _save_result(ticker: str, result: dict, dossier: dict, subdir: str = "") -> Path:
@@ -190,7 +210,9 @@ async def _run_portfolio(save: bool = False, notify: bool = False):
     from cleaner import clean_ticker_batch
     from thesis_check import (broken_transitions, build_checks, check_thesis,
                               fetch_registry, push_checks, seed_check)
-    tickers = _portfolio_tickers()
+    tickers, funds = _drop_funds(_portfolio_tickers())
+    if funds:
+        console.print(f"[dim]  [portfolio] skipping funds/ETFs (no stock debate): {', '.join(funds)}[/dim]")
     console.rule(
         f"[bold blue]Sovereign DD — Portfolio scan "
         f"({len(tickers)} tickers, 3 concurrent)[/bold blue]"
